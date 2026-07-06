@@ -1,0 +1,42 @@
+name: Backend CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tinsae
+          POSTGRES_PASSWORD: tinsae
+          POSTGRES_DB: tinsae
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tinsae"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DJANGO_SECRET_KEY: ci-secret-key
+      DJANGO_DEBUG: "False"
+      DATABASE_URL: postgres://tinsae:tinsae@localhost:5432/tinsae
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Ruff (lint)
+        run: ruff check .
+      - name: Black (format check)
+        run: black --check .
+      - name: Run tests
+        run: pytest
