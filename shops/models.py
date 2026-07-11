@@ -8,7 +8,7 @@ class Shop(models.Model):
     description = models.TextField(blank=True)
     phone = models.CharField(max_length=30, blank=True)
     city = models.CharField(max_length=100, blank=True)
-    
+
     telegram_chat_id = models.CharField(max_length=50, blank=True)
 
     is_verified = models.BooleanField(default=False)
@@ -32,4 +32,3 @@ class Shop(models.Model):
                 slug = f"{base}-{counter}"
             self.slug = slug
         super().save(*args, **kwargs)
-
