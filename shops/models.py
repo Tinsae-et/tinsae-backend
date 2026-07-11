@@ -2,7 +2,6 @@ from django.db import models
 from django.utils.text import slugify
 
 
-
 class Shop(models.Model):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, blank=True)
