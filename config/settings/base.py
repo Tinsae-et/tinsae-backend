@@ -21,6 +21,7 @@ INSTALLED_APPS = [
     "corsheaders",
     "health",
     "shops",
+    "catalog",
 ]
 
 MIDDLEWARE = [
