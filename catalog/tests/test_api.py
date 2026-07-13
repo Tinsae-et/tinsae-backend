@@ -42,7 +42,7 @@ class ProductApiTest(TestCase):
 
         response = APIClient().get("/api/v1/catalog/products/?category=phones")
         self.assertEqual(response.data["count"], 1)
-        self.assertEqual(response.data["results"][0]["brand"], "Samsung")
+        self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A15")
 
     def test_product_detail_by_slug(self):
         response = APIClient().get("/api/v1/catalog/products/galaxy-a15/")
