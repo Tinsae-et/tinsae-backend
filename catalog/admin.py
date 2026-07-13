@@ -6,12 +6,14 @@ from .models import Category, Product
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
     list_display = ["name", "parent", "display_order", "slug"]
+    search_fields = ["name"]
     prepopulated_fields = {"slug": ["name"]}
 
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ["brand", "name", "category"]
-    list_filter = ["category", "brand"]
+    list_display = ["brand", "name", "price", "freshness", "shop", "category"]
+    list_filter = ["category", "brand", "freshness", "shop"]
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
+    autocomplete_fields = ["shop", "category"]

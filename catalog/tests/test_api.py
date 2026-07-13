@@ -2,16 +2,24 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from catalog.models import Category, Product
+from shops.models import Shop
+from users.models import User
 
 
 class ProductApiTest(TestCase):
     def setUp(self):
+        self.owner = User.objects.create_user(username="test_merchant", password="pass")
+        self.shop = Shop.objects.create(
+            name="Test Shop", slug="test-shop", owner=self.owner
+        )
         self.cat = Category.objects.create(name="Phones", slug="phones")
         self.product = Product.objects.create(
             category=self.cat,
+            shop=self.shop,
             brand="Samsung",
             name="Galaxy A15",
             slug="galaxy-a15",
+            price="12500.00",
             specs={"ram": "4GB", "storage": "128GB"},
         )
 
@@ -24,7 +32,12 @@ class ProductApiTest(TestCase):
     def test_filter_by_category_slug(self):
         acc = Category.objects.create(name="Accessories", slug="accessories")
         Product.objects.create(
-            category=acc, brand="Anker", name="PowerPort", slug="powerport"
+            category=acc,
+            shop=self.shop,
+            brand="Anker",
+            name="PowerPort",
+            slug="powerport",
+            price="450.00",
         )
 
         response = APIClient().get("/api/v1/catalog/products/?category=phones")

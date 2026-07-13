@@ -4,6 +4,12 @@ from django.db import models
 from core.models import BaseModel
 
 
+class FreshnessChoices(models.TextChoices):
+    FRESH = "fresh", "Fresh"
+    ALMOST_EXPIRED = "almost_expired", "Almost Expired"
+    EXPIRED = "expired", "Expired"
+
+
 class Category(BaseModel):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
@@ -29,12 +35,19 @@ class Category(BaseModel):
 
 
 class Product(BaseModel):
+    shop = models.ForeignKey(
+        "shops.Shop", related_name="products", on_delete=models.CASCADE
+    )
     category = models.ForeignKey(
         Category, related_name="products", on_delete=models.PROTECT
     )
     brand = models.CharField(max_length=100)
     name = models.CharField(max_length=200)
-    slug = models.SlugField(unique=True)
+    slug = models.SlugField(max_length=200, unique=True)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    freshness = models.CharField(
+        max_length=20, choices=FreshnessChoices.choices, default=FreshnessChoices.FRESH
+    )
     specs = models.JSONField(default=dict, blank=True)
 
     def __str__(self) -> str:
