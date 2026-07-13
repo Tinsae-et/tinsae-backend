@@ -5,7 +5,7 @@ from .models import Shop
 
 @admin.register(Shop)
 class ShopAdmin(admin.ModelAdmin):
-    list_display = ("name", "city", "is_verified", "created_at")
+    list_display = ("name", "city", "is_verified", "owner", "created_at")
     list_filter = ("is_verified", "city")
     search_fields = ("name", "city")
     prepopulated_fields = {"slug": ("name",)}

@@ -1,11 +1,10 @@
-import pytest
+from django.test import TestCase
 from rest_framework.test import APIClient
 
 
-@pytest.mark.django_db
-def test_health_endpoint_returns_ok():
-    client = APIClient()
-    response = client.get("/api/health/")
-    assert response.status_code == 200
-    assert response.data["status"] == "ok"
-    assert response.data["database"] == "ok"
+class HealthTest(TestCase):
+    def test_health_endpoint_returns_ok(self):
+        response = APIClient().get("/api/health/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "ok")
+        self.assertEqual(response.data["database"], "ok")
