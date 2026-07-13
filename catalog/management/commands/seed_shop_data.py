@@ -12,30 +12,30 @@ SEED_USER = {
 
 SHOPS = [
     {
-        "name": "Shewa Supermarket",
-        "slug": "shewa-supermarket",
+        "name": "Shewa Electronics",
+        "slug": "shewa-electronics",
         "city": "Addis Ababa",
         "phone": "+251911100001",
-        "description": "General supermarket in the heart of Addis.",
+        "description": "Phones, chargers, and accessories in Bole.",
     },
     {
         "name": "Merkato Electronics",
         "slug": "merkato-electronics",
         "city": "Addis Ababa",
         "phone": "+251911100002",
-        "description": "Electronics and accessories at Merkato.",
+        "description": "Premium phones and gadgets at Merkato.",
     },
     {
-        "name": "Bahir Dar Fresh",
-        "slug": "bahir-dar-fresh",
+        "name": "Bahir Dar Tech",
+        "slug": "bahir-dar-tech",
         "city": "Bahir Dar",
         "phone": "+251911100003",
-        "description": "Fresh goods and daily essentials in Bahir Dar.",
+        "description": "Electronics and phone accessories in Bahir Dar.",
     },
 ]
 
 PRODUCTS = [
-    # Shewa Supermarket — Phones
+    # Shewa Electronics — Phones
     {
         "shop": 0,
         "category_slug": "phones",
@@ -126,7 +126,7 @@ PRODUCTS = [
         "freshness": "almost_expired",
         "specs": {"ram": "4GB", "storage": "64GB"},
     },
-    # Shewa Supermarket — Accessories
+    # Shewa Electronics — Accessories
     {
         "shop": 0,
         "category_slug": "accessories",
@@ -264,7 +264,7 @@ PRODUCTS = [
         "freshness": "expired",
         "specs": {"display": "AMOLED"},
     },
-    # Bahir Dar Fresh — Accessories
+    # Bahir Dar Tech — Accessories
     {
         "shop": 2,
         "category_slug": "accessories",
@@ -292,7 +292,7 @@ PRODUCTS = [
         "freshness": "almost_expired",
         "specs": {"power": "30W"},
     },
-    # Bahir Dar Fresh — Phones
+    # Bahir Dar Tech — Phones
     {
         "shop": 2,
         "category_slug": "phones",
