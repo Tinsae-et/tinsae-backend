@@ -20,7 +20,10 @@ INSTALLED_APPS = [
     "rest_framework",
     "corsheaders",
     "health",
+    "users",
     "shops",
+    "core",
+    "catalog",
 ]
 
 MIDDLEWARE = [
@@ -55,6 +58,8 @@ TEMPLATES = [
 # Postgres required everywhere — no SQLite fallback (dev/prod parity). Fails loud if unset.
 DATABASES = {"default": env.db("DATABASE_URL")}
 
+AUTH_USER_MODEL = "users.User"
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
@@ -75,8 +80,11 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
-    "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
+    "DEFAULT_PAGINATION_CLASS": "core.pagination.DefaultPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_AUTHENTICATION_CLASSES": (
+        "rest_framework_simplejwt.authentication.JWTAuthentication",
+    ),
 }
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"]

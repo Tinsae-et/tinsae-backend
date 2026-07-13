@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 
@@ -8,11 +9,13 @@ class Shop(models.Model):
     description = models.TextField(blank=True)
     phone = models.CharField(max_length=30, blank=True)
     city = models.CharField(max_length=100, blank=True)
-
     telegram_chat_id = models.CharField(max_length=50, blank=True)
-
     is_verified = models.BooleanField(default=False)
-
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shops",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
