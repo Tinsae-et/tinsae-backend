@@ -1,4 +1,5 @@
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.models import Category, Product
@@ -21,6 +22,7 @@ class ProductApiTest(TestCase):
             slug="galaxy-a15",
             price="12500.00",
             specs={"ram": "4GB", "storage": "128GB"},
+            last_confirmed_at=timezone.now(),
         )
 
     def test_product_list_is_paginated_and_contains_product(self):
@@ -48,3 +50,96 @@ class ProductApiTest(TestCase):
         response = APIClient().get("/api/v1/catalog/products/galaxy-a15/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["specs"], {"ram": "4GB", "storage": "128GB"})
+
+    def test_search_keyword_match(self):
+        response = APIClient().get("/api/v1/catalog/products/?q=gala")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A15")
+
+    def test_max_price_filter(self):
+        response = APIClient().get("/api/v1/catalog/products/?max_price=20000.00")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(float(response.data["results"][0]["price"]), 12500.00)
+
+    def test_min_price_filter(self):
+        response = APIClient().get("/api/v1/catalog/products/?min_price=10000.00")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(float(response.data["results"][0]["price"]), 12500.00)
+
+    def test_vefified_only_filter(self):
+        owner1 = User.objects.create_user(username="test_merchant1", password="pass")
+
+        shop1 = Shop.objects.create(
+            name="Test Shop1", slug="test-shop1", owner=owner1, is_verified=True
+        )
+        cat = Category.objects.create(name="Phones1", slug="phones1")
+        Product.objects.create(
+            category=cat,
+            shop=shop1,
+            brand="Samsung",
+            name="Galaxy A55",
+            slug="galaxy-a55",
+            price="32500.00",
+            specs={"ram": "12GB", "storage": "128GB"},
+        )
+
+        respose = APIClient().get("/api/v1/catalog/products/?verified_only=ok")
+        self.assertEqual(respose.status_code, 200)
+        self.assertEqual(respose.data["results"][0]["title"], "Samsung Galaxy A55")
+
+    def test_freshness_filter(self):
+        owner1 = User.objects.create_user(username="test_merchant1", password="pass")
+
+        shop1 = Shop.objects.create(
+            name="Test Shop1", slug="test-shop1", owner=owner1, is_verified=True
+        )
+        cat = Category.objects.create(name="Phones1", slug="phones1")
+        Product.objects.create(
+            category=cat,
+            shop=shop1,
+            brand="Samsung",
+            name="Galaxy A55",
+            slug="galaxy-a55",
+            price="45500.00",
+            specs={"ram": "12GB", "storage": "128GB"},
+            last_confirmed_at=timezone.now(),
+        )
+
+        response = APIClient().get("/api/v1/catalog/products/?freshness=ok")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 2)
+
+    def test_combined_filtering(self):
+        owner1 = User.objects.create_user(username="test_merchant1", password="pass")
+
+        shop1 = Shop.objects.create(
+            name="Test Shop1", slug="test-shop1", owner=owner1, is_verified=True
+        )
+        cat = Category.objects.create(name="Phones1", slug="phones1")
+        Product.objects.create(
+            category=cat,
+            shop=shop1,
+            brand="Samsung",
+            name="Galaxy A55",
+            slug="galaxy-a55",
+            price="45500.00",
+            specs={"ram": "12GB", "storage": "128GB"},
+            last_confirmed_at=timezone.now(),
+        )
+        Product.objects.create(
+            category=cat,
+            shop=shop1,
+            brand="Samsung",
+            name="Galaxy A35",
+            slug="galaxy-a35",
+            price="32500.00",
+            specs={"ram": "6GB", "storage": "128GB"},
+            last_confirmed_at=timezone.now(),
+        )
+
+        response = APIClient().get(
+            "/api/v1/catalog/products/?q=gala&min_price=20000&max_price=35000&freshness=fresh&verified_only=ok&category=phones1"
+        )
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A35")

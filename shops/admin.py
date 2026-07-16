@@ -8,7 +8,7 @@ from .models import Shop
 class ProductInline(admin.TabularInline):
     model = Product
     extra = 0
-    fields = ["brand", "name", "price", "freshness", "category"]
+    fields = ["brand", "name", "price", "last_confirmed_at", "category"]
     autocomplete_fields = ["category"]
     show_change_link = True
 
