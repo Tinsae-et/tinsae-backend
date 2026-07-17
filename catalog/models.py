@@ -1,4 +1,5 @@
 from django.core.exceptions import ValidationError
+from django.core.validators import FileExtensionValidator
 from django.db import models
 
 from core.models import BaseModel
@@ -55,3 +56,15 @@ class Product(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"
+
+
+class ProductImage(BaseModel):
+    product = models.ForeignKey(
+        Product, on_delete=models.PROTECT, related_name="product_image"
+    )
+    image = models.ImageField(
+        upload_to="product_image",
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png"])],
+    )
+    display_order = models.PositiveBigIntegerField(default=0)
+    is_primary = models.BooleanField(default=True)
