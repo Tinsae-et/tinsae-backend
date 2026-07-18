@@ -42,14 +42,13 @@ class Product(BaseModel):
     category = models.ForeignKey(
         Category, related_name="products", on_delete=models.PROTECT
     )
+    description = models.TextField(blank=True, null=True)
     brand = models.CharField(max_length=100)
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
-    freshness = models.CharField(
-        max_length=20, choices=FreshnessChoices.choices, default=FreshnessChoices.FRESH
-    )
+    last_confirmed_at = models.DateTimeField(null=True, blank=True)
     is_available = models.BooleanField(default=True)
     image = models.URLField(max_length=500, blank=True)
     specs = models.JSONField(default=dict, blank=True)
