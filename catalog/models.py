@@ -51,7 +51,6 @@ class Product(BaseModel):
     is_available = models.BooleanField(default=True)
     image = models.URLField(max_length=500, blank=True)
     specs = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"
