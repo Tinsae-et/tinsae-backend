@@ -22,16 +22,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             "category", "shop"
         )
         if q := self.request.query_params.get("q"):
-            ordering = (
-                self.request.query_params.get("ordering")
-                if self.request.query_params.get("ordering")
-                else "price"
-            )
             qs = qs.filter(
                 Q(name__icontains=q)
                 | Q(description__icontains=q)
                 | Q(brand__icontains=q)
-            ).order_by(ordering)
+            )
+            if ordering := self.request.query_params.get("ordering"):
+                qs = qs.order_by(ordering)
         if min_price := self.request.query_params.get("min_price"):
             qs = qs.filter(price__gte=min_price)
         if max_price := self.request.query_params.get("max_price"):

@@ -13,7 +13,7 @@ class CategoryAdmin(admin.ModelAdmin):
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     list_display = ["brand", "name", "price", "last_confirmed_at", "shop", "category"]
-    list_filter = ["category", "brand", "last_confirmed_at", "shop"]
+    list_filter = ["category", "brand", "shop"]
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
     autocomplete_fields = ["shop", "category"]
