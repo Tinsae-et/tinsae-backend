@@ -5,12 +5,6 @@ from django.db import models
 from core.models import BaseModel
 
 
-class FreshnessChoices(models.TextChoices):
-    FRESH = "fresh", "Fresh"
-    ALMOST_EXPIRED = "almost_expired", "Almost Expired"
-    EXPIRED = "expired", "Expired"
-
-
 class Category(BaseModel):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
@@ -50,7 +44,6 @@ class Product(BaseModel):
     currency = models.CharField(max_length=3, default="ETB")
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
     is_available = models.BooleanField(default=True)
-    image = models.URLField(max_length=500, blank=True)
     specs = models.JSONField(default=dict, blank=True)
 
     def __str__(self) -> str:
@@ -66,4 +59,8 @@ class ProductImage(BaseModel):
         validators=[FileExtensionValidator(["jpg", "jpeg", "png"])],
     )
     display_order = models.PositiveBigIntegerField(default=0)
-    is_primary = models.BooleanField(default=True)
+    is_primary = models.BooleanField(default=False)
+
+    def clean(self):
+        if self.image and self.image.size > 5 * 1024 * 1024:
+            raise ValidationError("image size cannot exceed 5MB.")
