@@ -27,7 +27,7 @@ jobs:
       DJANGO_SECRET_KEY: ci-secret-key
       DJANGO_DEBUG: "False"
       DATABASE_URL: postgres://tinsae:tinsae@localhost:5432/tinsae
-      BOT_ACCESS_TOKEN: 2839289:ABC-34090943#340909
+      BOT_ACCESS_TOKEN: ${{ secrets.BOT_ACCESS_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
