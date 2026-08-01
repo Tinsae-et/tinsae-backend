@@ -15,7 +15,9 @@ logging.basicConfig(
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    logger.info("Inbound /start from user %s (chat %s)", update.effective_user.username, chat_id)
+    logger.info(
+        "Inbound /start from user %s (chat %s)", update.effective_user.username, chat_id
+    )
     text = "Welcome to tinsae marketplace\n enter /help for help."
     await update.message.reply_text(text=text)
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
@@ -23,7 +25,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    logger.info("Inbound /help from user %s (chat %s)", update.effective_user.username, chat_id)
+    logger.info(
+        "Inbound /help from user %s (chat %s)", update.effective_user.username, chat_id
+    )
     text = "This is help page what do you want to know?"
     await update.message.reply_text(text=text)
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
