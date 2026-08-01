@@ -3,9 +3,20 @@ from datetime import timedelta
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import viewsets
+from rest_framework.exceptions import ValidationError
 
 from .models import Category, Product
 from .serializers import CategorySerializer, ProductSerializer
+
+ORDERING_FIELDS = {
+    "name",
+    "price",
+    "brand",
+    "slug",
+    "created_at",
+    "updated_at",
+    "last_confirmed_at",
+}
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -29,8 +40,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(description__icontains=q)
                 | Q(brand__icontains=q)
             )
-            if ordering := self.request.query_params.get("ordering"):
-                qs = qs.order_by(ordering)
+        if ordering := self.request.query_params.get("ordering"):
+            field = ordering[1:] if ordering.startswith("-") else ordering
+            if field not in ORDERING_FIELDS:
+                raise ValidationError(
+                    {"ordering": f"Invalid ordering field: {ordering}."}
+                )
+            qs = qs.order_by(ordering)
         if min_price := self.request.query_params.get("min_price"):
             qs = qs.filter(price__gte=min_price)
         if max_price := self.request.query_params.get("max_price"):

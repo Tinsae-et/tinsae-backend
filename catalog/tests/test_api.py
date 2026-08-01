@@ -143,3 +143,35 @@ class ProductApiTest(TestCase):
         self.assertEqual(response.status_code, 200)
 
         self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A35")
+
+    def _create_cheaper_product(self):
+        return Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Samsung",
+            name="Galaxy J2",
+            slug="galaxy-j2",
+            price="2000.00",
+            specs={},
+        )
+
+    def test_ordering_by_price_ascending(self):
+        self._create_cheaper_product()
+        response = APIClient().get("/api/v1/catalog/products/?ordering=price")
+        self.assertEqual(response.status_code, 200)
+        titles = [item["title"] for item in response.data["results"]]
+        self.assertEqual(titles, ["Samsung Galaxy J2", "Samsung Galaxy A15"])
+
+    def test_ordering_by_price_descending(self):
+        self._create_cheaper_product()
+        response = APIClient().get("/api/v1/catalog/products/?ordering=-price")
+        self.assertEqual(response.status_code, 200)
+        titles = [item["title"] for item in response.data["results"]]
+        self.assertEqual(titles, ["Samsung Galaxy A15", "Samsung Galaxy J2"])
+
+    def test_ordering_by_invalid_field_rejected(self):
+        response = APIClient().get(
+            "/api/v1/catalog/products/?ordering=__secret_field__"
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ordering", response.data)
