@@ -77,8 +77,7 @@ USE_I18N = True
 USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
-MEDIA_URL = "media/"
-MEDIA_ROOT = BASE_DIR / "media"
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 REST_FRAMEWORK = {
@@ -94,3 +93,16 @@ REST_FRAMEWORK = {
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"]
 )
+MEDIA_URL = "/media/"
+MEDIA_ROOT = BASE_DIR / "media"
+STORAGES = {
+    "default": {
+        "BACKEND": env(
+            "DEFAULT_FILE_STORAGE",
+            default="django.core.files.storage.FileSystemStorage",
+        ),
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}

@@ -29,8 +29,10 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     lookup_field = "slug"
 
     def get_queryset(self):
-        qs = Product.objects.filter(is_available=True).select_related(
-            "category", "shop"
+        qs = (
+            Product.objects.filter(is_available=True)
+            .select_related("category", "shop")
+            .prefetch_related("product_image")
         )
         if q := self.request.query_params.get("q"):
             qs = qs.filter(
