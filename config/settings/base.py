@@ -95,4 +95,14 @@ CORS_ALLOWED_ORIGINS = env.list(
 )
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
-DEFAULT_FILE_STORAGE = "django.core.files.storage.FileSystemStorage"
+STORAGES = {
+    "default": {
+        "BACKEND": env(
+            "DEFAULT_FILE_STORAGE",
+            default="django.core.files.storage.FileSystemStorage",
+        ),
+    },
+    "staticfiles": {
+        "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+    },
+}

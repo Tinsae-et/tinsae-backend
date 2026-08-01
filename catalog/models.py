@@ -1,8 +1,16 @@
+from pathlib import Path
+from uuid import uuid4
+
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import FileExtensionValidator
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 from core.models import BaseModel
+
+from .image_utils import validate_image_file
 
 
 class Category(BaseModel):
@@ -50,17 +58,42 @@ class Product(BaseModel):
         return f"{self.brand} {self.name}"
 
 
+def product_image_path(instance, filename):
+    ext = Path(filename).suffix.lower()
+    return f"product_image/{uuid4().hex}{ext}"
+
+
 class ProductImage(BaseModel):
     product = models.ForeignKey(
-        Product, on_delete=models.PROTECT, related_name="product_image"
+        Product, on_delete=models.CASCADE, related_name="product_image"
     )
     image = models.ImageField(
-        upload_to="product_image",
-        validators=[FileExtensionValidator(["jpg", "jpeg", "png"])],
+        upload_to=product_image_path,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp"])],
     )
     display_order = models.PositiveBigIntegerField(default=0)
     is_primary = models.BooleanField(default=False)
 
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product"],
+                condition=models.Q(is_primary=True),
+                name="unique_primary_image_per_product",
+            )
+        ]
+
     def clean(self):
-        if self.image and self.image.size > 5 * 1024 * 1024:
-            raise ValidationError("image size cannot exceed 5MB.")
+        if self.image:
+            validate_image_file(self.image)
+
+    def save(self, *args, **kwargs):
+        if self.image and isinstance(getattr(self.image, "file", None), UploadedFile):
+            validate_image_file(self.image)
+        super().save(*args, **kwargs)
+
+
+@receiver(post_delete, sender=ProductImage)
+def delete_image_file(sender, instance, **kwargs):
+    if instance.image:
+        instance.image.delete(save=False)
