@@ -99,7 +99,9 @@ class SendPromptTests(BotTestCase):
         )
 
     def test_message_id_is_persisted(self):
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 4242}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 4242}
+        ):
             request = send_confirmation_prompt(self.stale_product)
         request.refresh_from_db()
         self.assertEqual(request.telegram_message_id, "4242")
@@ -220,7 +222,9 @@ class CallbackTests(BotTestCase):
 class SweepTests(BotTestCase):
     def test_sweep_marks_stale_and_prompts_once(self):
         out = StringIO()
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
             call_command("sweep_freshness", "--staleness-days=30", stdout=out)
         output = out.getvalue()
 
@@ -235,7 +239,9 @@ class SweepTests(BotTestCase):
 
     def test_newly_listed_product_is_not_stale(self):
         new_product = self._product("Pixel 9", "pixel-9", self.shop, None)
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
             call_command("sweep_freshness", stdout=StringIO())
         new_product.refresh_from_db()
         self.assertEqual(new_product.confirmation_status, "fresh")
@@ -244,7 +250,9 @@ class SweepTests(BotTestCase):
         )
 
     def test_sweep_is_idempotent(self):
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
             call_command("sweep_freshness", stdout=StringIO())
             out = StringIO()
             call_command("sweep_freshness", stdout=out)
@@ -261,7 +269,9 @@ class SweepTests(BotTestCase):
             created_at=timezone.now() - timedelta(hours=50)
         )
         out = StringIO()
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
             call_command("sweep_freshness", "--expiry-hours=48", stdout=out)
         self.assertIn("Expired requests: 1", out.getvalue())
         old.refresh_from_db()
@@ -273,7 +283,9 @@ class SweepTests(BotTestCase):
             confirmation_status=ConfirmationStatus.STALE
         )
         out = StringIO()
-        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
             call_command("sweep_freshness", stdout=out)
         self.fresh_product.refresh_from_db()
         self.assertEqual(self.fresh_product.confirmation_status, "fresh")
