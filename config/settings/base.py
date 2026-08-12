@@ -24,6 +24,7 @@ INSTALLED_APPS = [
     "shops",
     "core",
     "catalog",
+    "bot",
 ]
 
 MIDDLEWARE = [
@@ -88,4 +89,19 @@ REST_FRAMEWORK = {
 }
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"]
+)
+
+TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default=None)
+ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=False)
+
+# Days without a confirmation signal before a product is considered stale.
+# This lives in settings rather than a CLI flag because Product.confirmation_status
+# is a materialised column: two sweeps run with different thresholds would leave
+# the column disagreeing with itself and with the API's freshness filter.
+PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
+
+# Hours a ConfirmationRequest may sit unanswered before the sweep expires it and
+# allows a fresh prompt to be sent.
+CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
+    "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
 )

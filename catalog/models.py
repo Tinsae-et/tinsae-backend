@@ -4,10 +4,15 @@ from django.db import models
 from core.models import BaseModel
 
 
-class FreshnessChoices(models.TextChoices):
+class ConfirmationStatus(models.TextChoices):
+    """Whether our stock data for a product is still trustworthy.
+
+    Orthogonal to `Product.is_available`: `is_available` is what the merchant
+    last told us, `confirmation_status` is how much we still believe it.
+    """
+
     FRESH = "fresh", "Fresh"
-    ALMOST_EXPIRED = "almost_expired", "Almost Expired"
-    EXPIRED = "expired", "Expired"
+    STALE = "stale", "Stale"
 
 
 class Category(BaseModel):
@@ -48,6 +53,9 @@ class Product(BaseModel):
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmation_status = models.CharField(
+        max_length=20, choices=ConfirmationStatus.choices, default="fresh"
+    )
     is_available = models.BooleanField(default=True)
     image = models.URLField(max_length=500, blank=True)
     specs = models.JSONField(default=dict, blank=True)

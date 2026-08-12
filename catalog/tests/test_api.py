@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -105,8 +107,25 @@ class ProductApiTest(TestCase):
             last_confirmed_at=timezone.now(),
         )
 
+        # Stale products must drop out of the filtered list. Without this the
+        # assertion below passes on the default value alone and never exercises
+        # the filter.
+        Product.objects.create(
+            category=cat,
+            shop=shop1,
+            brand="Nokia",
+            name="Stale Phone",
+            slug="stale-phone",
+            price="5000.00",
+            specs={},
+            last_confirmed_at=timezone.now() - timedelta(days=60),
+            confirmation_status="stale",
+        )
+
         response = APIClient().get("/api/v1/catalog/products/?freshness=ok")
         self.assertEqual(response.status_code, 200)
+        titles = [r["title"] for r in response.data["results"]]
+        self.assertNotIn("Nokia Stale Phone", titles)
         self.assertEqual(len(response.data["results"]), 2)
 
     def test_combined_filtering(self):

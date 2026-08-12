@@ -1,8 +1,20 @@
+from datetime import timedelta
+
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 
 from catalog.models import Category, Product
 from shops.models import Shop
 from users.models import User
+
+# How far back to set the confirmation clock for each design-spec label. The
+# sweep falls back to created_at when last_confirmed_at is NULL, so leaving the
+# older labels unset would seed everything as fresh and leave nothing to sweep.
+SEED_CONFIRMATION_AGE = {
+    "fresh": timedelta(hours=2),
+    "almost_expired": timedelta(days=25),
+    "expired": timedelta(days=45),
+}
 
 SEED_USER = {
     "username": "seed_merchant",
@@ -368,8 +380,9 @@ class Command(BaseCommand):
                     "brand": data["brand"],
                     "name": data["name"],
                     "price": data["price"],
-                    "freshness": data["freshness"],
                     "specs": data["specs"],
+                    "last_confirmed_at": timezone.now()
+                    - SEED_CONFIRMATION_AGE[data.get("freshness", "fresh")],
                 },
             )
             if created:

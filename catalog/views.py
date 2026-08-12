@@ -1,10 +1,7 @@
-from datetime import timedelta
-
 from django.db.models import Q
-from django.utils import timezone
 from rest_framework import viewsets
 
-from .models import Category, Product
+from .models import Category, ConfirmationStatus, Product
 from .serializers import CategorySerializer, ProductSerializer
 
 
@@ -36,7 +33,10 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if self.request.query_params.get("verified_only"):
             qs = qs.filter(shop__is_verified=True)
         if self.request.query_params.get("freshness"):
-            qs = qs.filter(last_confirmed_at__gte=timezone.now() - timedelta(days=30))
+            # Read the column the sweep maintains rather than recomputing the
+            # cutoff here — otherwise the API and `sweep_freshness` can disagree,
+            # and a never-confirmed new listing gets wrongly excluded.
+            qs = qs.filter(confirmation_status=ConfirmationStatus.FRESH)
         if category := self.request.query_params.get("category"):
             qs = qs.filter(category__slug=category)
         return qs
