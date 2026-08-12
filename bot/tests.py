@@ -2,16 +2,16 @@ from datetime import timedelta
 from io import StringIO
 from unittest import mock
 
-from django.contrib.auth import get_user_model
 from asgiref.sync import async_to_sync
+from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from bot import telegram_api as telegram
-from bot.models import ConfirmationRequest
 from bot.management.commands.run_bot import on_callback
+from bot.models import ConfirmationRequest
 from bot.services import handle_telegram_callback, send_confirmation_prompt
 from catalog.models import Category, ConfirmationStatus, Product
 from shops.models import Shop
