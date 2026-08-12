@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Category, Product
+from .models import Category, Product, ProductImage
 
 
 @admin.register(Category)
@@ -26,3 +26,12 @@ class ProductAdmin(admin.ModelAdmin):
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
     autocomplete_fields = ["shop", "category"]
+
+
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 1
+    fields = ["image", "is_primary", "display_order"]
+
+
+inlines = [ProductImageInline]

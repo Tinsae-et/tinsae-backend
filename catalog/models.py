@@ -1,7 +1,16 @@
+from pathlib import Path
+from uuid import uuid4
+
 from django.core.exceptions import ValidationError
+from django.core.files.uploadedfile import UploadedFile
+from django.core.validators import FileExtensionValidator
 from django.db import models
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 
 from core.models import BaseModel
+
+from .image_utils import validate_image_file
 
 
 class ConfirmationStatus(models.TextChoices):
@@ -57,8 +66,48 @@ class Product(BaseModel):
         max_length=20, choices=ConfirmationStatus.choices, default="fresh"
     )
     is_available = models.BooleanField(default=True)
-    image = models.URLField(max_length=500, blank=True)
     specs = models.JSONField(default=dict, blank=True)
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"
+
+
+def product_image_path(instance, filename):
+    ext = Path(filename).suffix.lower()
+    return f"product_image/{uuid4().hex}{ext}"
+
+
+class ProductImage(BaseModel):
+    product = models.ForeignKey(
+        Product, on_delete=models.CASCADE, related_name="product_image"
+    )
+    image = models.ImageField(
+        upload_to=product_image_path,
+        validators=[FileExtensionValidator(["jpg", "jpeg", "png", "webp"])],
+    )
+    display_order = models.PositiveBigIntegerField(default=0)
+    is_primary = models.BooleanField(default=False)
+
+    class Meta(BaseModel.Meta):
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product"],
+                condition=models.Q(is_primary=True),
+                name="unique_primary_image_per_product",
+            )
+        ]
+
+    def clean(self):
+        if self.image:
+            validate_image_file(self.image)
+
+    def save(self, *args, **kwargs):
+        if self.image and isinstance(getattr(self.image, "file", None), UploadedFile):
+            validate_image_file(self.image)
+        super().save(*args, **kwargs)
+
+
+@receiver(post_delete, sender=ProductImage)
+def delete_image_file(sender, instance, **kwargs):
+    if instance.image:
+        instance.image.delete(save=False)

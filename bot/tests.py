@@ -3,13 +3,15 @@ from io import StringIO
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.core.management import call_command
+from asgiref.sync import async_to_sync
+from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
-from bot import telegram
+from bot import telegram_api as telegram
 from bot.models import ConfirmationRequest
+from bot.management.commands.run_bot import on_callback
 from bot.services import handle_telegram_callback, send_confirmation_prompt
 from catalog.models import Category, ConfirmationStatus, Product
 from shops.models import Shop
@@ -60,7 +62,7 @@ class BotTestCase(TestCase):
         )
 
         tripwire = mock.patch(
-            "bot.telegram._call",
+            "bot.telegram_api._call",
             side_effect=AssertionError("Telegram transport was not patched"),
         )
         tripwire.start()
@@ -82,7 +84,7 @@ class BotTestCase(TestCase):
 class SendPromptTests(BotTestCase):
     def test_payload_is_addressed_to_the_owning_shop(self):
         with mock.patch(
-            "bot.telegram.send_message", return_value={"message_id": 4242}
+            "bot.telegram_api.send_message", return_value={"message_id": 4242}
         ) as send:
             request = send_confirmation_prompt(self.stale_product)
 
@@ -97,14 +99,14 @@ class SendPromptTests(BotTestCase):
         )
 
     def test_message_id_is_persisted(self):
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 4242}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 4242}):
             request = send_confirmation_prompt(self.stale_product)
         request.refresh_from_db()
         self.assertEqual(request.telegram_message_id, "4242")
 
     def test_failed_send_leaves_no_pending_request(self):
         with mock.patch(
-            "bot.telegram.send_message",
+            "bot.telegram_api.send_message",
             side_effect=telegram.TelegramError("network down"),
         ):
             self.assertIsNone(send_confirmation_prompt(self.stale_product))
@@ -116,7 +118,7 @@ class SendPromptTests(BotTestCase):
 
     def test_duplicate_prompt_is_skipped(self):
         with mock.patch(
-            "bot.telegram.send_message", return_value={"message_id": 1}
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             self.assertIsNotNone(send_confirmation_prompt(self.stale_product))
             self.assertIsNone(send_confirmation_prompt(self.stale_product))
@@ -131,7 +133,7 @@ class SendPromptTests(BotTestCase):
         Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
         self.stale_product.refresh_from_db()
         with mock.patch(
-            "bot.telegram.send_message", return_value={"message_id": 1}
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             send_confirmation_prompt(self.stale_product)
         self.assertIn("back in stock", send.call_args.kwargs["text"])
@@ -218,7 +220,7 @@ class CallbackTests(BotTestCase):
 class SweepTests(BotTestCase):
     def test_sweep_marks_stale_and_prompts_once(self):
         out = StringIO()
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 1}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
             call_command("sweep_freshness", "--staleness-days=30", stdout=out)
         output = out.getvalue()
 
@@ -233,7 +235,7 @@ class SweepTests(BotTestCase):
 
     def test_newly_listed_product_is_not_stale(self):
         new_product = self._product("Pixel 9", "pixel-9", self.shop, None)
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 1}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
             call_command("sweep_freshness", stdout=StringIO())
         new_product.refresh_from_db()
         self.assertEqual(new_product.confirmation_status, "fresh")
@@ -242,7 +244,7 @@ class SweepTests(BotTestCase):
         )
 
     def test_sweep_is_idempotent(self):
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 1}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
             call_command("sweep_freshness", stdout=StringIO())
             out = StringIO()
             call_command("sweep_freshness", stdout=out)
@@ -259,7 +261,7 @@ class SweepTests(BotTestCase):
             created_at=timezone.now() - timedelta(hours=50)
         )
         out = StringIO()
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 1}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
             call_command("sweep_freshness", "--expiry-hours=48", stdout=out)
         self.assertIn("Expired requests: 1", out.getvalue())
         old.refresh_from_db()
@@ -271,7 +273,7 @@ class SweepTests(BotTestCase):
             confirmation_status=ConfirmationStatus.STALE
         )
         out = StringIO()
-        with mock.patch("bot.telegram.send_message", return_value={"message_id": 1}):
+        with mock.patch("bot.telegram_api.send_message", return_value={"message_id": 1}):
             call_command("sweep_freshness", stdout=out)
         self.fresh_product.refresh_from_db()
         self.assertEqual(self.fresh_product.confirmation_status, "fresh")
@@ -281,7 +283,7 @@ class SweepTests(BotTestCase):
         """A product marked out of stock must not fall out of the loop forever."""
         Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
         with mock.patch(
-            "bot.telegram.send_message", return_value={"message_id": 1}
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             call_command("sweep_freshness", stdout=StringIO())
         self.stale_product.refresh_from_db()
@@ -291,7 +293,7 @@ class SweepTests(BotTestCase):
     def test_staleness_threshold_comes_from_settings(self):
         with override_settings(PRODUCT_STALENESS_DAYS=90):
             with mock.patch(
-                "bot.telegram.send_message", return_value={"message_id": 1}
+                "bot.telegram_api.send_message", return_value={"message_id": 1}
             ):
                 call_command("sweep_freshness", stdout=StringIO())
         self.stale_product.refresh_from_db()
@@ -306,25 +308,54 @@ class SweepTests(BotTestCase):
         self.assertEqual(ConfirmationRequest.objects.count(), 0)
 
 
-class RunBotTests(BotTestCase):
-    def test_once_dispatches_a_callback(self):
+class RunBotCommandTest(SimpleTestCase):
+    def test_run_bot_requires_token(self):
+        with override_settings(TELEGRAM_BOT_TOKEN=""):
+            with self.assertRaisesMessage(
+                CommandError, "TELEGRAM_BOT_TOKEN is not set"
+            ):
+                call_command("run_bot")
+
+
+class CallbackHandlerTests(BotTestCase):
+    """PTB handler wiring only — the state change itself is CallbackTests' job."""
+
+    def _update(self, data, chat_id=CHAT_ID):
+        query = mock.AsyncMock()
+        query.data = data
+        query.message.chat.id = int(chat_id)
+        update = mock.Mock()
+        update.callback_query = query
+        return update, query
+
+    def test_handler_applies_a_confirmation(self):
         request = ConfirmationRequest.objects.create(
             product=self.stale_product, shop=self.shop, status="pending"
         )
-        update = {
-            "update_id": 1,
-            "callback_query": {
-                "id": "cb-1",
-                "data": f"confirm_{request.pk}",
-                "message": {"message_id": 55, "chat": {"id": int(CHAT_ID)}},
-            },
-        }
-        with (
-            mock.patch("bot.telegram.get_updates", return_value=[update]),
-            mock.patch("bot.telegram.answer_callback"),
-            mock.patch("bot.telegram.edit_message"),
-        ):
-            call_command("run_bot", "--once", stdout=StringIO())
+        update, query = self._update(f"confirm_{request.pk}")
+        async_to_sync(on_callback)(update, None)
 
         request.refresh_from_db()
         self.assertEqual(request.status, "confirmed")
+        query.answer.assert_awaited_with("Response recorded")
+        query.edit_message_text.assert_awaited()
+
+    def test_handler_reports_an_inactive_request(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="confirmed"
+        )
+        update, query = self._update(f"confirm_{request.pk}")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with("This request is no longer active.")
+        query.edit_message_text.assert_not_awaited()
+
+    def test_handler_rejects_a_callback_from_another_chat(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        update, query = self._update(f"confirm_{request.pk}", chat_id=OTHER_CHAT_ID)
+        async_to_sync(on_callback)(update, None)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "pending")

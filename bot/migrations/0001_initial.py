@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ("catalog", "0004_product_confirmation_status"),
+        ("catalog", "0007_product_confirmation_status"),
         ("shops", "0002_initial"),
     ]
 

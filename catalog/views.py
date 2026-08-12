@@ -1,24 +1,20 @@
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
+from rest_framework.exceptions import ValidationError
 
 from .models import Category, ConfirmationStatus, Product
 from .serializers import CategorySerializer, ProductSerializer
 
-# Sorts a client may ask for by name. Anything outside this set is ignored
-# rather than handed to order_by(), which would raise FieldError and 500.
-ALLOWED_ORDERING = frozenset(
-    {
-        "price",
-        "-price",
-        "name",
-        "-name",
-        "created_at",
-        "-created_at",
-        "last_confirmed_at",
-        "-last_confirmed_at",
-    }
-)
+ORDERING_FIELDS = {
+    "name",
+    "price",
+    "brand",
+    "slug",
+    "created_at",
+    "updated_at",
+    "last_confirmed_at",
+}
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -34,6 +30,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         qs = (
             Product.objects.filter(is_available=True)
             .select_related("category", "shop")
+            .prefetch_related("product_image")
             .annotate(
                 # Three tiers, best first. A product the merchant confirmed 40
                 # days ago still carries more signal than one they have never
@@ -49,6 +46,15 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 last_signal=Coalesce("last_confirmed_at", "created_at"),
             )
         )
+
+        ordering = self.request.query_params.get("ordering")
+        if ordering:
+            field = ordering[1:] if ordering.startswith("-") else ordering
+            if field not in ORDERING_FIELDS:
+                raise ValidationError(
+                    {"ordering": f"Invalid ordering field: {ordering}."}
+                )
+
         if q := self.request.query_params.get("q"):
             qs = qs.filter(
                 Q(name__icontains=q)
@@ -72,7 +78,6 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         # An explicit sort replaces the freshness ranking rather than nesting
         # underneath it: a buyer who asks for cheapest-first means it. Filters
         # compose with the ranking; sorts override it.
-        ordering = self.request.query_params.get("ordering")
-        if ordering in ALLOWED_ORDERING:
+        if ordering:
             return qs.order_by(ordering)
         return qs.order_by("freshness_rank", "-last_signal")

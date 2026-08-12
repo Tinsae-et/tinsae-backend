@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from catalog.models import ConfirmationStatus, Product
 
-from . import telegram
+from . import telegram_api as telegram
 from .models import ConfirmationRequest
 
 logger = logging.getLogger(__name__)
