@@ -12,8 +12,17 @@ class CategoryAdmin(admin.ModelAdmin):
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
-    list_display = ["brand", "name", "price", "last_confirmed_at", "shop", "category"]
-    list_filter = ["category", "brand", "shop"]
+    list_display = [
+        "brand",
+        "name",
+        "price",
+        "confirmation_status",
+        "last_confirmed_at",
+        "is_available",
+        "shop",
+        "category",
+    ]
+    list_filter = ["confirmation_status", "is_available", "category", "brand", "shop"]
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
     autocomplete_fields = ["shop", "category"]

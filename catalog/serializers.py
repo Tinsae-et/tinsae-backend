@@ -43,6 +43,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "category",
             "images",
             "last_confirmed_at",
+            "confirmation_status",
             "slug",
             "specs",
         ]

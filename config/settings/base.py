@@ -106,3 +106,20 @@ STORAGES = {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
     },
 }
+
+# TELEGRAM_BOT_TOKEN is defined near the top of this file — it is capability
+# ("can we reach Telegram"). The flag below is policy ("should we prompt at all").
+# Sending a prompt requires both.
+ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=False)
+
+# Days without a confirmation signal before a product is considered stale.
+# This lives in settings rather than a CLI flag because Product.confirmation_status
+# is a materialised column: two sweeps run with different thresholds would leave
+# the column disagreeing with itself and with the API's freshness filter.
+PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
+
+# Hours a ConfirmationRequest may sit unanswered before the sweep expires it and
+# allows a fresh prompt to be sent.
+CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
+    "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
+)
