@@ -7,6 +7,7 @@ from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
+from django.utils.text import slugify
 
 from core.models import BaseModel
 
@@ -58,7 +59,7 @@ class Product(BaseModel):
     description = models.TextField(blank=True, null=True)
     brand = models.CharField(max_length=100)
     name = models.CharField(max_length=200)
-    slug = models.SlugField(max_length=200, unique=True)
+    slug = models.SlugField(max_length=200, unique=True, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
@@ -70,6 +71,19 @@ class Product(BaseModel):
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            # Same shop reposting the same item must not collide on the unique
+            # slug: `shop-brand-name`, then `-2`, `-3`, ... like Shop.save().
+            base = slugify(f"{self.shop.slug}-{self.brand}-{self.name}")
+            slug = base
+            counter = 1
+            while Product.objects.filter(slug=slug).exclude(pk=self.pk).exists():
+                counter += 1
+                slug = f"{base}-{counter}"
+            self.slug = slug
+        super().save(*args, **kwargs)
 
 
 def product_image_path(instance, filename):

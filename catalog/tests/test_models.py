@@ -36,6 +36,49 @@ class CategoryModelTest(TestCase):
         self.assertEqual(Category.objects.count(), 2)
 
 
+class ProductModelTest(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="ashuye", password="asdfg1234"
+        )
+        self.shop = Shop.objects.create(name="Test shop", owner=self.user)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+
+    def _product(self, **overrides):
+        data = {
+            "shop": self.shop,
+            "category": self.category,
+            "brand": "Apple",
+            "name": "iPhone 15 Pro",
+            "price": 100,
+        }
+        data.update(overrides)
+        return Product.objects.create(**data)
+
+    def test_slug_is_generated_when_blank(self):
+        product = self._product()
+        self.assertEqual(product.slug, "test-shop-apple-iphone-15-pro")
+
+    def test_reposting_same_item_gets_suffixed_slug(self):
+        first = self._product()
+        second = self._product()
+        self.assertEqual(first.slug, "test-shop-apple-iphone-15-pro")
+        self.assertEqual(second.slug, "test-shop-apple-iphone-15-pro-2")
+
+    def test_explicit_slug_is_preserved(self):
+        product = self._product(slug="my-custom-slug")
+        self.assertEqual(product.slug, "my-custom-slug")
+
+    def test_updating_existing_keeps_its_slug(self):
+        first = self._product()
+        second = self._product()
+        first.name = "Renamed"
+        first.save()
+        # The name changed but the slug must not be regenerated/leaked.
+        self.assertEqual(first.slug, "test-shop-apple-iphone-15-pro")
+        self.assertEqual(second.slug, "test-shop-apple-iphone-15-pro-2")
+
+
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class ProductImageModelTest(TestCase):
     def setUp(self):
