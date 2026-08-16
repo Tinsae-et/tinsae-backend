@@ -188,12 +188,17 @@ class ProductApiTest(TestCase):
         titles = [item["title"] for item in response.data["results"]]
         self.assertEqual(titles, ["Samsung Galaxy A15", "Samsung Galaxy J2"])
 
-    def test_ordering_by_invalid_field_rejected(self):
-        response = APIClient().get(
-            "/api/v1/catalog/products/?ordering=__secret_field__"
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("ordering", response.data)
+    def test_invalid_ordering_is_rejected(self):
+        # The allowlist is what keeps an arbitrary query param out of order_by(),
+        # so anything outside it is a client error, not a silent fallback to the
+        # ranking -- that would hide the caller's bug.
+        for value in ("__secret_field__", "price;DROP TABLE"):
+            with self.subTest(ordering=value):
+                response = APIClient().get(
+                    f"/api/v1/catalog/products/?ordering={value}"
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("ordering", response.data)
 
 
 class ProductRankingTest(TestCase):
@@ -279,7 +284,9 @@ class ProductRankingTest(TestCase):
         # `ordering` used to be honoured only alongside `q`, so this asserts both
         # that it overrides the ranking and that it works on its own.
         self._product(
-            "expensive-fresh", price="90000.00", last_confirmed_at=timezone.now()
+            "expensive-fresh",
+            price="90000.00",
+            last_confirmed_at=timezone.now(),
         )
         self._product(
             "cheap-stale",
