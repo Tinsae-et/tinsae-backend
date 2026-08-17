@@ -1,9 +1,9 @@
-from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 
-from .models import Category, ConfirmationStatus, Product
+from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
 
 ORDERING_FIELDS = {
@@ -30,13 +30,23 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         qs = (
             Product.objects.filter(is_available=True)
             .select_related("category", "shop")
-            .prefetch_related("product_image")
+            # Sorted here rather than in the serializer: calling .order_by() on
+            # the prefetched manager discards the prefetch and costs one extra
+            # query per product on every list page.
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
+            )
             .annotate(
                 # Three tiers, best first. A product the merchant confirmed 40
                 # days ago still carries more signal than one they have never
                 # confirmed at all, so the NULL check has to come before the
-                # status check -- a never-confirmed product is "fresh" to the
-                # sweep (it measures from created_at) but is not evidence.
+                # status check -- the sweep marks both "stale", and this pulls
+                # the never-confirmed ones below the once-confirmed ones.
                 freshness_rank=Case(
                     When(last_confirmed_at__isnull=True, then=Value(2)),
                     When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
