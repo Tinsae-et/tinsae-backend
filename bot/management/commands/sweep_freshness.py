@@ -2,7 +2,6 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.management.base import BaseCommand
-from django.db.models import Q
 from django.utils import timezone
 
 from bot.models import ConfirmationRequest
@@ -61,25 +60,21 @@ class Command(BaseCommand):
         if not dry_run:
             expired_qs.update(status="expired")
 
-        # 2. Reconcile confirmation_status in both directions, over the products
-        # the merchant still lists as available. A product that has never been
-        # confirmed is stale outright -- an unbacked claim is not evidence,
-        # however recently it was posted.
-        sweepable = Product.objects.filter(is_available=True)
-        stale_q = Q(last_confirmed_at__isnull=True) | Q(
-            last_confirmed_at__lt=staleness_cutoff
+        # 2. Reconcile confirmation_status in both directions. The predicate lives
+        # on ProductQuerySet so this command and the bot's /myproducts listing
+        # cannot disagree about who needs asking.
+        stale_products = list(
+            Product.objects.needing_confirmation(staleness_cutoff).select_related(
+                "shop"
+            )
         )
-
-        stale_products = list(sweepable.filter(stale_q).select_related("shop"))
         newly_stale_pks = [
             p.pk
             for p in stale_products
             if p.confirmation_status != ConfirmationStatus.STALE
         ]
-        # NULLs drop out of a __gte comparison on their own, so this is exactly
-        # the complement of stale_q -- the two sides cannot both claim a product.
         went_fresh_pks = list(
-            sweepable.filter(last_confirmed_at__gte=staleness_cutoff)
+            Product.objects.confirmed_since(staleness_cutoff)
             .exclude(confirmation_status=ConfirmationStatus.FRESH)
             .values_list("pk", flat=True)
         )

@@ -3,6 +3,7 @@ from io import StringIO
 from unittest import mock
 
 from asgiref.sync import async_to_sync
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
@@ -10,9 +11,14 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from bot import telegram_api as telegram
-from bot.management.commands.run_bot import on_callback
+from bot.management.commands.run_bot import my_products, on_callback
 from bot.models import ConfirmationRequest
-from bot.services import handle_telegram_callback, send_confirmation_prompt
+from bot.selectors import listing_for_chat, shops_for_chat
+from bot.services import (
+    handle_product_callback,
+    handle_telegram_callback,
+    send_confirmation_prompt,
+)
 from catalog.models import Category, ConfirmationStatus, Product
 from shops.models import Shop
 
@@ -392,3 +398,272 @@ class CallbackHandlerTests(BotTestCase):
 
         request.refresh_from_db()
         self.assertEqual(request.status, "pending")
+
+
+class ListingSelectorTests(BotTestCase):
+    """What /myproducts shows, and who it shows it to."""
+
+    def test_listing_is_scoped_to_the_calling_chat(self):
+        shops, products = listing_for_chat(CHAT_ID)
+
+        self.assertEqual([s.pk for s in shops], [self.shop.pk])
+        self.assertEqual([p.pk for p in products], [self.stale_product.pk])
+
+    def test_an_unlinked_chat_gets_nothing(self):
+        self.assertEqual(listing_for_chat(OTHER_CHAT_ID), ([], []))
+        self.assertEqual(shops_for_chat(""), [])
+        self.assertEqual(shops_for_chat(None), [])
+
+    def test_never_confirmed_products_lead_the_list(self):
+        never = self._product("Pixel 9", "pixel-9", self.shop, None)
+
+        _, products = listing_for_chat(CHAT_ID)
+
+        self.assertEqual([p.pk for p in products], [never.pk, self.stale_product.pk])
+
+    def test_fresh_and_unavailable_products_are_excluded(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+
+        _, products = listing_for_chat(CHAT_ID)
+
+        self.assertEqual(products, [])
+
+    def test_one_chat_running_two_shops_sees_both(self):
+        second = Shop.objects.create(
+            name="Piassa Electronics", owner=self.user, telegram_chat_id=CHAT_ID
+        )
+        other = self._product(
+            "Nokia 3310", "nokia-3310", second, timezone.now() - timedelta(days=40)
+        )
+
+        shops, products = listing_for_chat(CHAT_ID)
+
+        self.assertEqual(len(shops), 2)
+        self.assertCountEqual(
+            [p.pk for p in products], [self.stale_product.pk, other.pk]
+        )
+
+
+class ProductCallbackTests(BotTestCase):
+    """The product-keyed answers behind the /myproducts buttons."""
+
+    def test_confirm_marks_the_product_fresh_and_available(self):
+        self.assertIsNotNone(
+            handle_product_callback(f"pconfirm:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+        self.assertTrue(self.stale_product.is_available)
+        self.assertGreater(
+            self.stale_product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+
+    def test_deny_marks_it_unavailable_but_freshly_known(self):
+        handle_product_callback(f"pdeny:{self.stale_product.pk}:0", CHAT_ID)
+
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.stale_product.is_available)
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+
+    def test_it_works_with_no_confirmation_request_at_all(self):
+        """The listing shows products that were never prompted — the common case."""
+        self.assertEqual(ConfirmationRequest.objects.count(), 0)
+
+        self.assertIsNotNone(
+            handle_product_callback(f"pconfirm:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+    def test_an_outstanding_prompt_for_the_same_product_is_resolved(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+
+        handle_product_callback(f"pconfirm:{self.stale_product.pk}:0", CHAT_ID)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+
+    def test_another_chat_cannot_answer(self):
+        before = self.stale_product.last_confirmed_at
+
+        self.assertIsNone(
+            handle_product_callback(
+                f"pconfirm:{self.stale_product.pk}:0", OTHER_CHAT_ID
+            )
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+
+    def test_a_shop_with_no_chat_id_cannot_be_answered_by_an_empty_chat(self):
+        self.assertIsNone(
+            handle_product_callback(f"pconfirm:{self.unconfirmed_product.pk}:0", "")
+        )
+
+    def test_malformed_and_unknown_callbacks_are_rejected(self):
+        self.assertIsNone(handle_product_callback("pconfirm:abc:0", CHAT_ID))
+        self.assertIsNone(handle_product_callback("nonsense", CHAT_ID))
+        self.assertIsNone(handle_product_callback("pconfirm:99999999:0", CHAT_ID))
+
+    def test_a_stale_button_cannot_republish_an_out_of_stock_product(self):
+        """No back door into the re-stock path we have not built."""
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+
+        self.assertIsNone(
+            handle_product_callback(f"pconfirm:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.stale_product.is_available)
+
+    def test_a_stale_deny_button_is_still_honoured(self):
+        """Re-denying is idempotent and cannot resurrect anything."""
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+
+        self.assertIsNotNone(
+            handle_product_callback(f"pdeny:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.stale_product.is_available)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_answers_apply_while_outbound_prompts_are_disabled(self):
+        """The flag is outbound policy. A merchant who came to us must still work."""
+        self.assertIsNotNone(
+            handle_product_callback(f"pconfirm:{self.stale_product.pk}:0", CHAT_ID)
+        )
+        self.stale_product.refresh_from_db()
+        self.assertIsNotNone(self.stale_product.last_confirmed_at)
+
+
+class MyProductsHandlerTests(BotTestCase):
+    """PTB wiring for /myproducts — listing, paging, and multi-answer flow."""
+
+    def _message_update(self, chat_id=CHAT_ID):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.effective_chat.id = int(chat_id)
+        return update, update.message
+
+    def _callback_update(self, data, chat_id=CHAT_ID):
+        query = mock.AsyncMock()
+        query.data = data
+        query.message.chat.id = int(chat_id)
+        update = mock.Mock()
+        update.callback_query = query
+        return update, query
+
+    def _stale_extras(self, count):
+        return [
+            self._product(
+                f"Extra {i}",
+                f"extra-{i}",
+                self.shop,
+                timezone.now() - timedelta(days=40),
+            )
+            for i in range(count)
+        ]
+
+    def test_listing_offers_a_button_per_product(self):
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        markup = message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(len(markup.inline_keyboard), 1)
+        confirm, deny = markup.inline_keyboard[0]
+        self.assertEqual(confirm.callback_data, f"pconfirm:{self.stale_product.pk}:0")
+        self.assertEqual(deny.callback_data, f"pdeny:{self.stale_product.pk}:0")
+
+    def test_an_unlinked_chat_is_told_how_to_link(self):
+        update, message = self._message_update(OTHER_CHAT_ID)
+
+        async_to_sync(my_products)(update, None)
+
+        self.assertIn("/start", message.reply_text.call_args.args[0])
+
+    def test_an_up_to_date_shop_is_told_there_is_nothing_to_do(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            last_confirmed_at=timezone.now()
+        )
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        self.assertIn("Nothing needs confirming", message.reply_text.call_args.args[0])
+
+    def test_a_long_list_is_capped_and_paged(self):
+        self._stale_extras(7)
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        rows = message.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
+        # One row per product on this page, plus a navigation row.
+        self.assertEqual(len(rows), settings.MYPRODUCTS_PAGE_SIZE + 1)
+        self.assertEqual(rows[-1][0].callback_data, "page:1")
+
+    def test_paging_edits_the_message_instead_of_sending_another(self):
+        self._stale_extras(7)
+        update, query = self._callback_update("page:1")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.edit_message_text.assert_awaited()
+        rows = query.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard
+        # Last page: three products and a nav row offering only Prev.
+        self.assertEqual(rows[-1][0].callback_data, "page:0")
+
+    def test_several_products_confirmed_in_one_interaction(self):
+        """The point of the feature: no waiting for separate pings per product."""
+        targets = [self.stale_product, *self._stale_extras(2)]
+        untouched_at = self.fresh_product.last_confirmed_at
+
+        for product in targets:
+            update, query = self._callback_update(f"pconfirm:{product.pk}:0")
+            async_to_sync(on_callback)(update, None)
+
+        for product in targets:
+            product.refresh_from_db()
+            self.assertTrue(product.is_available)
+            self.assertEqual(product.confirmation_status, ConfirmationStatus.FRESH)
+            self.assertGreater(
+                product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+            )
+
+        self.fresh_product.refresh_from_db()
+        self.assertEqual(self.fresh_product.last_confirmed_at, untouched_at)
+
+    def test_the_last_answer_clears_the_listing(self):
+        update, query = self._callback_update(f"pconfirm:{self.stale_product.pk}:0")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with("Recorded")
+        self.assertIn("Nothing left", query.edit_message_text.call_args.args[0])
+
+    def test_a_callback_from_another_chat_changes_nothing(self):
+        before = self.stale_product.last_confirmed_at
+        update, query = self._callback_update(
+            f"pconfirm:{self.stale_product.pk}:0", chat_id=OTHER_CHAT_ID
+        )
+
+        async_to_sync(on_callback)(update, None)
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+        query.edit_message_text.assert_not_awaited()
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_the_listing_works_while_outbound_prompts_are_disabled(self):
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        self.assertIn("reply_markup", message.reply_text.call_args.kwargs)

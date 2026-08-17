@@ -49,6 +49,27 @@ class Category(BaseModel):
             )
 
 
+class ProductQuerySet(models.QuerySet):
+    """The one definition of the confirmation clock.
+
+    `sweep_freshness` and the bot's /myproducts listing must agree exactly about
+    which products need a merchant's answer. Two copies of this predicate would
+    let them drift apart silently -- the bot would prompt for one set while the
+    API's ?freshness= filter reported another.
+    """
+
+    def needing_confirmation(self, cutoff):
+        """Available products whose stock claim is no longer backed by evidence."""
+        return self.filter(is_available=True).filter(
+            models.Q(last_confirmed_at__isnull=True)
+            | models.Q(last_confirmed_at__lt=cutoff)
+        )
+
+    def confirmed_since(self, cutoff):
+        """The exact complement: NULLs fall out of a __gte comparison already."""
+        return self.filter(is_available=True, last_confirmed_at__gte=cutoff)
+
+
 class Product(BaseModel):
     shop = models.ForeignKey(
         "shops.Shop", related_name="products", on_delete=models.CASCADE
@@ -68,6 +89,8 @@ class Product(BaseModel):
     )
     is_available = models.BooleanField(default=True)
     specs = models.JSONField(default=dict, blank=True)
+
+    objects = ProductQuerySet.as_manager()
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"
