@@ -29,6 +29,35 @@ def _prompt_markup(request_id: int) -> dict:
     }
 
 
+def can_prompt(product: Product, *, expiry_cutoff=None) -> bool:
+    """Would a prompt for this product actually be sent?
+
+    The single source of truth for the gates, so `sweep_freshness --dry-run`
+    cannot drift from the real send path. `expiry_cutoff` lets a dry run discount
+    the pending requests that the real run's expiry pass would have cleared
+    before it got here.
+    """
+    if not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
+        logger.info(
+            "Telegram prompts are disabled (ENABLE_TELEGRAM_BOT_PROMPTS=False)."
+        )
+        return False
+
+    shop = product.shop
+    if not shop.telegram_chat_id:
+        logger.info("Skipping product %s: shop %s has no chat ID.", product.pk, shop.pk)
+        return False
+
+    pending = ConfirmationRequest.objects.filter(product=product, status="pending")
+    if expiry_cutoff is not None:
+        pending = pending.filter(created_at__gte=expiry_cutoff)
+    if pending.exists():
+        logger.info("Skipping product %s: pending request exists.", product.pk)
+        return False
+
+    return True
+
+
 def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
     """Ask a shop to confirm a product is still in stock.
 
@@ -36,22 +65,12 @@ def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
     the send failed. A failed send leaves no pending row behind, so the next sweep
     retries instead of being blocked for the whole expiry window.
     """
-    if not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
-        logger.info(
-            "Telegram prompts are disabled (ENABLE_TELEGRAM_BOT_PROMPTS=False)."
-        )
+    if not can_prompt(product):
         return None
 
     shop = product.shop
-    if not shop.telegram_chat_id:
-        logger.info("Skipping product %s: shop %s has no chat ID.", product.pk, shop.pk)
-        return None
 
-    if ConfirmationRequest.objects.filter(product=product, status="pending").exists():
-        logger.info("Skipping product %s: pending request exists.", product.pk)
-        return None
-
-    # The check above is a read-then-write, so a concurrent sweep can slip
+    # can_prompt's duplicate test is a read-then-write, so a concurrent sweep can slip
     # between the two. The partial unique constraint on ConfirmationRequest is
     # the real guard; this catches losing that race.
     try:

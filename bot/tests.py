@@ -237,15 +237,16 @@ class SweepTests(BotTestCase):
         self.assertEqual(self.fresh_product.confirmation_status, "fresh")
         self.assertEqual(self.stale_product.confirmation_status, "stale")
 
-    def test_newly_listed_product_is_not_stale(self):
+    def test_never_confirmed_product_is_stale(self):
+        """Never confirmed is stale outright — an unbacked claim is not evidence."""
         new_product = self._product("Pixel 9", "pixel-9", self.shop, None)
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 1}
         ):
             call_command("sweep_freshness", stdout=StringIO())
         new_product.refresh_from_db()
-        self.assertEqual(new_product.confirmation_status, "fresh")
-        self.assertFalse(
+        self.assertEqual(new_product.confirmation_status, "stale")
+        self.assertTrue(
             ConfirmationRequest.objects.filter(product=new_product).exists()
         )
 
@@ -291,16 +292,16 @@ class SweepTests(BotTestCase):
         self.assertEqual(self.fresh_product.confirmation_status, "fresh")
         self.assertIn("Restored to fresh: 1", out.getvalue())
 
-    def test_denied_product_is_swept_and_reprompted(self):
-        """A product marked out of stock must not fall out of the loop forever."""
+    def test_unavailable_product_is_not_swept(self):
+        """The sweep tracks only what the merchant still lists as available."""
         Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             call_command("sweep_freshness", stdout=StringIO())
         self.stale_product.refresh_from_db()
-        self.assertEqual(self.stale_product.confirmation_status, "stale")
-        send.assert_called_once()
+        self.assertEqual(self.stale_product.confirmation_status, "fresh")
+        send.assert_not_called()
 
     def test_staleness_threshold_comes_from_settings(self):
         with override_settings(PRODUCT_STALENESS_DAYS=90):
@@ -318,6 +319,26 @@ class SweepTests(BotTestCase):
         self.stale_product.refresh_from_db()
         self.assertEqual(self.stale_product.confirmation_status, "fresh")
         self.assertEqual(ConfirmationRequest.objects.count(), 0)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_dry_run_reports_no_prompts_when_sending_is_disabled(self):
+        """The dry run must apply the same policy gate as the real send path."""
+        out = StringIO()
+        call_command("sweep_freshness", "--dry-run", stdout=out)
+        self.assertIn("Prompts sent: 0", out.getvalue())
+
+    def test_dry_run_counts_a_prompt_the_expiry_pass_would_unblock(self):
+        """A real run expires first, so a doomed pending row must not mask it."""
+        old = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        ConfirmationRequest.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(hours=50)
+        )
+        out = StringIO()
+        call_command("sweep_freshness", "--dry-run", stdout=out)
+        self.assertIn("Expired requests: 1", out.getvalue())
+        self.assertIn("Prompts sent: 1", out.getvalue())
 
 
 class RunBotCommandTest(SimpleTestCase):

@@ -52,5 +52,8 @@ class ProductSerializer(serializers.ModelSerializer):
         return f"{obj.brand} {obj.name}"
 
     def get_images(self, obj):
-        qs = obj.product_image.all().order_by("-is_primary", "display_order")
-        return ProductImageSerializer(qs, many=True, context=self.context).data
+        # Ordering belongs to the viewset's Prefetch — re-sorting here would
+        # throw the prefetched rows away and re-query per product.
+        return ProductImageSerializer(
+            obj.product_image.all(), many=True, context=self.context
+        ).data

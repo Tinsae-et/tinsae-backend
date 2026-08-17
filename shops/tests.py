@@ -1,4 +1,5 @@
 from django.test import TestCase
+from rest_framework.test import APIClient
 
 from users.models import User
 
@@ -25,3 +26,55 @@ class ShopModelTest(TestCase):
         self.assertEqual(first.slug, "abebe-grocery")
         self.assertNotEqual(first.slug, second.slug)
         self.assertEqual(second.slug, "abebe-grocery-2")
+
+
+class ShopDetailExposureTest(TestCase):
+    """The shop detail endpoint is readable anonymously — internal fields on it
+    are readable anonymously too unless the serializer withholds them."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="shop_owner", email="owner@example.com", password="pass"
+        )
+        self.other = User.objects.create_user(
+            username="rival", email="rival@example.com", password="pass"
+        )
+        self.shop = Shop.objects.create(
+            name="Bole Electronics",
+            owner=self.owner,
+            phone="+251911100001",
+            telegram_chat_id="987654321",
+        )
+        self.url = f"/api/v1/shops/{self.shop.slug}/"
+
+    def test_anonymous_detail_hides_internal_fields(self):
+        response = APIClient().get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("telegram_chat_id", response.data)
+        self.assertNotIn("owner", response.data)
+        self.assertEqual(response.data["phone"], "+251911100001")
+
+    def test_another_merchant_cannot_read_the_chat_id(self):
+        client = APIClient()
+        client.force_authenticate(self.other)
+
+        response = client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("telegram_chat_id", response.data)
+
+    def test_owner_still_sees_their_own_chat_id(self):
+        client = APIClient()
+        client.force_authenticate(self.owner)
+
+        response = client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["telegram_chat_id"], "987654321")
+
+    def test_list_never_carried_the_chat_id(self):
+        response = APIClient().get("/api/v1/shops/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("telegram_chat_id", response.data["results"][0])

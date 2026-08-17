@@ -7,9 +7,10 @@ from catalog.models import Category, Product
 from shops.models import Shop
 from users.models import User
 
-# How far back to set the confirmation clock for each design-spec label. The
-# sweep falls back to created_at when last_confirmed_at is NULL, so leaving the
-# older labels unset would seed everything as fresh and leave nothing to sweep.
+# How far back to set the confirmation clock for each design-spec label. Every
+# seeded product gets a real timestamp: the sweep treats a NULL last_confirmed_at
+# as stale outright, so leaving any of these unset would seed it as stale
+# regardless of the label.
 SEED_CONFIRMATION_AGE = {
     "fresh": timedelta(hours=2),
     "almost_expired": timedelta(days=25),
