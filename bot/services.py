@@ -11,6 +11,10 @@ from .models import ConfirmationRequest
 
 logger = logging.getLogger(__name__)
 
+# /myproducts buttons are product-keyed and colon-separated, so they cannot be
+# confused with the underscore-separated `confirm_<request_pk>` prompt callbacks.
+PRODUCT_CALLBACK_ACTIONS = {"pconfirm": True, "pdeny": False}
+
 
 def _prompt_markup(request_id: int) -> dict:
     return {
@@ -121,6 +125,100 @@ def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
     return confirmation_request
 
 
+def apply_confirmation(
+    product: Product,
+    *,
+    confirmed: bool,
+    request: ConfirmationRequest | None = None,
+) -> None:
+    """Record a merchant's answer about one product.
+
+    The single writer of the confirmation clock, shared by the inline-prompt
+    callback and the /myproducts listing. Both answers restart the clock: "out of
+    stock" is fresh information about an unavailable product — availability and
+    freshness are separate axes.
+
+    `request` is optional because a product listed by /myproducts usually has no
+    outstanding ConfirmationRequest; with prompts disabled, none was ever sent.
+    """
+    with transaction.atomic():
+        if request is not None:
+            request.status = "confirmed" if confirmed else "denied"
+            request.save(update_fields=["status", "updated_at"])
+
+        product.last_confirmed_at = timezone.now()
+        product.confirmation_status = ConfirmationStatus.FRESH
+        product.is_available = confirmed
+        product.save(
+            update_fields=[
+                "last_confirmed_at",
+                "confirmation_status",
+                "is_available",
+                "updated_at",
+            ]
+        )
+
+
+def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
+    """Apply a /myproducts button press.
+
+    Keyed on the product rather than a ConfirmationRequest, because the listing
+    shows products that were never prompted. Returns the updated product, or None
+    if the callback was malformed, unknown, came from a chat that does not own the
+    shop, or tried to confirm a product already marked out of stock.
+
+    Deliberately *not* gated on ENABLE_TELEGRAM_BOT_PROMPTS: that flag is outbound
+    policy ("should we ping merchants?"). A merchant who opened this listing
+    themselves is already talking to us.
+    """
+    action, _, rest = callback_data.partition(":")
+    raw_id = rest.partition(":")[0]
+    if action not in PRODUCT_CALLBACK_ACTIONS or not raw_id.isdigit():
+        logger.warning("Unrecognised product callback: %r", callback_data)
+        return None
+
+    try:
+        product = Product.objects.select_related("shop").get(pk=int(raw_id))
+    except Product.DoesNotExist:
+        logger.error("No product for callback %r", callback_data)
+        return None
+
+    shop_chat_id = product.shop.telegram_chat_id
+    if not shop_chat_id or str(chat_id) != str(shop_chat_id):
+        logger.warning(
+            "Callback %r from chat %s does not own shop %s — rejected.",
+            callback_data,
+            chat_id,
+            product.shop_id,
+        )
+        return None
+
+    # The listing only ever offers ✅ for available products, so reaching here
+    # means the merchant tapped a button in an older message. Honouring it would
+    # silently republish a product that is marked out of stock -- an undocumented
+    # back door into the re-stock path we deliberately have not built yet.
+    if PRODUCT_CALLBACK_ACTIONS[action] and not product.is_available:
+        logger.info(
+            "Ignoring %r: product %s is marked out of stock.",
+            callback_data,
+            product.pk,
+        )
+        return None
+
+    # An outstanding prompt for this product has just been answered by other
+    # means. Resolve it too, or the sweep treats it as still pending and the
+    # merchant gets asked again once it expires.
+    pending = ConfirmationRequest.objects.filter(
+        product=product, status="pending"
+    ).first()
+
+    apply_confirmation(
+        product, confirmed=PRODUCT_CALLBACK_ACTIONS[action], request=pending
+    )
+    logger.info("Applied product callback %r to product %s.", callback_data, product.pk)
+    return product
+
+
 def handle_telegram_callback(
     callback_data: str,
     chat_id: str,
@@ -165,25 +263,7 @@ def handle_telegram_callback(
     product = confirmation_request.product
 
     confirmed = action == "confirm"
-
-    with transaction.atomic():
-        # Both answers are signals from the merchant, so both restart the
-        # confirmation clock. "Out of stock" is fresh information about an
-        # unavailable product — availability and freshness are separate axes.
-        confirmation_request.status = "confirmed" if confirmed else "denied"
-        product.last_confirmed_at = timezone.now()
-        product.confirmation_status = ConfirmationStatus.FRESH
-        product.is_available = confirmed
-
-        confirmation_request.save(update_fields=["status", "updated_at"])
-        product.save(
-            update_fields=[
-                "last_confirmed_at",
-                "confirmation_status",
-                "is_available",
-                "updated_at",
-            ]
-        )
+    apply_confirmation(product, confirmed=confirmed, request=confirmation_request)
 
     response_text = (
         f"✅ Thank you! '{product.name}' is marked in stock."

@@ -123,3 +123,7 @@ PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
 CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
     "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
 )
+
+# Products per page in the bot's /myproducts listing. Telegram inline keyboards
+# become unusable past a handful of rows, so the listing pages instead of capping.
+MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
