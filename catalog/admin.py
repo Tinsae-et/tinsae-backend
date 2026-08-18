@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Category, Product, ProductImage
+from .models import Category, Product, ProductImage, ConfirmationRequest
 
 
 @admin.register(Category)
@@ -24,5 +24,10 @@ class ProductImageInline(admin.TabularInline):
     extra = 1
     fields = ["image", "is_primary", "display_order"]
 
+@admin.register(ConfirmationRequest)
+class ConfirmationRequestAdmin(admin.ModelAdmin):
+    list_display = ["product", "shop", "status", "sent_at", "responded_at"]
+    list_filter = ["shop__name", "status", "sent_at"]
+    
 
 inlines = [ProductImageInline]
