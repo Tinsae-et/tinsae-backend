@@ -104,12 +104,9 @@ class ConfirmationRequest(BaseModel):
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
     shop = models.ForeignKey("shops.Shop", on_delete=models.PROTECT)
     sent_at = models.DateTimeField(auto_now_add=True)
-    responded_at = models.DateTimeField(null=True)
+    responded_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=100, choices=STATUS, default="pending")
     channel = models.CharField(max_length=100, default="telegram") 
-
-    def __str__(self):
-        return f"{product}-{shop}"
 
     class Meta:
         ordering = ["responded_at","sent_at"]  
