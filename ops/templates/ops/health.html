@@ -1,0 +1,153 @@
+{% extends "admin/base_site.html" %}
+
+{% block extrastyle %}{{ block.super }}
+<style>
+  .ops-grid { display: flex; gap: 2rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .ops-grid div { min-width: 12rem; }
+  .ops-big { font-size: 2rem; font-weight: 600; display: block; }
+  .ops-muted { color: var(--body-quiet-color, #666); }
+  table.ops { border-collapse: collapse; width: 100%; }
+  table.ops th, table.ops td { padding: 6px 10px; text-align: left;
+    border-bottom: 1px solid var(--hairline-color, #e8e8e8); }
+  table.ops td.num { text-align: right; }
+</style>
+{% endblock %}
+
+{% block content %}
+<h1>Loop health</h1>
+<p class="ops-muted">Generated {{ health.generated_at }} &middot;
+  staleness window {{ health.config.staleness_days }} days &middot;
+  prompt expiry {{ health.config.expiry_hours }} hours</p>
+
+{% if not health.config.prompts_enabled %}
+  <p class="warning"><strong>Outbound prompts are disabled</strong>
+    (<code>ENABLE_TELEGRAM_BOT_PROMPTS=False</code>). No confirmation requests
+    are being sent, so response rates below read as &ldquo;never asked&rdquo;
+    rather than 0%.</p>
+{% endif %}
+{% if not health.config.telegram_configured %}
+  <p class="warning"><code>TELEGRAM_BOT_TOKEN</code> is not set &mdash; nothing
+    can reach Telegram at all.</p>
+{% endif %}
+{% if not health.catalog.sweep_current %}
+  <p class="errornote"><strong>sweep_freshness is behind.</strong>
+    {{ health.catalog.sweep_drift }} product(s) are past the
+    {{ health.config.staleness_days }}-day window but still stored as fresh.
+    The catalog looks healthier here and in <code>?freshness=</code> than it
+    really is. Run the sweep.</p>
+{% endif %}
+{% if health.requests.pending_overdue %}
+  <p class="errornote">{{ health.requests.pending_overdue }} pending request(s)
+    are past the {{ health.config.expiry_hours }}-hour expiry window. Each one
+    blocks a re-prompt for its product until the sweep clears it.</p>
+{% endif %}
+
+<h2>Catalog</h2>
+<div class="ops-grid">
+  <div>
+    <span class="ops-big">
+      {% if health.catalog.fresh_pct is None %}&mdash;{% else %}{{ health.catalog.fresh_pct }}%{% endif %}
+    </span>
+    of available products are fresh
+    <span class="ops-muted">({{ health.catalog.fresh }} of
+      {{ health.catalog.available }})</span>
+  </div>
+  <div>
+    <span class="ops-big">{{ health.catalog.stale }}</span>
+    stale
+    <span class="ops-muted">({{ health.catalog.stale_by_clock }} by live
+      clock)</span>
+  </div>
+  <div>
+    <span class="ops-big">{{ health.requests.pending }}</span>
+    pending requests
+    <span class="ops-muted">({{ health.requests.pending_overdue }} overdue)</span>
+  </div>
+</div>
+<p class="ops-muted">
+  Never confirmed: {{ health.catalog.never_confirmed }} &middot;
+  Unavailable (outside the loop entirely):
+  {{ health.catalog.unavailable }}
+</p>
+
+<h2>Confirmation requests</h2>
+<p>
+  {{ health.requests.total }} ever sent &mdash;
+  {{ health.requests.confirmed }} confirmed,
+  {{ health.requests.denied }} denied,
+  {{ health.requests.expired }} expired,
+  {{ health.requests.pending }} pending.
+  Overall response rate:
+  <strong>{% if health.requests.response_rate is None %}n/a &mdash; nothing has
+  been asked yet{% else %}{{ health.requests.response_rate }}%{% endif %}</strong>
+  <span class="ops-muted">(answered &divide; answered + expired; pending is not
+  yet a failure)</span>
+</p>
+
+<h2>Needs follow-up</h2>
+{% if health.attention.never_responds %}
+  <p><strong>Never responds</strong> &mdash; asked at least
+    {{ health.config.never_responds_min_resolved }} times, answered nothing.
+    Candidates for follow-up or unverification:</p>
+  <ul>
+    {% for s in health.attention.never_responds %}
+      <li>{{ s.name }}{% if s.city %}, {{ s.city }}{% endif %} &mdash;
+        {{ s.expired }} expired, 0 answered</li>
+    {% endfor %}
+  </ul>
+{% else %}
+  <p class="ops-muted">No shop has left
+    {{ health.config.never_responds_min_resolved }} or more requests unanswered.</p>
+{% endif %}
+
+{% if health.attention.unreachable %}
+  <p><strong>Unreachable</strong> &mdash; no <code>telegram_chat_id</code>, so
+    we have never been able to ask. Fix the chat ID; do not unverify:</p>
+  <ul>
+    {% for s in health.attention.unreachable %}
+      <li>{{ s.name }}{% if s.is_verified %} <em>(verified)</em>{% endif %}</li>
+    {% endfor %}
+  </ul>
+{% endif %}
+
+{% if health.attention.never_asked %}
+  <p><strong>Never asked</strong> &mdash; reachable, but no request has ever
+    been sent:</p>
+  <ul>
+    {% for s in health.attention.never_asked %}<li>{{ s.name }}</li>{% endfor %}
+  </ul>
+{% endif %}
+
+<h2>Per shop</h2>
+<table class="ops">
+  <thead>
+    <tr>
+      <th>Shop</th><th>City</th><th>Verified</th><th>Chat ID</th>
+      <th>Available</th><th>Stale</th>
+      <th>Answered</th><th>Expired</th><th>Pending</th><th>Response rate</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in health.shops %}
+      <tr>
+        <td>{{ s.name }}</td>
+        <td>{{ s.city|default:"—" }}</td>
+        <td>{{ s.is_verified|yesno:"yes,no" }}</td>
+        <td>{{ s.has_chat_id|yesno:"yes,no" }}</td>
+        <td class="num">{{ s.available_products }}</td>
+        <td class="num">{{ s.stale_products }}</td>
+        <td class="num">{{ s.answered }}</td>
+        <td class="num">{{ s.expired }}</td>
+        <td class="num">{{ s.pending }}</td>
+        <td class="num">
+          {% if s.response_rate is None %}
+            <span class="ops-muted">never asked</span>
+          {% else %}{{ s.response_rate }}%{% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="10" class="ops-muted">No shops yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

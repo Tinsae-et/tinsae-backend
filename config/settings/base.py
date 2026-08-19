@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     "core",
     "catalog",
     "bot",
+    "ops",
 ]
 
 MIDDLEWARE = [
