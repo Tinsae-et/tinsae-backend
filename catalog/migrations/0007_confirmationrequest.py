@@ -7,26 +7,57 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0006_alter_productimage_image_alter_productimage_product'),
-        ('shops', '0002_initial'),
+        ("catalog", "0006_alter_productimage_image_alter_productimage_product"),
+        ("shops", "0002_initial"),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='ConfirmationRequest',
+            name="ConfirmationRequest",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('sent_at', models.DateTimeField(auto_now_add=True)),
-                ('responded_at', models.DateTimeField(null=True)),
-                ('status', models.CharField(choices=[('pending', 'Pending'), ('confirmed', 'Confirmed'), ('sold_out', 'Sold_out'), ('expired', 'Expired')], default='pending', max_length=100)),
-                ('channel', models.CharField(default='telegram', max_length=100)),
-                ('product', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='catalog.product')),
-                ('shop', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='shops.shop')),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("sent_at", models.DateTimeField(auto_now_add=True)),
+                ("responded_at", models.DateTimeField(null=True)),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("pending", "Pending"),
+                            ("confirmed", "Confirmed"),
+                            ("sold_out", "Sold_out"),
+                            ("expired", "Expired"),
+                        ],
+                        default="pending",
+                        max_length=100,
+                    ),
+                ),
+                ("channel", models.CharField(default="telegram", max_length=100)),
+                (
+                    "product",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT,
+                        to="catalog.product",
+                    ),
+                ),
+                (
+                    "shop",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.PROTECT, to="shops.shop"
+                    ),
+                ),
             ],
             options={
-                'ordering': ['responded_at', 'sent_at'],
+                "ordering": ["responded_at", "sent_at"],
             },
         ),
     ]

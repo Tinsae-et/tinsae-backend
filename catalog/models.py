@@ -7,7 +7,6 @@ from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
-from django.utils import timezone
 
 from core.models import BaseModel
 
@@ -93,12 +92,13 @@ class ProductImage(BaseModel):
             validate_image_file(self.image)
         super().save(*args, **kwargs)
 
+
 class ConfirmationRequest(BaseModel):
     STATUS = [
         ("pending", "Pending"),
         ("confirmed", "Confirmed"),
         ("sold_out", "Sold_out"),
-        ("expired", "Expired")
+        ("expired", "Expired"),
     ]
 
     product = models.ForeignKey(Product, on_delete=models.PROTECT)
@@ -106,10 +106,11 @@ class ConfirmationRequest(BaseModel):
     sent_at = models.DateTimeField(auto_now_add=True)
     responded_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=100, choices=STATUS, default="pending")
-    channel = models.CharField(max_length=100, default="telegram") 
+    channel = models.CharField(max_length=100, default="telegram")
 
     class Meta:
-        ordering = ["responded_at","sent_at"]  
+        ordering = ["responded_at", "sent_at"]
+
 
 @receiver(post_delete, sender=ProductImage)
 def delete_image_file(sender, instance, **kwargs):

@@ -9,9 +9,12 @@ from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from PIL import Image
 
-from catalog.services import create_pending_request, resolve_request, expire_confirmation_requests
-from catalog.models import Category, Product, ProductImage, ConfirmationRequest
+from catalog.models import Category, Product, ProductImage
 from catalog.serializers import ProductSerializer
+from catalog.services import (
+    create_pending_request,
+    resolve_request,
+)
 from shops.models import Shop
 
 
@@ -150,6 +153,7 @@ class ProductImageModelTest(TestCase):
         self.assertEqual(ProductImage.objects.count(), 0)
         self.assertFalse(os.path.exists(path))
 
+
 class ConfirmationRequestModelTest(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(
@@ -165,14 +169,16 @@ class ConfirmationRequestModelTest(TestCase):
             slug="samsung-galaxy-s25",
             price=123000,
         )
-    
+
     def test_create_pending_confirmation_request(self):
         confirmation_request = create_pending_request(self.product, self.shop)
         self.assertEqual(confirmation_request.id, 1)
 
     def test_resolve_request_status(self):
         confirmation_request = create_pending_request(self.product, self.shop)
-        with self.assertRaisesMessage(ValidationError, "Can not resolve a request that is already pending"):
+        with self.assertRaisesMessage(
+            ValidationError, "Can not resolve a request that is already pending"
+        ):
             resolve_request(confirmation_request, "pending")
 
         status = "not confirmed"
@@ -181,4 +187,4 @@ class ConfirmationRequestModelTest(TestCase):
 
         resolve_request(confirmation_request, "confirmed")
         self.assertEqual(confirmation_request.status, "confirmed")
-        self.assertTrue(confirmation_request.status != None)
+        self.assertTrue(confirmation_request.status is not None)

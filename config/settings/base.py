@@ -110,6 +110,6 @@ STORAGES = {
 CELERY_BEAT_SCHEDULE = {
     "expire-confirmation-requests": {
         "task": "catalog.tasks.expire_confirmation_requests_task",
-        "schedule": 30*60
+        "schedule": 30 * 60,
     },
 }
