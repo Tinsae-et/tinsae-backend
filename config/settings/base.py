@@ -127,10 +127,3 @@ CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
 # Products per page in the bot's /myproducts listing. Telegram inline keyboards
 # become unusable past a handful of rows, so the listing pages instead of capping.
 MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
-
-CELERY_BEAT_SCHEDULE = {
-    "expire-confirmation-requests": {
-        "task": "catalog.tasks.expire_confirmation_requests_task",
-        "schedule": 30 * 60,
-    },
-}
