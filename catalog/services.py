@@ -1,6 +1,7 @@
 from .models import ConfirmationRequest
 from datetime import timedelta
 from django.utils import timezone
+from django.core.exceptions import ValidationError
 from .models import ConfirmationRequest
 
 REQUEST_STATUS = [
@@ -13,7 +14,7 @@ REQUEST_STATUS = [
 CONFIRMATION_WINDOW = timedelta(seconds=24)
 
 
-def create_pending_request(product, shop, channel):
+def create_pending_request(product, shop, channel="telegram"):
     return ConfirmationRequest.objects.create(
         product = product,
         shop = shop,
