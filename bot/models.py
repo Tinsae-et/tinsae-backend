@@ -8,8 +8,8 @@ class ConfirmationRequest(BaseModel):
     STATUS_CHOICES = [
         ("pending", "Pending"),
         ("confirmed", "Confirmed"),
+        ("sold_out", "Sold out"),
         ("expired", "Expired"),
-        ("denied", "Denied"),
     ]
 
     product = models.ForeignKey(
@@ -27,6 +27,15 @@ class ConfirmationRequest(BaseModel):
         choices=STATUS_CHOICES,
         default="pending",
     )
+    responded_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the merchant answered. Stays NULL for expired requests — an "
+            "expiry is the absence of an answer, not an answer."
+        ),
+    )
+    channel = models.CharField(max_length=20, default="telegram")
     telegram_message_id = models.CharField(
         max_length=100,
         blank=True,
@@ -46,6 +55,10 @@ class ConfirmationRequest(BaseModel):
                 name="unique_pending_confirmation_per_product",
             )
         ]
+
+    # There is no separate `sent_at`: the prompt goes out in the same transaction
+    # that creates the row, so `created_at` is the send time, and `sweep_freshness`
+    # keys the expiry window off it. One clock, not two.
 
     def __str__(self) -> str:
         return (

@@ -125,6 +125,28 @@ def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
     return confirmation_request
 
 
+def resolve_request(request: ConfirmationRequest, status: str) -> None:
+    """Close out a pending request. The single writer of `responded_at`.
+
+    `expired` is accepted but records no `responded_at`: a timeout is the absence
+    of an answer, not an answer. `sweep_freshness` expires in bulk and never comes
+    through here, but the single-request path has to agree with it.
+    """
+    if status not in ("confirmed", "sold_out", "expired"):
+        raise ValueError(f"Not a resolution: {status!r}")
+
+    if request.status != "pending":
+        logger.info(
+            "Ignoring resolve of request %s: already %s.", request.pk, request.status
+        )
+        return
+
+    request.status = status
+    if status != "expired":
+        request.responded_at = timezone.now()
+    request.save(update_fields=["status", "responded_at", "updated_at"])
+
+
 def apply_confirmation(
     product: Product,
     *,
@@ -143,8 +165,7 @@ def apply_confirmation(
     """
     with transaction.atomic():
         if request is not None:
-            request.status = "confirmed" if confirmed else "denied"
-            request.save(update_fields=["status", "updated_at"])
+            resolve_request(request, "confirmed" if confirmed else "sold_out")
 
         product.last_confirmed_at = timezone.now()
         product.confirmation_status = ConfirmationStatus.FRESH

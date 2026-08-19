@@ -17,6 +17,7 @@ from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
+    resolve_request,
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
@@ -161,7 +162,7 @@ class SendPromptTests(BotTestCase):
             product=self.stale_product, shop=self.shop, status="confirmed"
         )
         ConfirmationRequest.objects.create(
-            product=self.stale_product, shop=self.shop, status="denied"
+            product=self.stale_product, shop=self.shop, status="sold_out"
         )
         self.assertEqual(ConfirmationRequest.objects.count(), 2)
 
@@ -188,7 +189,7 @@ class CallbackTests(BotTestCase):
         self.assertTrue(handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID))
         request.refresh_from_db()
         self.stale_product.refresh_from_db()
-        self.assertEqual(request.status, "denied")
+        self.assertEqual(request.status, "sold_out")
         self.assertFalse(self.stale_product.is_available)
 
     def test_deny_restarts_the_confirmation_clock(self):
@@ -223,6 +224,45 @@ class CallbackTests(BotTestCase):
     def test_malformed_callback_is_rejected(self):
         self.assertFalse(handle_telegram_callback("nonsense", chat_id=CHAT_ID))
         self.assertFalse(handle_telegram_callback("confirm_abc", chat_id=CHAT_ID))
+
+    def test_new_request_is_unanswered_on_the_default_channel(self):
+        request = self._request()
+        self.assertIsNone(request.responded_at)
+        self.assertEqual(request.channel, "telegram")
+
+    def test_confirm_records_responded_at(self):
+        request = self._request()
+        handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID)
+        request.refresh_from_db()
+        self.assertIsNotNone(request.responded_at)
+
+    def test_deny_records_responded_at(self):
+        request = self._request()
+        handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID)
+        request.refresh_from_db()
+        self.assertIsNotNone(request.responded_at)
+
+    def test_resolve_rejects_an_unknown_status(self):
+        with self.assertRaises(ValueError):
+            resolve_request(self._request(), "bogus")
+
+    def test_expiring_one_request_records_no_response_time(self):
+        """A timeout is the absence of an answer, so it leaves responded_at NULL —
+        the single-request path must agree with the sweep's bulk expiry."""
+        request = self._request()
+        resolve_request(request, "expired")
+        request.refresh_from_db()
+        self.assertEqual(request.status, "expired")
+        self.assertIsNone(request.responded_at)
+
+    def test_resolving_twice_keeps_the_first_answer(self):
+        request = self._request()
+        resolve_request(request, "confirmed")
+        first = request.responded_at
+        resolve_request(request, "sold_out")
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+        self.assertEqual(request.responded_at, first)
 
 
 class SweepTests(BotTestCase):
@@ -283,6 +323,8 @@ class SweepTests(BotTestCase):
         self.assertIn("Expired requests: 1", out.getvalue())
         old.refresh_from_db()
         self.assertEqual(old.status, "expired")
+        # A timeout is the absence of an answer, so it leaves no response time.
+        self.assertIsNone(old.responded_at)
 
     def test_sweep_restores_a_product_that_is_no_longer_stale(self):
         """The reconcile runs both ways, so a threshold change self-corrects."""
