@@ -107,6 +107,27 @@ STORAGES = {
     },
 }
 
+# TELEGRAM_BOT_TOKEN is defined near the top of this file — it is capability
+# ("can we reach Telegram"). The flag below is policy ("should we prompt at all").
+# Sending a prompt requires both.
+ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=False)
+
+# Days without a confirmation signal before a product is considered stale.
+# This lives in settings rather than a CLI flag because Product.confirmation_status
+# is a materialised column: two sweeps run with different thresholds would leave
+# the column disagreeing with itself and with the API's freshness filter.
+PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
+
+# Hours a ConfirmationRequest may sit unanswered before the sweep expires it and
+# allows a fresh prompt to be sent.
+CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
+    "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
+)
+
+# Products per page in the bot's /myproducts listing. Telegram inline keyboards
+# become unusable past a handful of rows, so the listing pages instead of capping.
+MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
+
 CELERY_BEAT_SCHEDULE = {
     "expire-confirmation-requests": {
         "task": "catalog.tasks.expire_confirmation_requests_task",
