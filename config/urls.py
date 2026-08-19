@@ -4,11 +4,18 @@ from django.contrib import admin
 from django.urls import include, path
 from rest_framework_simplejwt import views as jwt_views
 
+from ops.urls import page_urlpatterns as ops_page_urlpatterns
+
 urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/health/", include("health.urls")),
     path("api/v1/catalog/", include("catalog.urls")),
     path("api/v1/", include("shops.urls")),
+    path("api/v1/ops/", include("ops.urls")),
+    # The HTML health page. Kept off the /admin/ prefix on purpose: that path is
+    # consumed whole by admin.site.urls, which 404s unknown sub-paths rather
+    # than falling through to later patterns.
+    path("ops/", include(ops_page_urlpatterns)),
     path(
         "api/v1/auth/token/",
         jwt_views.TokenObtainPairView.as_view(),
