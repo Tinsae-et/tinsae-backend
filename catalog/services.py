@@ -2,12 +2,13 @@ from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.conf import settings
 
 from .models import ConfirmationRequest
 
 REQUEST_STATUS = ["pending", "confirmed", "sold_out", "expired"]
 
-CONFIRMATION_WINDOW = timedelta(seconds=24)
+CONFIRMATION_WINDOW = settings.CONFIRMATION_REQUEST_EXPIRY_HOURS
 
 
 def create_pending_request(product, shop, channel="telegram"):
