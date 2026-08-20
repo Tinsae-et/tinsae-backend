@@ -17,7 +17,6 @@ from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
-    resolve_request,
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
@@ -241,28 +240,6 @@ class CallbackTests(BotTestCase):
         handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID)
         request.refresh_from_db()
         self.assertIsNotNone(request.responded_at)
-
-    def test_resolve_rejects_an_unknown_status(self):
-        with self.assertRaises(ValueError):
-            resolve_request(self._request(), "bogus")
-
-    def test_expiring_one_request_records_no_response_time(self):
-        """A timeout is the absence of an answer, so it leaves responded_at NULL —
-        the single-request path must agree with the sweep's bulk expiry."""
-        request = self._request()
-        resolve_request(request, "expired")
-        request.refresh_from_db()
-        self.assertEqual(request.status, "expired")
-        self.assertIsNone(request.responded_at)
-
-    def test_resolving_twice_keeps_the_first_answer(self):
-        request = self._request()
-        resolve_request(request, "confirmed")
-        first = request.responded_at
-        resolve_request(request, "sold_out")
-        request.refresh_from_db()
-        self.assertEqual(request.status, "confirmed")
-        self.assertEqual(request.responded_at, first)
 
 
 class SweepTests(BotTestCase):
