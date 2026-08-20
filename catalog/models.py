@@ -7,10 +7,12 @@ from django.core.validators import FileExtensionValidator
 from django.db import models
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
+from django.utils import timezone
 from django.utils.text import slugify
 
 from core.models import BaseModel
 
+from .freshness import FRESH_WINDOW, get_freshness
 from .image_utils import validate_image_file
 
 
@@ -69,6 +71,10 @@ class ProductQuerySet(models.QuerySet):
         """The exact complement: NULLs fall out of a __gte comparison already."""
         return self.filter(is_available=True, last_confirmed_at__gte=cutoff)
 
+    def fresh(self):
+        cutoff = timezone.now() - FRESH_WINDOW
+        return self.filter(last_confirmed_at__gte=cutoff)
+
 
 class Product(BaseModel):
     shop = models.ForeignKey(
@@ -91,6 +97,10 @@ class Product(BaseModel):
     specs = models.JSONField(default=dict, blank=True)
 
     objects = ProductQuerySet.as_manager()
+
+    @property
+    def freshness(self):
+        return get_freshness(self.last_confirmed_at)
 
     def __str__(self) -> str:
         return f"{self.brand} {self.name}"

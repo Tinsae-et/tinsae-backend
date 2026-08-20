@@ -1,14 +1,17 @@
 import io
 import os
 import tempfile
+from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from PIL import Image
 
+from catalog.freshness import get_freshness
 from catalog.models import Category, Product, ProductImage
 from catalog.serializers import ProductSerializer
 from shops.models import Shop
@@ -191,3 +194,16 @@ class ProductImageModelTest(TestCase):
         self.product.delete()
         self.assertEqual(ProductImage.objects.count(), 0)
         self.assertFalse(os.path.exists(path))
+
+
+class FreshnessTests(SimpleTestCase):
+    def test_exactly_48_hours_is_fresh(self):
+        last_confirmed_at = timezone.now() - timedelta(hours=48) + timedelta(seconds=1)
+        self.assertEqual(get_freshness(last_confirmed_at), "fresh")
+
+    def test_exactly_7_days_is_almost_expired(self):
+        last_confirmed_at = timezone.now() - timedelta(days=7) + timedelta(seconds=1)
+        self.assertEqual(get_freshness(last_confirmed_at), "almost_expired")
+
+    def test_null_is_expired(self):
+        self.assertEqual(get_freshness(None), "expired")
