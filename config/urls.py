@@ -16,6 +16,7 @@ urlpatterns = [
     # consumed whole by admin.site.urls, which 404s unknown sub-paths rather
     # than falling through to later patterns.
     path("ops/", include(ops_page_urlpatterns)),
+    path("api/v1/auth/", include("users.urls")),
     path(
         "api/v1/auth/token/",
         jwt_views.TokenObtainPairView.as_view(),
