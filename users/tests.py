@@ -1,17 +1,40 @@
+from unittest import mock
+
+from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APIClient, APITestCase
+from rest_framework.throttling import ScopedRateThrottle
 
 from shops.models import Shop
 
 from .models import User
 from .serializers import ShopOwnerRegistrationSerializer, UserSerializer
 
+# Registration runs AUTH_PASSWORD_VALIDATORS, so payload passwords have to pass
+# them; `create_user()` does not, which is why fixtures built directly below
+# still pass anything. This value shares no substring with the usernames or
+# emails in this module on purpose -- UserAttributeSimilarityValidator compares
+# against each of them, and anything containing "tinsae" lands within a rounding
+# error of its 0.7 threshold.
+VALID_PASSWORD = "Kb7#vLq2Wn"
+
+
+class ThrottleResetMixin:
+    """Throttle history lives in the cache and outlives a single test.
+
+    Registration is capped at 10/hour and this module posts to it well over ten
+    times, so without clearing between tests the later ones fail with 429 for
+    reasons that have nothing to do with what they assert.
+    """
+
+    def setUp(self):
+        cache.clear()
+        super().setUp()
+
 
 class TestShopOwnerRegistrationSerializer(TestCase):
-    """Test ShopOwnerRegistrationSerializer validation"""
-
     def setUp(self):
         self.user = User.objects.create_user(
             username="existing_user",
@@ -25,63 +48,67 @@ class TestShopOwnerRegistrationSerializer(TestCase):
             phone="0911234567",
         )
 
-    def test_validate_duplicate_email(self):
-        """Test that duplicate email raises validation error"""
+    def _data(self, **overrides):
         data = {
             "username": "newuser",
-            "email": "existing@tinsae.com",
-            "password": "password123",
+            "email": "newuser@tinsae.com",
+            "password": VALID_PASSWORD,
             "shop_name": "New Shop",
             "city": "Hawassa",
             "phone": "0922345678",
         }
-        serializer = ShopOwnerRegistrationSerializer(data=data)
-        self.assertFalse(serializer.is_valid())
-        self.assertIn("email", serializer.errors)
-
-    def test_validate_duplicate_shop_name(self):
-        """Test that duplicate shop name raises validation error"""
-        data = {
-            "username": "newuser",
-            "email": "newuser@tinsae.com",
-            "password": "password123",
-            "shop_name": "Existing Shop",
-            "city": "Hawassa",
-            "phone": "0922345678",
-        }
-        serializer = ShopOwnerRegistrationSerializer(data=data)
-        self.assertFalse(serializer.is_valid())
-        self.assertIn("shop_name", serializer.errors)
+        data.update(overrides)
+        return data
 
     def test_valid_registration_data(self):
-        """Test that valid data passes serializer validation"""
-        data = {
-            "username": "newuser",
-            "email": "newuser@tinsae.com",
-            "password": "password123",
-            "shop_name": "New Shop",
-            "city": "Hawassa",
-            "phone": "0922345678",
-        }
-        serializer = ShopOwnerRegistrationSerializer(data=data)
-        self.assertTrue(serializer.is_valid())
+        serializer = ShopOwnerRegistrationSerializer(data=self._data())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_duplicate_username_is_rejected(self):
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(username="existing_user")
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("username", serializer.errors)
+
+    def test_duplicate_email_is_allowed(self):
+        # Email carries no unique constraint and is not the login identifier.
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(email="existing@tinsae.com")
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_duplicate_shop_name_is_allowed(self):
+        # Shop.save() resolves the slug collision; the names may match.
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(shop_name="Existing Shop")
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_weak_password_is_rejected(self):
+        serializer = ShopOwnerRegistrationSerializer(data=self._data(password="abc"))
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
+
+    def test_common_password_is_rejected(self):
+        # Long enough and not all-numeric, so only CommonPasswordValidator can
+        # catch it — which is the validator most easily left unwired.
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(password="password")
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("password", serializer.errors)
 
     def test_missing_required_fields(self):
-        """Test that missing required fields raise validation errors"""
-        data = {
-            "username": "newuser",
-            "email": "newuser@tinsae.com",
-            # Missing password, shop_name, city, phone
-        }
-        serializer = ShopOwnerRegistrationSerializer(data=data)
+        serializer = ShopOwnerRegistrationSerializer(
+            data={"username": "newuser", "email": "newuser@tinsae.com"}
+        )
         self.assertFalse(serializer.is_valid())
         self.assertIn("password", serializer.errors)
         self.assertIn("shop_name", serializer.errors)
 
 
 class TestUserSerializer(TestCase):
-    """Test UserSerializer"""
-
     def setUp(self):
         self.user = User.objects.create_user(
             username="testuser", email="test@tinsae.com", password="password123"
@@ -94,159 +121,207 @@ class TestUserSerializer(TestCase):
         )
 
     def test_user_serializer_output(self):
-        """Test UserSerializer returns correct user data with shops"""
-        serializer = UserSerializer(self.user)
-        data = serializer.data
-
+        data = UserSerializer(self.user).data
         self.assertEqual(data["username"], "testuser")
         self.assertEqual(data["email"], "test@tinsae.com")
         self.assertEqual(len(data["shops"]), 2)
 
+    def test_password_is_never_serialized(self):
+        self.assertNotIn("password", UserSerializer(self.user).data)
+
     def test_user_serializer_read_only_shops(self):
-        """Test that shops field is read-only"""
         serializer = UserSerializer(self.user)
         self.assertIn("shops", serializer.fields)
         self.assertTrue(serializer.fields["shops"].read_only)
 
 
-class TestRegistration(APITestCase):
-    """Test ShopOwnerRegistrationView endpoint"""
-
+class TestRegistration(ThrottleResetMixin, APITestCase):
     def setUp(self):
+        super().setUp()
         self.client = APIClient()
         self.registration_url = reverse("register")
         self.valid_data = {
             "username": "ashenafi",
             "email": "ashenafi@tinsae.com",
-            "password": "password123",
+            "password": VALID_PASSWORD,
             "shop_name": "Tinsae Shop",
-            "phone": "090843435",
+            "phone": "0908434350",
             "city": "Hawassa",
         }
-        # Create existing user/shop for duplicate tests
         self.user = User.objects.create_user(
             username="test", password="password123", email="test@tinsae.com"
         )
         self.shop = Shop.objects.create(
-            owner=self.user, city="Adama", phone="094343043", name="Existing Shop"
+            owner=self.user, city="Adama", phone="0943430430", name="Existing Shop"
         )
+
+    def _register(self, **overrides):
+        data = self.valid_data.copy()
+        data.update(overrides)
+        return self.client.post(self.registration_url, data, format="json")
 
     def test_successful_registration(self):
-        """Test successful shop owner registration"""
-        response = self.client.post(
-            self.registration_url, self.valid_data, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertIn("message", response.data)
-
-        # Verify user was created
-        self.assertTrue(User.objects.filter(username="ashenafi").exists())
-
-        # Verify shop was created
-        user = User.objects.get(username="ashenafi")
-        self.assertTrue(Shop.objects.filter(owner=user, name="Tinsae Shop").exists())
-
-    def test_duplicate_email_registration(self):
-        """Test registration fails with duplicate email"""
-        data = self.valid_data.copy()
-        data["email"] = "test@tinsae.com"  # Existing email
-        data["shop_name"] = "Different Shop"
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("email", response.data)
-
-    def test_duplicate_shop_name_registration(self):
-        """Test registration fails with duplicate shop name"""
-        data = self.valid_data.copy()
-        data["email"] = "newemail@tinsae.com"
-        data["shop_name"] = "Existing Shop"  # Existing shop name
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("shop_name", response.data)
-
-    def test_missing_required_fields(self):
-        """Test registration fails with missing required fields"""
-        incomplete_data = {
-            "username": "newuser",
-            "email": "newuser@tinsae.com",
-            # Missing password, shop_name, city, phone
-        }
-        response = self.client.post(
-            self.registration_url, incomplete_data, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_missing_password(self):
-        """Test registration fails without password"""
-        data = self.valid_data.copy()
-        del data["password"]
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("password", response.data)
-
-    def test_missing_shop_name(self):
-        """Test registration fails without shop name"""
-        data = self.valid_data.copy()
-        del data["shop_name"]
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("shop_name", response.data)
-
-    def test_missing_city(self):
-        """Test registration fails without city"""
-        data = self.valid_data.copy()
-        del data["city"]
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("city", response.data)
-
-    def test_missing_phone(self):
-        """Test registration fails without phone"""
-        data = self.valid_data.copy()
-        del data["phone"]
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn("phone", response.data)
-
-    def test_duplicate_username(self):
-        """Test registration fails with duplicate username"""
-        data = self.valid_data.copy()
-        data["username"] = "test"  # Existing username
-        data["email"] = "newemail@tinsae.com"
-        data["shop_name"] = "Different Shop"
-
-        response = self.client.post(self.registration_url, data, format="json")
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_registration_creates_shop_with_user(self):
-        """Test that registration creates both user and shop"""
-        response = self.client.post(
-            self.registration_url, self.valid_data, format="json"
-        )
+        response = self._register()
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
 
         user = User.objects.get(username="ashenafi")
         shop = Shop.objects.get(owner=user)
-
         self.assertEqual(shop.name, "Tinsae Shop")
         self.assertEqual(shop.city, "Hawassa")
-        self.assertEqual(shop.phone, "090843435")
+        self.assertEqual(shop.phone, "0908434350")
+
+    def test_new_shop_is_unverified(self):
+        self._register()
+        shop = Shop.objects.get(name="Tinsae Shop")
+        self.assertFalse(shop.is_verified)
+
+    def test_registration_returns_usable_tokens(self):
+        response = self._register()
+        self.assertIn("access", response.data)
+        self.assertIn("refresh", response.data)
+        self.assertEqual(response.data["user"]["username"], "ashenafi")
+
+        # The point of returning them: no second call to /auth/token/ needed.
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
+        me = client.get(reverse("me"))
+        self.assertEqual(me.status_code, status.HTTP_200_OK)
+        self.assertEqual(me.data["username"], "ashenafi")
+
+    def test_registration_does_not_leak_password(self):
+        response = self._register()
+        self.assertNotIn("password", response.data)
+        self.assertNotIn("password", response.data["user"])
+
+    def test_duplicate_username_registration(self):
+        response = self._register(username="test")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("username", response.data)
+
+    def test_duplicate_email_registration_succeeds(self):
+        response = self._register(email="test@tinsae.com")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+    def test_duplicate_shop_name_registration_succeeds(self):
+        response = self._register(shop_name="Existing Shop")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        shops = Shop.objects.filter(name="Existing Shop").order_by("slug")
+        self.assertEqual(shops.count(), 2)
+        # Same name, distinct slugs — Shop.save() resolves the collision.
+        self.assertEqual([s.slug for s in shops], ["existing-shop", "existing-shop-2"])
+
+    def test_weak_password_registration(self):
+        response = self._register(password="abc")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("password", response.data)
+        self.assertFalse(User.objects.filter(username="ashenafi").exists())
+
+    def test_missing_required_fields(self):
+        response = self.client.post(
+            self.registration_url,
+            {"username": "newuser", "email": "newuser@tinsae.com"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_each_required_field_is_enforced(self):
+        for field in ("password", "shop_name", "city", "phone"):
+            with self.subTest(field=field):
+                data = self.valid_data.copy()
+                del data[field]
+                response = self.client.post(self.registration_url, data, format="json")
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+                self.assertIn(field, response.data)
+
+    def test_failure_mid_creation_leaves_no_orphan_user(self):
+        """The failure mode that matters: an account with nothing to manage.
+
+        It would also be unrecoverable — the username is taken, so the merchant
+        could not simply register again.
+        """
+        with mock.patch(
+            "users.serializers.Shop.objects.create",
+            side_effect=ValueError("simulated failure"),
+        ):
+            with self.assertRaises(ValueError):
+                self._register()
+
+        self.assertEqual(User.objects.filter(username="ashenafi").count(), 0)
+        self.assertEqual(Shop.objects.filter(name="Tinsae Shop").count(), 0)
+
+    def test_registration_is_throttled(self):
+        with mock.patch.object(
+            ScopedRateThrottle,
+            "THROTTLE_RATES",
+            {"register": "2/hour", "login": "10/min"},
+        ):
+            self.assertEqual(
+                self._register(username="one").status_code,
+                status.HTTP_201_CREATED,
+            )
+            self.assertEqual(
+                self._register(username="two").status_code,
+                status.HTTP_201_CREATED,
+            )
+            self.assertEqual(
+                self._register(username="three").status_code,
+                status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        self.assertFalse(User.objects.filter(username="three").exists())
 
 
-class TestGetMyShops(APITestCase):
-    """Test GetMyShops endpoint"""
-
+class TestLogin(ThrottleResetMixin, APITestCase):
     def setUp(self):
+        super().setUp()
+        self.token_url = reverse("token_obtain_pair")
+        self.user = User.objects.create_user(
+            username="shopowner", email="owner@tinsae.com", password=VALID_PASSWORD
+        )
+
+    def test_login_returns_tokens(self):
+        response = self.client.post(
+            self.token_url,
+            {"username": "shopowner", "password": VALID_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("access", response.data)
+
+    def test_login_errors_do_not_distinguish_unknown_user_from_bad_password(self):
+        """Neither response may reveal whether the account exists."""
+        unknown = self.client.post(
+            self.token_url,
+            {"username": "nobody", "password": VALID_PASSWORD},
+            format="json",
+        )
+        wrong_password = self.client.post(
+            self.token_url,
+            {"username": "shopowner", "password": "NotThePassword!1"},
+            format="json",
+        )
+        self.assertEqual(unknown.status_code, wrong_password.status_code)
+        self.assertEqual(unknown.data, wrong_password.data)
+
+    def test_login_is_throttled(self):
+        with mock.patch.object(
+            ScopedRateThrottle,
+            "THROTTLE_RATES",
+            {"register": "10/hour", "login": "2/min"},
+        ):
+            payload = {"username": "shopowner", "password": "wrong"}
+            self.client.post(self.token_url, payload, format="json")
+            self.client.post(self.token_url, payload, format="json")
+            third = self.client.post(self.token_url, payload, format="json")
+        self.assertEqual(third.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+
+class TestGetMyShops(ThrottleResetMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
         self.client = APIClient()
         self.me_url = reverse("me")
 
-        # Create a user with shops
         self.user = User.objects.create_user(
             username="shopowner", email="owner@tinsae.com", password="password123"
         )
@@ -257,7 +332,6 @@ class TestGetMyShops(APITestCase):
             owner=self.user, name="Shop 2", city="Hawassa", phone="0922222222"
         )
 
-        # Create another user for isolation testing
         self.other_user = User.objects.create_user(
             username="otherowner", email="other@tinsae.com", password="password123"
         )
@@ -269,7 +343,6 @@ class TestGetMyShops(APITestCase):
         )
 
     def test_get_my_shops_authenticated(self):
-        """Test authenticated user can retrieve their shops"""
         self.client.force_authenticate(user=self.user)
         response = self.client.get(self.me_url)
 
@@ -279,46 +352,24 @@ class TestGetMyShops(APITestCase):
         self.assertEqual(len(response.data["shops"]), 2)
 
     def test_get_my_shops_unauthenticated(self):
-        """Test unauthenticated user gets 401"""
         response = self.client.get(self.me_url)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
 
-    def test_get_my_shops_contains_correct_data(self):
-        """Test that response contains correct shop data"""
+    def test_response_includes_verification_state(self):
         self.client.force_authenticate(user=self.user)
         response = self.client.get(self.me_url)
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        shops = response.data["shops"]
-        shop_names = [shop["name"] for shop in shops]
-
-        self.assertIn("Shop 1", shop_names)
-        self.assertIn("Shop 2", shop_names)
+        for shop in response.data["shops"]:
+            self.assertIn("is_verified", shop)
 
     def test_get_my_shops_isolates_user_data(self):
-        """Test that user only sees their own shops"""
         self.client.force_authenticate(user=self.user)
         response = self.client.get(self.me_url)
 
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        shops = response.data["shops"]
-        shop_names = [shop["name"] for shop in shops]
-
+        shop_names = [shop["name"] for shop in response.data["shops"]]
         self.assertNotIn("Other Shop", shop_names)
-        self.assertEqual(len(shops), 2)
-
-    def test_get_my_shops_returns_user_info(self):
-        """Test that response includes user information"""
-        self.client.force_authenticate(user=self.user)
-        response = self.client.get(self.me_url)
-
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn("username", response.data)
-        self.assertIn("email", response.data)
-        self.assertIn("shops", response.data)
+        self.assertEqual(len(shop_names), 2)
 
     def test_get_my_shops_other_user_isolation(self):
-        """Test that other users cannot access a user's shop data via the endpoint"""
         self.client.force_authenticate(user=self.other_user)
         response = self.client.get(self.me_url)
 

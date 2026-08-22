@@ -90,6 +90,31 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ),
+    # Scoped rather than anon/user: only views that declare `throttle_scope`
+    # are limited, so adding this default cannot silently rate-limit the
+    # catalogue browsing endpoints.
+    "DEFAULT_THROTTLE_CLASSES": ("rest_framework.throttling.ScopedRateThrottle",),
+    "DEFAULT_THROTTLE_RATES": {
+        # Registration is the spam target, not login: it needs no credentials
+        # and writes two rows per call, so it is deliberately tighter.
+        "register": "10/hour",
+        "login": "10/min",
+    },
+}
+
+# Throttle counters live here. LocMemCache is per-process: under multi-worker
+# gunicorn every worker keeps its own counter and the effective rate becomes
+# N x the numbers above. This must become Redis before any multi-worker deploy
+# — the rates are not the thing that needs revisiting, the backend is.
+#
+# Both rates key on client IP for anonymous callers. Ethiopian mobile carriers
+# NAT aggressively, so a shared egress IP can exhaust these on legitimate
+# traffic; widen them if that shows up before the Redis switch.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        "LOCATION": "tinsae-throttle",
+    }
 }
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"]
