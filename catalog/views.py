@@ -85,6 +85,9 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if category := self.request.query_params.get("category"):
             qs = qs.filter(category__slug=category)
 
+        if self.request.query_params.get("fresh"):
+            qs = qs.fresh()
+
         # An explicit sort replaces the freshness ranking rather than nesting
         # underneath it: a buyer who asks for cheapest-first means it. Filters
         # compose with the ranking; sorts override it.
