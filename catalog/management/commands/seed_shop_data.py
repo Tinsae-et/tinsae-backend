@@ -13,7 +13,12 @@ from users.models import User
 # regardless of the label.
 SEED_CONFIRMATION_AGE = {
     "fresh": timedelta(hours=2),
-    "almost_expired": timedelta(days=25),
+    # Has to land between FRESH_WINDOW and ALMOST_EXPIRED_WINDOW. This was 25
+    # days, which the read-time rule derives as "expired" -- so no seeded product
+    # landed in the middle band at all and the label contradicted itself.
+    "almost_expired": timedelta(days=4),
+    # Past settings.PRODUCT_STALENESS_DAYS as well as ALMOST_EXPIRED_WINDOW, so
+    # these seed as stale for the sweep and expired for the derived label.
     "expired": timedelta(days=45),
 }
 
