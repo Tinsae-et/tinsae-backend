@@ -1,7 +1,7 @@
 import io
 import os
 import tempfile
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError
@@ -11,7 +11,12 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from PIL import Image
 
-from catalog.freshness import get_freshness
+from catalog.freshness import (
+    ALMOST_EXPIRED_WINDOW,
+    FRESH_WINDOW,
+    Freshness,
+    get_freshness,
+)
 from catalog.models import Category, Product, ProductImage
 from catalog.serializers import ProductSerializer
 from shops.models import Shop
@@ -196,14 +201,102 @@ class ProductImageModelTest(TestCase):
         self.assertFalse(os.path.exists(path))
 
 
-class FreshnessTests(SimpleTestCase):
+class FreshnessRuleTests(SimpleTestCase):
+    """The rule itself, pinned to a fixed `now`.
+
+    Both edges are tested from both sides on purpose. A test that only asserts a
+    point comfortably inside a band passes for any window at least that wide --
+    it would not notice either constant being doubled.
+    """
+
+    NOW = timezone.make_aware(datetime(2026, 8, 22, 12, 0))
+
+    def _label(self, **age):
+        return get_freshness(self.NOW - timedelta(**age), now=self.NOW)
+
+    def test_well_inside_the_window_is_fresh(self):
+        self.assertEqual(self._label(hours=1), Freshness.FRESH)
+
     def test_exactly_48_hours_is_fresh(self):
-        last_confirmed_at = timezone.now() - timedelta(hours=48) + timedelta(seconds=1)
-        self.assertEqual(get_freshness(last_confirmed_at), "fresh")
+        self.assertEqual(self._label(hours=48), Freshness.FRESH)
+
+    def test_one_second_past_48_hours_is_almost_expired(self):
+        self.assertEqual(self._label(hours=48, seconds=1), Freshness.ALMOST_EXPIRED)
 
     def test_exactly_7_days_is_almost_expired(self):
-        last_confirmed_at = timezone.now() - timedelta(days=7) + timedelta(seconds=1)
-        self.assertEqual(get_freshness(last_confirmed_at), "almost_expired")
+        self.assertEqual(self._label(days=7), Freshness.ALMOST_EXPIRED)
+
+    def test_one_second_past_7_days_is_expired(self):
+        self.assertEqual(self._label(days=7, seconds=1), Freshness.EXPIRED)
 
     def test_null_is_expired(self):
-        self.assertEqual(get_freshness(None), "expired")
+        self.assertEqual(get_freshness(None, now=self.NOW), Freshness.EXPIRED)
+
+
+class FreshnessQuerySetTests(TestCase):
+    """The Python rule and the SQL rule have to stay the same rule.
+
+    `Product.freshness` reads one implementation and `with_freshness()` reads
+    another. Exercising only one of them would let the two drift apart, which is
+    the precise failure `catalog/freshness.py` exists to make impossible.
+    """
+
+    AGES = [
+        ("never", None),
+        ("one-hour", timedelta(hours=1)),
+        ("at-48h", FRESH_WINDOW),
+        ("past-48h", FRESH_WINDOW + timedelta(seconds=1)),
+        ("at-7d", ALMOST_EXPIRED_WINDOW),
+        ("past-7d", ALMOST_EXPIRED_WINDOW + timedelta(seconds=1)),
+        ("ancient", timedelta(days=90)),
+    ]
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="ashuye", password="asdfg1234"
+        )
+        self.shop = Shop.objects.create(name="Test shop", owner=self.user)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.now = timezone.now()
+
+    def _product(self, name, age):
+        return Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Apple",
+            name=name,
+            price=100,
+            last_confirmed_at=None if age is None else self.now - age,
+        )
+
+    def _seed_every_band(self):
+        for name, age in self.AGES:
+            self._product(name, age)
+
+    def test_sql_rule_matches_python_rule_in_every_band(self):
+        self._seed_every_band()
+        for product in Product.objects.with_freshness(now=self.now):
+            with self.subTest(product=product.name):
+                self.assertEqual(
+                    product.freshness_label,
+                    get_freshness(product.last_confirmed_at, now=self.now),
+                )
+
+    def test_fresh_helper_returns_exactly_the_fresh_band(self):
+        self._seed_every_band()
+        self.assertEqual(
+            sorted(Product.objects.fresh(now=self.now).values_list("name", flat=True)),
+            ["at-48h", "one-hour"],
+        )
+
+    def test_fresh_helper_excludes_never_confirmed(self):
+        self._product("never", None)
+        self.assertFalse(Product.objects.fresh(now=self.now).exists())
+
+    def test_property_reads_the_shared_rule(self):
+        # Sampled well away from the edges: the property reads the live clock,
+        # so a boundary value would already have crossed it by assertion time.
+        self.assertEqual(self._product("recent", timedelta(hours=1)).freshness, "fresh")
+        self.assertEqual(
+            self._product("ancient", timedelta(days=90)).freshness, "expired"
+        )

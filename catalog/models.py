@@ -12,7 +12,7 @@ from django.utils.text import slugify
 
 from core.models import BaseModel
 
-from .freshness import FRESH_WINDOW, get_freshness
+from .freshness import FRESH_WINDOW, freshness_case, get_freshness
 from .image_utils import validate_image_file
 
 
@@ -21,6 +21,11 @@ class ConfirmationStatus(models.TextChoices):
 
     Orthogonal to `Product.is_available`: `is_available` is what the merchant
     last told us, `confirmation_status` is how much we still believe it.
+
+    Not the buyer-facing freshness label either -- that one is derived at read
+    time on a much shorter clock, in `catalog/freshness.py`. This column exists
+    because prompting is a workflow with memory (who have we already asked?) and
+    a workflow cannot be recomputed from a timestamp alone.
     """
 
     FRESH = "fresh", "Fresh"
@@ -71,9 +76,26 @@ class ProductQuerySet(models.QuerySet):
         """The exact complement: NULLs fall out of a __gte comparison already."""
         return self.filter(is_available=True, last_confirmed_at__gte=cutoff)
 
-    def fresh(self):
-        cutoff = timezone.now() - FRESH_WINDOW
-        return self.filter(last_confirmed_at__gte=cutoff)
+    def fresh(self, now=None):
+        """Products still inside the fresh window.
+
+        A pure freshness predicate, unlike the two above -- those encode the
+        sweep's whole policy, availability included. Compose this with
+        `.filter(is_available=True)` when you want both, so that asking for
+        "fresh but sold out" stays possible.
+        """
+        now = now or timezone.now()
+        return self.filter(last_confirmed_at__gte=now - FRESH_WINDOW)
+
+    def with_freshness(self, now=None):
+        """Annotate the derived label so it can be filtered and ordered in SQL.
+
+        The alias is `freshness_label`, not `freshness`: the latter is a property
+        on the model, and Django assigns annotations with `setattr` at iteration
+        time, so shadowing it would raise on a property with no setter -- when
+        the queryset is consumed, not when it is built.
+        """
+        return self.annotate(freshness_label=freshness_case(now))
 
 
 class Product(BaseModel):
@@ -98,8 +120,23 @@ class Product(BaseModel):
 
     objects = ProductQuerySet.as_manager()
 
+    class Meta(BaseModel.Meta):
+        # Every read of this column is a range scan against the clock --
+        # `fresh`, `needing_confirmation`, `confirmed_since`, and the API's
+        # ?ordering=last_confirmed_at all narrow on it.
+        indexes = [
+            models.Index(
+                fields=["last_confirmed_at"], name="product_last_confirmed_idx"
+            )
+        ]
+
     @property
     def freshness(self):
+        """The buyer-facing label, always computed against the live clock.
+
+        Use `ProductQuerySet.with_freshness()` instead when the label needs to
+        be filtered or sorted -- this evaluates in Python, one product at a time.
+        """
         return get_freshness(self.last_confirmed_at)
 
     def __str__(self) -> str:
