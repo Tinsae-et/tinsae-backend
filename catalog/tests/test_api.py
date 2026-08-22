@@ -280,6 +280,20 @@ class ProductRankingTest(TestCase):
         self.assertIn("stale-one", self._slugs())
         self.assertNotIn("stale-one", self._slugs("?freshness=1"))
 
+    def test_fresh_filter_uses_confirmation_timestamp(self):
+        self._product(
+            "recent-confirmation",
+            confirmation_status="stale",
+            last_confirmed_at=timezone.now() - timedelta(days=1),
+        )
+        self._product(
+            "old-confirmation",
+            confirmation_status="fresh",
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+        )
+
+        self.assertEqual(self._slugs("?fresh=true"), ["recent-confirmation"])
+
     def test_explicit_ordering_overrides_ranking_without_a_search_term(self):
         # `ordering` used to be honoured only alongside `q`, so this asserts both
         # that it overrides the ranking and that it works on its own.
