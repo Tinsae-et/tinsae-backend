@@ -5,6 +5,7 @@ from django.urls import include, path
 from rest_framework_simplejwt import views as jwt_views
 
 from ops.urls import page_urlpatterns as ops_page_urlpatterns
+from users.views import ThrottledTokenObtainPairView
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -16,9 +17,10 @@ urlpatterns = [
     # consumed whole by admin.site.urls, which 404s unknown sub-paths rather
     # than falling through to later patterns.
     path("ops/", include(ops_page_urlpatterns)),
+    path("api/v1/auth/", include("users.urls")),
     path(
         "api/v1/auth/token/",
-        jwt_views.TokenObtainPairView.as_view(),
+        ThrottledTokenObtainPairView.as_view(),
         name="token_obtain_pair",
     ),
     path(
