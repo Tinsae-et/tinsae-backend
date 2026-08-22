@@ -18,10 +18,16 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
+    filters,
 )
 
 from bot.selectors import listing_for_chat
-from bot.services import handle_product_callback, handle_telegram_callback
+from bot.services import (
+    handle_product_callback,
+    handle_telegram_callback,
+    handle_text_reply,
+)
 
 # Telegram truncates long button labels unhelpfully; do it ourselves so the
 # product name stays readable.
@@ -212,6 +218,47 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _text_reply_ack(outcome: str, product) -> str:
+    """One short line per outcome. Every failure names a way forward."""
+    if outcome == "confirmed":
+        return f"✅ Thanks — '{product.name}' is marked in stock."
+    if outcome == "sold_out":
+        return f"❌ Got it — '{product.name}' is marked out of stock."
+    if outcome == "ambiguous":
+        return (
+            "Several products are waiting on you, so I'm not sure which one you "
+            "mean. Send /myproducts, or reply directly to the message about it."
+        )
+    if outcome == "inactive":
+        return "That request is no longer active — send /myproducts for a fresh list."
+    if outcome == "orphan":
+        return "Nothing is waiting on you right now. Send /myproducts to check."
+    return (
+        "I didn't catch that. Reply \"yes\" if it's still available or "
+        '"sold out" if it isn\'t — or send /myproducts.'
+    )
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Apply a free-text answer, or explain why it could not be applied."""
+    message = update.message
+    if message is None or not message.text:
+        return
+
+    chat_id = update.effective_chat.id
+    reply_to = message.reply_to_message.message_id if message.reply_to_message else None
+    logger.info(
+        "Inbound text %r from chat %s (reply_to=%s)", message.text, chat_id, reply_to
+    )
+
+    outcome, product = await sync_to_async(handle_text_reply, thread_sensitive=True)(
+        text=message.text,
+        chat_id=str(chat_id),
+        reply_to_message_id=reply_to,
+    )
+    await message.reply_text(_text_reply_ack(outcome, product))
+
+
 class Command(BaseCommand):
     help = "Runs the Telegram listener: onboarding, /myproducts, and stock callbacks."
 
@@ -227,6 +274,9 @@ class Command(BaseCommand):
         app.add_handler(CommandHandler("help", help))
         app.add_handler(CommandHandler("myproducts", my_products))
         app.add_handler(CallbackQueryHandler(on_callback))
+        # Last, and command-free: a merchant who ignores the buttons and just
+        # types "sold out" still gets an answer recorded.
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
 
         logger.info("Starting Telegram long-polling...")
         app.run_polling()

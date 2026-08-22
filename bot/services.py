@@ -1,4 +1,5 @@
 import logging
+import re
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -8,12 +9,50 @@ from catalog.services import apply_confirmation
 
 from . import telegram_api as telegram
 from .models import ConfirmationRequest
+from .selectors import pending_request_for_chat
 
 logger = logging.getLogger(__name__)
 
 # /myproducts buttons are product-keyed and colon-separated, so they cannot be
 # confused with the underscore-separated `confirm_<request_pk>` prompt callbacks.
 PRODUCT_CALLBACK_ACTIONS = {"pconfirm": True, "pdeny": False}
+
+# Free-text answers, matched as whole normalised phrases. Kept deliberately
+# small and exact: a wrong guess writes to the catalogue, and substring matching
+# would read "no longer available" as a confirmation.
+_PUNCTUATION = re.compile(r"[^\w\s]", flags=re.UNICODE)
+
+AFFIRMATIVE = {
+    "yes",
+    "y",
+    "yeah",
+    "yep",
+    "yup",
+    "ok",
+    "okay",
+    "sure",
+    "available",
+    "still available",
+    "in stock",
+    "still in stock",
+    "have",
+    "still have",
+    "we have it",
+    "አለ",
+}
+NEGATIVE = {
+    "no",
+    "n",
+    "nope",
+    "sold",
+    "sold out",
+    "soldout",
+    "not available",
+    "out of stock",
+    "finished",
+    "gone",
+    "የለም",
+}
 
 
 def _prompt_markup(request_id: int) -> dict:
@@ -251,3 +290,48 @@ def handle_telegram_callback(
 
     logger.info("Applied callback %r to product %s.", callback_data, product.pk)
     return True
+
+
+def parse_answer(text: str) -> bool | None:
+    """Read a free-text answer as yes/no, or None if it isn't one."""
+    if not text:
+        return None
+    normalised = " ".join(_PUNCTUATION.sub(" ", text.strip().lower()).split())
+    if normalised in AFFIRMATIVE:
+        return True
+    if normalised in NEGATIVE:
+        return False
+    return None
+
+
+def handle_text_reply(
+    text: str,
+    chat_id: str,
+    reply_to_message_id=None,
+) -> tuple[str, Product | None]:
+    """Apply a merchant's free-text answer to their outstanding prompt.
+
+    Returns `(outcome, product)`, where outcome is one of "confirmed",
+    "sold_out", "unparsed", "ambiguous", "inactive", "orphan". The caller owns
+    the reply text -- the same split as the callback path, where PTB does the
+    talking.
+
+    Matching runs before parsing on purpose: an unreadable message in a chat
+    with nothing pending should hear "nothing is waiting on you", not be asked
+    to answer a question nobody put to them.
+
+    Deliberately *not* gated on ENABLE_TELEGRAM_BOT_PROMPTS: that flag is
+    outbound policy. A merchant who typed at us is already talking to us.
+    """
+    request, reason = pending_request_for_chat(chat_id, reply_to_message_id)
+    if request is None:
+        return reason, None
+
+    confirmed = parse_answer(text)
+    if confirmed is None:
+        return "unparsed", None
+
+    product = request.product
+    apply_confirmation(product, confirmed=confirmed, request=request)
+    logger.info("Applied text reply %r to product %s.", text, product.pk)
+    return ("confirmed" if confirmed else "sold_out"), product
