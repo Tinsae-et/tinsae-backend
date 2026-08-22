@@ -59,6 +59,7 @@ class ManageMyProductsViewSet(viewsets.ModelViewSet):
         serializer.save(
             shop=self.get_shop(),
             category=self.get_category(self.request.data.get("category_slug")),
+            confirmation_status="fresh",
         )
 
     def get_shop(self):
