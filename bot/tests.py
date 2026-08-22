@@ -18,6 +18,7 @@ from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
     handle_text_reply,
+    parse_answer,
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
@@ -105,6 +106,33 @@ class SendPromptTests(BotTestCase):
             [f"confirm_{request.pk}", f"deny_{request.pk}"],
         )
 
+    def test_prompt_names_the_product_and_its_price(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ) as send:
+            send_confirmation_prompt(self.stale_product)
+
+        text = send.call_args.kwargs["text"]
+        self.assertIn("Test Galaxy S23", text)
+        self.assertIn("10,000.00 ETB", text)
+        self.assertIn(self.shop.name, text)
+
+    def test_prompt_offers_both_a_button_and_a_typed_answer(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ) as send:
+            send_confirmation_prompt(self.stale_product)
+
+        kwargs = send.call_args.kwargs
+        labels = [b["text"] for b in kwargs["reply_markup"]["inline_keyboard"][0]]
+        self.assertEqual(labels, ["✅ Still available", "❌ Sold out"])
+        self.assertIn("reply YES or NO", kwargs["text"])
+
+    def test_the_yes_no_the_prompt_advertises_actually_parses(self):
+        """The prompt makes a promise about YES/NO; hold it to that promise."""
+        self.assertIs(parse_answer("YES"), True)
+        self.assertIs(parse_answer("NO"), False)
+
     def test_message_id_is_persisted(self):
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 4242}
@@ -137,6 +165,27 @@ class SendPromptTests(BotTestCase):
     def test_disabled_flag_creates_no_request(self):
         self.assertIsNone(send_confirmation_prompt(self.stale_product))
         self.assertEqual(ConfirmationRequest.objects.count(), 0)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_force_lifts_the_policy_flag_and_nothing_else(self):
+        """The other two gates are not policy — one has nowhere to send, the
+        other is the double-send guard."""
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ) as send:
+            self.assertIsNotNone(
+                send_confirmation_prompt(self.stale_product, force=True)
+            )
+            # Unlinked shop: no chat to send to.
+            self.assertIsNone(
+                send_confirmation_prompt(self.unconfirmed_product, force=True)
+            )
+            # Already asked.
+            self.assertIsNone(
+                send_confirmation_prompt(self.stale_product, force=True)
+            )
+
+        self.assertEqual(send.call_count, 1)
 
     def test_unavailable_product_gets_a_back_in_stock_prompt(self):
         Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
@@ -836,3 +885,101 @@ class TextHandlerTests(BotTestCase):
         async_to_sync(on_text)(update, None)
 
         self.assertIn("/myproducts", message.reply_text.call_args.args[0])
+
+
+class SendPromptCommandTests(BotTestCase):
+    """The hand-run trigger: one named product, and every refusal explained."""
+
+    def _run(self, *args):
+        out = StringIO()
+        call_command("send_prompt", *args, stdout=out)
+        return out.getvalue()
+
+    def test_it_prompts_the_named_product(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 77}
+        ) as send:
+            output = self._run(str(self.stale_product.pk))
+
+        send.assert_called_once()
+        self.assertIn("Sent to chat", output)
+        self.assertEqual(
+            ConfirmationRequest.objects.filter(
+                product=self.stale_product, status="pending"
+            ).count(),
+            1,
+        )
+
+    def test_a_slug_identifies_the_product_too(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 77}
+        ) as send:
+            self._run(self.stale_product.slug)
+
+        self.assertIn("Galaxy S23", send.call_args.kwargs["text"])
+
+    def test_it_shows_the_message_before_sending_anything(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 77}
+        ):
+            output = self._run(str(self.stale_product.pk))
+
+        self.assertIn("10,000.00 ETB", output)
+        self.assertIn("reply YES or NO", output)
+
+    @override_settings(TELEGRAM_BOT_TOKEN="")
+    def test_without_a_token_it_still_prints_the_wording(self):
+        output = self._run(str(self.stale_product.pk))
+
+        self.assertIn("10,000.00 ETB", output)
+        self.assertIn("nothing left the server", output)
+
+    def test_a_product_with_a_pending_request_is_not_asked_twice(self):
+        ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+
+        output = self._run(str(self.stale_product.pk))
+
+        self.assertIn("already has a pending request", output)
+        self.assertEqual(ConfirmationRequest.objects.count(), 1)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_the_policy_flag_blocks_it_by_default(self):
+        output = self._run(str(self.stale_product.pk))
+
+        self.assertIn("ENABLE_TELEGRAM_BOT_PROMPTS is False", output)
+        self.assertEqual(ConfirmationRequest.objects.count(), 0)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_force_sends_while_the_flag_is_off(self):
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 77}
+        ) as send:
+            output = self._run(str(self.stale_product.pk), "--force")
+
+        send.assert_called_once()
+        self.assertIn("Sent to chat", output)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_force_does_not_lift_the_double_send_guard(self):
+        """--force is a policy override, not a licence to pester a merchant."""
+        ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+
+        output = self._run(str(self.stale_product.pk), "--force")
+
+        self.assertIn("already has a pending request", output)
+        self.assertEqual(ConfirmationRequest.objects.count(), 1)
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_force_cannot_send_to_a_shop_with_no_chat_id(self):
+        with self.assertRaisesMessage(CommandError, "no telegram_chat_id"):
+            self._run(str(self.unconfirmed_product.pk), "--force")
+
+    def test_an_unknown_product_is_an_error(self):
+        with self.assertRaisesMessage(CommandError, "No product matching"):
+            self._run("99999999")
+        with self.assertRaisesMessage(CommandError, "No product matching"):
+            self._run("no-such-slug")
