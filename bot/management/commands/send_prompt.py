@@ -73,9 +73,7 @@ class Command(BaseCommand):
 
         request = send_confirmation_prompt(product, force=options["force"])
         if request is None:
-            raise CommandError(
-                "The prompt was not sent. Check the log for the reason."
-            )
+            raise CommandError("The prompt was not sent. Check the log for the reason.")
 
         if telegram.is_configured():
             self.stdout.write(
@@ -94,7 +92,9 @@ class Command(BaseCommand):
             )
 
     def _get_product(self, identifier: str) -> Product:
-        lookup = {"pk": int(identifier)} if identifier.isdigit() else {"slug": identifier}
+        lookup = (
+            {"pk": int(identifier)} if identifier.isdigit() else {"slug": identifier}
+        )
         try:
             return Product.objects.select_related("shop").get(**lookup)
         except Product.DoesNotExist:

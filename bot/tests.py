@@ -181,9 +181,7 @@ class SendPromptTests(BotTestCase):
                 send_confirmation_prompt(self.unconfirmed_product, force=True)
             )
             # Already asked.
-            self.assertIsNone(
-                send_confirmation_prompt(self.stale_product, force=True)
-            )
+            self.assertIsNone(send_confirmation_prompt(self.stale_product, force=True))
 
         self.assertEqual(send.call_count, 1)
 
