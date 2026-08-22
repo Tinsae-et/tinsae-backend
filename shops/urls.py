@@ -1,6 +1,6 @@
 from rest_framework.routers import DefaultRouter
 
-from .views import ShopViewSet, ManageMyProductsViewSet
+from .views import ManageMyProductsViewSet, ShopViewSet
 
 router = DefaultRouter()
 router.register("shops", ShopViewSet)

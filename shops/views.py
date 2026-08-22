@@ -1,11 +1,17 @@
+from django.shortcuts import get_object_or_404
 from rest_framework import permissions, status, viewsets
 from rest_framework.response import Response
 
+from catalog.models import Category, Product
+
 from .models import Shop
 from .permissions import IsOwnerOrReadOnly
-from .serializers import ShopListSerializer, ShopPublicSerializer, ShopSerializer, ShopProductSerializer
-from catalog.models import Product, Category
-from django.shortcuts import get_object_or_404
+from .serializers import (
+    ShopListSerializer,
+    ShopProductSerializer,
+    ShopPublicSerializer,
+    ShopSerializer,
+)
 
 
 class ShopViewSet(viewsets.ModelViewSet):
@@ -31,6 +37,7 @@ class ShopViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
+
 class ManageMyProductsViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()
     permission_classes = [IsOwnerOrReadOnly]
@@ -44,10 +51,15 @@ class ManageMyProductsViewSet(viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
         headers = self.get_success_headers(serializer.data)
-        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+        return Response(
+            serializer.data, status=status.HTTP_201_CREATED, headers=headers
+        )
 
     def perform_create(self, serializer):
-        serializer.save(shop=self.get_shop(), category=self.get_category(self.request.data.get("category_slug")))
+        serializer.save(
+            shop=self.get_shop(),
+            category=self.get_category(self.request.data.get("category_slug")),
+        )
 
     def get_shop(self):
         return get_object_or_404(Shop, owner=self.request.user)
