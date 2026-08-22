@@ -1,7 +1,7 @@
 from rest_framework import serializers
 
 from .models import Shop
-
+from catalog.models import Product
 
 class ShopSerializer(serializers.ModelSerializer):
     """Owner/staff view, and the write shape for create and update."""
@@ -52,3 +52,23 @@ class ShopListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shop
         fields = ["id", "name", "slug", "description", "city", "is_verified"]
+
+class ShopProductSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "name",
+            "brand",
+            "description",
+            "price",
+            "currency",
+            "shop",
+            "category",
+            "last_confirmed_at",
+            "confirmation_status",
+            "slug",
+            "specs",
+        ]
+
+        read_only_fields = ["shop", "category"]
