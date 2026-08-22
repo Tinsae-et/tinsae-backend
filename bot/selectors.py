@@ -13,6 +13,8 @@ from django.utils import timezone
 from catalog.models import Product
 from shops.models import Shop
 
+from .models import ConfirmationRequest
+
 
 def shops_for_chat(chat_id) -> list[Shop]:
     """Every shop that has claimed this Telegram chat.
@@ -47,3 +49,39 @@ def listing_for_chat(chat_id) -> tuple[list[Shop], list[Product]]:
         .order_by(F("last_confirmed_at").asc(nulls_first=True), "pk")
     )
     return shops, products
+
+
+def pending_request_for_chat(chat_id, reply_to_message_id=None):
+    """Find the ConfirmationRequest a free-text answer belongs to.
+
+    Returns `(request, reason)`. On a match, `reason` is None; otherwise the
+    request is None and `reason` says why, so the caller can explain itself.
+
+    The chat is the only authorisation there is: nothing is ever taken from the
+    message body, so a merchant can only answer their own shops' prompts.
+    """
+    if chat_id in (None, ""):
+        return None, "orphan"
+
+    requests = ConfirmationRequest.objects.select_related("product", "shop").filter(
+        shop__telegram_chat_id=str(chat_id)
+    )
+
+    if reply_to_message_id is not None:
+        # An explicit reply names the prompt exactly. Look it up regardless of
+        # status, so answering a prompt that has since expired is reported as
+        # such instead of quietly landing on whatever else is pending.
+        replied = requests.filter(telegram_message_id=str(reply_to_message_id)).first()
+        if replied is not None:
+            if replied.status != "pending":
+                return None, "inactive"
+            return replied, None
+        # Otherwise they replied to some other message in the chat; fall through
+        # to the single-pending rule.
+
+    pending = list(requests.filter(status="pending")[:2])
+    if not pending:
+        return None, "orphan"
+    if len(pending) > 1:
+        return None, "ambiguous"
+    return pending[0], None

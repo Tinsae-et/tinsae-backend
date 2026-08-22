@@ -11,12 +11,13 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from bot import telegram_api as telegram
-from bot.management.commands.run_bot import my_products, on_callback
+from bot.management.commands.run_bot import my_products, on_callback, on_text
 from bot.models import ConfirmationRequest
 from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
+    handle_text_reply,
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
@@ -686,3 +687,152 @@ class MyProductsHandlerTests(BotTestCase):
         async_to_sync(my_products)(update, None)
 
         self.assertIn("reply_markup", message.reply_text.call_args.kwargs)
+
+
+class TextReplyTests(BotTestCase):
+    """Free-text answers — the path a merchant takes when they ignore the buttons."""
+
+    def _request(self, product=None, message_id=None, status="pending"):
+        return ConfirmationRequest.objects.create(
+            product=product or self.stale_product,
+            shop=self.shop,
+            status=status,
+            telegram_message_id=message_id,
+        )
+
+    def test_still_available_confirms_the_pending_request(self):
+        request = self._request()
+
+        outcome, _ = handle_text_reply("Still available", chat_id=CHAT_ID)
+
+        self.assertEqual(outcome, "confirmed")
+        request.refresh_from_db()
+        self.stale_product.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+        self.assertIsNotNone(request.responded_at)
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+        self.assertTrue(self.stale_product.is_available)
+        self.assertGreater(
+            self.stale_product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+
+    def test_sold_out_marks_the_product_unavailable(self):
+        request = self._request()
+
+        outcome, _ = handle_text_reply("sold out", chat_id=CHAT_ID)
+
+        self.assertEqual(outcome, "sold_out")
+        request.refresh_from_db()
+        self.stale_product.refresh_from_db()
+        self.assertEqual(request.status, "sold_out")
+        self.assertFalse(self.stale_product.is_available)
+        # Out of stock is fresh information, not the absence of it.
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+
+    def test_an_orphan_reply_changes_nothing(self):
+        before = self.stale_product.last_confirmed_at
+
+        outcome, product = handle_text_reply("yes", chat_id=CHAT_ID)
+
+        self.assertEqual(outcome, "orphan")
+        self.assertIsNone(product)
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+
+    def test_two_pending_requests_are_ambiguous(self):
+        self._request()
+        self._request(product=self.fresh_product)
+
+        self.assertEqual(handle_text_reply("yes", chat_id=CHAT_ID)[0], "ambiguous")
+        self.assertEqual(
+            ConfirmationRequest.objects.filter(status="pending").count(), 2
+        )
+
+    def test_replying_to_a_prompt_disambiguates(self):
+        first = self._request(message_id="4242")
+        second = self._request(product=self.fresh_product, message_id="4243")
+
+        outcome, product = handle_text_reply(
+            "yes", chat_id=CHAT_ID, reply_to_message_id=4243
+        )
+
+        self.assertEqual(outcome, "confirmed")
+        self.assertEqual(product.pk, self.fresh_product.pk)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertEqual(first.status, "pending")
+        self.assertEqual(second.status, "confirmed")
+
+    def test_a_reply_to_an_already_answered_prompt_is_inactive(self):
+        self._request(message_id="4242", status="confirmed")
+
+        outcome, _ = handle_text_reply("yes", chat_id=CHAT_ID, reply_to_message_id=4242)
+
+        self.assertEqual(outcome, "inactive")
+
+    def test_unrecognised_wording_is_not_guessed_at(self):
+        """Whole-phrase matching: "no longer available" contains "available"."""
+        request = self._request()
+
+        for text in ("maybe later", "no longer available", "how much?"):
+            self.assertEqual(handle_text_reply(text, chat_id=CHAT_ID)[0], "unparsed")
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "pending")
+
+    def test_another_chat_cannot_answer_by_text(self):
+        request = self._request()
+
+        self.assertEqual(handle_text_reply("yes", chat_id=OTHER_CHAT_ID)[0], "orphan")
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "pending")
+
+    @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+    def test_answers_apply_while_outbound_prompts_are_disabled(self):
+        """The flag is outbound policy. A merchant who typed at us must still work."""
+        request = self._request()
+
+        self.assertEqual(handle_text_reply("yes", chat_id=CHAT_ID)[0], "confirmed")
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+
+
+class TextHandlerTests(BotTestCase):
+    """PTB wiring for text replies — the state change is TextReplyTests' job."""
+
+    def _message_update(self, text, chat_id=CHAT_ID, reply_to_message_id=None):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.message.text = text
+        update.message.reply_to_message = (
+            mock.Mock(message_id=reply_to_message_id)
+            if reply_to_message_id is not None
+            else None
+        )
+        update.effective_chat.id = int(chat_id)
+        return update, update.message
+
+    def test_the_handler_applies_an_answer_and_acknowledges(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        update, message = self._message_update("still available")
+
+        async_to_sync(on_text)(update, None)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+        self.assertIn("in stock", message.reply_text.call_args.args[0])
+
+    def test_an_unmatched_reply_gets_a_way_forward(self):
+        update, message = self._message_update("yes")
+
+        async_to_sync(on_text)(update, None)
+
+        self.assertIn("/myproducts", message.reply_text.call_args.args[0])
