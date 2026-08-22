@@ -2,9 +2,9 @@ import logging
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
-from django.utils import timezone
 
-from catalog.models import ConfirmationStatus, Product
+from catalog.models import Product
+from catalog.services import apply_confirmation
 
 from . import telegram_api as telegram
 from .models import ConfirmationRequest
@@ -123,61 +123,6 @@ def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
         confirmation_request.telegram_message_id = str(message_id)
         confirmation_request.save(update_fields=["telegram_message_id", "updated_at"])
     return confirmation_request
-
-
-def resolve_request(request: ConfirmationRequest, status: str) -> None:
-    """Close out a pending request. The single writer of `responded_at`.
-
-    `expired` is accepted but records no `responded_at`: a timeout is the absence
-    of an answer, not an answer. `sweep_freshness` expires in bulk and never comes
-    through here, but the single-request path has to agree with it.
-    """
-    if status not in ("confirmed", "sold_out", "expired"):
-        raise ValueError(f"Not a resolution: {status!r}")
-
-    if request.status != "pending":
-        logger.info(
-            "Ignoring resolve of request %s: already %s.", request.pk, request.status
-        )
-        return
-
-    request.status = status
-    if status != "expired":
-        request.responded_at = timezone.now()
-    request.save(update_fields=["status", "responded_at", "updated_at"])
-
-
-def apply_confirmation(
-    product: Product,
-    *,
-    confirmed: bool,
-    request: ConfirmationRequest | None = None,
-) -> None:
-    """Record a merchant's answer about one product.
-
-    The single writer of the confirmation clock, shared by the inline-prompt
-    callback and the /myproducts listing. Both answers restart the clock: "out of
-    stock" is fresh information about an unavailable product — availability and
-    freshness are separate axes.
-
-    `request` is optional because a product listed by /myproducts usually has no
-    outstanding ConfirmationRequest; with prompts disabled, none was ever sent.
-    """
-    with transaction.atomic():
-        if request is not None:
-            resolve_request(request, "confirmed" if confirmed else "sold_out")
-
-        product.last_confirmed_at = timezone.now()
-        product.confirmation_status = ConfirmationStatus.FRESH
-        product.is_available = confirmed
-        product.save(
-            update_fields=[
-                "last_confirmed_at",
-                "confirmation_status",
-                "is_available",
-                "updated_at",
-            ]
-        )
 
 
 def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
