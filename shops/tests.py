@@ -1,6 +1,7 @@
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from catalog.models import Category, Product
 from users.models import User
 
 from .models import Shop
@@ -78,3 +79,72 @@ class ShopDetailExposureTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("telegram_chat_id", response.data["results"][0])
+
+
+class ManageMyProductsApiTest(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="merchant", password="pass")
+        self.other_owner = User.objects.create_user(
+            username="other_merchant", password="pass"
+        )
+        self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
+        Shop.objects.create(name="Other Shop", owner=self.other_owner)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy A15",
+            price="12500.00",
+        )
+        self.client = APIClient()
+
+    def test_owner_can_create_product(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            "/api/v1/products/",
+            {
+                "brand": "Anker",
+                "name": "PowerPort",
+                "description": "Fast charger",
+                "price": "450.00",
+                "currency": "ETB",
+                "category_slug": self.category.slug,
+                "specs": {"ports": 2},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Product.objects.get(slug=response.data["slug"])
+        self.assertEqual(created.shop, self.shop)
+        self.assertEqual(created.category, self.category)
+        self.assertEqual(created.brand, "Anker")
+
+    def test_owner_can_edit_product(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            f"/api/v1/products/{self.product.slug}/",
+            {"name": "Galaxy A15 5G", "price": "13500.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, "Galaxy A15 5G")
+        self.assertEqual(self.product.price, float("13500.00"))
+
+    def test_other_shop_owner_cannot_edit_product(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.patch(
+            f"/api/v1/products/{self.product.slug}/",
+            {"name": "Unauthorized edit"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, "Galaxy A15")
