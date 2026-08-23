@@ -1,5 +1,7 @@
 from rest_framework import serializers
 
+from catalog.models import Category, Product
+
 from .models import Shop
 
 
@@ -52,3 +54,48 @@ class ShopListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shop
         fields = ["id", "name", "slug", "description", "city", "is_verified"]
+
+
+class ShopProductSerializer(serializers.ModelSerializer):
+    """The merchant's write shape for their own products.
+
+    Deliberately narrower than `catalog.ShopProductSerializer`'s buyer-facing
+    cousin on the write side: the confirmation clock is not a merchant-editable
+    field. See `read_only_fields`.
+    """
+
+    # A slug rather than a pk: the dashboard's category select works in slugs,
+    # and DRF turns an unknown or missing one into a 400 field error instead of
+    # the 404 a manual get_object_or_404 lookup would raise.
+    category = serializers.SlugRelatedField(
+        slug_field="slug", queryset=Category.objects.all()
+    )
+
+    class Meta:
+        model = Product
+        fields = [
+            "id",
+            "name",
+            "brand",
+            "description",
+            "price",
+            "currency",
+            "shop",
+            "category",
+            "is_available",
+            "last_confirmed_at",
+            "confirmation_status",
+            "slug",
+            "specs",
+        ]
+        # `last_confirmed_at` and `confirmation_status` are readable but never
+        # writable. `catalog.services.apply_confirmation` is the single writer of
+        # the confirmation clock; exposing these would let a merchant PATCH their
+        # own listings permanently fresh and hollow out the whole signal.
+        # `shop` comes from the URL, and `slug` is derived in `Product.save()`.
+        read_only_fields = [
+            "shop",
+            "slug",
+            "last_confirmed_at",
+            "confirmation_status",
+        ]

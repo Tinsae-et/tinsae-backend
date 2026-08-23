@@ -1,6 +1,12 @@
+from datetime import timedelta
+from decimal import Decimal
+
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from catalog.freshness import Freshness
+from catalog.models import Category, ConfirmationStatus, Product
 from users.models import User
 
 from .models import Shop
@@ -78,3 +84,262 @@ class ShopDetailExposureTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("telegram_chat_id", response.data["results"][0])
+
+
+class ShopProductApiTest(TestCase):
+    """The merchant-facing CRUD nested under /api/v1/shops/<slug>/products/."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="merchant", password="pass")
+        self.other_owner = User.objects.create_user(
+            username="other_merchant", password="pass"
+        )
+        self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
+        self.other_shop = Shop.objects.create(name="Other Shop", owner=self.other_owner)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy A15",
+            price="12500.00",
+        )
+        self.client = APIClient()
+
+    def _url(self, shop=None, slug=None):
+        shop = shop or self.shop
+        tail = f"{slug}/" if slug else ""
+        return f"/api/v1/shops/{shop.slug}/products/{tail}"
+
+    # --- happy path -----------------------------------------------------
+
+    def test_owner_can_create_product(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Anker",
+                "name": "PowerPort",
+                "description": "Fast charger",
+                "price": "450.00",
+                "currency": "ETB",
+                "category": self.category.slug,
+                "specs": {"ports": 2},
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Product.objects.get(slug=response.data["slug"])
+        self.assertEqual(created.shop, self.shop)
+        self.assertEqual(created.category, self.category)
+        self.assertEqual(created.brand, "Anker")
+
+    def test_new_product_opens_fresh(self):
+        # The AC that a bare `confirmation_status="fresh"` only appeared to meet:
+        # the column already defaults to "fresh", so the timestamp is the part
+        # that actually has to be written.
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Anker",
+                "name": "PowerPort",
+                "price": "450.00",
+                "category": self.category.slug,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Product.objects.get(slug=response.data["slug"])
+        self.assertIsNotNone(created.last_confirmed_at)
+        self.assertEqual(created.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertEqual(created.freshness, Freshness.FRESH)
+
+    def test_owner_can_edit_product(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"name": "Galaxy A15 5G", "price": "13500.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, "Galaxy A15 5G")
+        self.assertEqual(self.product.price, Decimal("13500.00"))
+
+    def test_owner_can_delete_product(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.delete(self._url(slug=self.product.slug))
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Product.objects.filter(pk=self.product.pk).exists())
+
+    def test_owner_can_toggle_availability(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"is_available": False},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.is_available)
+
+    # --- scoping and ownership ------------------------------------------
+
+    def test_list_is_scoped_to_the_shop_in_the_url(self):
+        Product.objects.create(
+            shop=self.other_shop,
+            category=self.category,
+            brand="Nokia",
+            name="Not Mine",
+            price="900.00",
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        names = [row["name"] for row in response.data["results"]]
+        self.assertEqual(names, ["Galaxy A15"])
+
+    def test_other_shop_owner_cannot_edit_product(self):
+        # 404 rather than 403: the queryset is scoped by owner, so someone
+        # else's product is simply not there. The AC allows either.
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"name": "Unauthorized edit"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.name, "Galaxy A15")
+
+    def test_other_shop_owner_cannot_delete_product(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.delete(self._url(slug=self.product.slug))
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
+
+    def test_cannot_create_into_someone_elses_shop(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.post(
+            self._url(shop=self.shop),
+            {
+                "brand": "Anker",
+                "name": "Smuggled",
+                "price": "450.00",
+                "category": self.category.slug,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(Product.objects.filter(name="Smuggled").exists())
+
+    def test_anonymous_cannot_create(self):
+        # Regression guard: with only IsOwnerOrReadOnly, DRF never calls
+        # has_object_permission on create, so this reached the view body.
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Anker",
+                "name": "PowerPort",
+                "price": "450.00",
+                "category": self.category.slug,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertFalse(Product.objects.filter(name="PowerPort").exists())
+
+    def test_anonymous_cannot_list(self):
+        response = self.client.get(self._url())
+        self.assertEqual(response.status_code, 401)
+
+    def test_owning_two_shops_does_not_break_the_route(self):
+        # Shop.owner is a plain FK, so this is legal. Resolving "the" shop from
+        # request.user alone used to raise MultipleObjectsReturned here.
+        second = Shop.objects.create(name="Second Shop", owner=self.owner)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(self._url(shop=second))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"], [])
+
+    # --- the confirmation clock is not merchant-writable -----------------
+
+    def test_merchant_cannot_write_the_confirmation_clock(self):
+        self.client.force_authenticate(self.owner)
+        forged = timezone.now() + timedelta(days=365)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"last_confirmed_at": forged.isoformat(), "confirmation_status": "fresh"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertIsNone(self.product.last_confirmed_at)
+
+    def test_merchant_cannot_set_the_slug(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"slug": "hand-picked-slug"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.slug, "owner-shop-samsung-galaxy-a15")
+
+    # --- validation ------------------------------------------------------
+
+    def test_unknown_category_is_a_field_error_not_a_404(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Anker",
+                "name": "PowerPort",
+                "price": "450.00",
+                "category": "no-such-category",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("category", response.data)
+
+    def test_missing_category_is_a_field_error(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {"brand": "Anker", "name": "PowerPort", "price": "450.00"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("category", response.data)

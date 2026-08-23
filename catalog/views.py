@@ -19,6 +19,8 @@ ORDERING_FIELDS = {
     "last_confirmed_at",
 }
 
+TRUTHY = {"1", "true", "yes", "on"}
+
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Category.objects.all()
@@ -85,6 +87,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             # cutoff here — otherwise the API and `sweep_freshness` can disagree,
             # and a never-confirmed new listing gets wrongly excluded.
             qs = qs.filter(confirmation_status=ConfirmationStatus.FRESH)
+        # Strict about its value, unlike the two flags above: those accept any
+        # non-empty string and their tests pin that down, but `fresh=false` has
+        # an obvious intended meaning and must not switch the filter on.
+        if (self.request.query_params.get("fresh") or "").lower() in TRUTHY:
+            qs = qs.fresh()
         if category := self.request.query_params.get("category"):
             qs = qs.filter(category__slug=category)
 
