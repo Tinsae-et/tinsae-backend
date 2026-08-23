@@ -1,9 +1,11 @@
 from datetime import timedelta
 
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APITestCase
 
+from catalog.freshness import Freshness
 from catalog.models import Category, Product
 from shops.models import Shop
 from users.models import User
@@ -311,4 +313,66 @@ class ProductRankingTest(TestCase):
         )
         self.assertEqual(
             self._slugs("?category=phones"), ["phone-fresh", "phone-stale"]
+        )
+
+
+def setUp(self):
+    self.owner = User.objects.create_user(username="rank_merchant", password="pass")
+
+    self.client.force_authenticate(user=self.owner)
+
+    self.shop = Shop.objects.create(
+        name="Rank Shop", slug="rank-shop", owner=self.owner, is_verified=True
+    )
+
+    self.category = Category.objects.create(name="Electronics", slug="electronics")
+
+    self.product = Product.objects.create(
+        shop=self.shop,
+        category=self.category,
+        name="Phone",
+        brand="Samsung",
+        price=10000,
+    )
+
+
+class ProductFreshnessViewTests(APITestCase):
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="ashuye",
+            password="asdfg1234",
+        )
+
+        self.shop = Shop.objects.create(
+            name="Test shop",
+            owner=self.user,
+        )
+
+        self.category = Category.objects.create(
+            name="Phones",
+            slug="phones",
+        )
+
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Apple",
+            name="iPhone",
+            price=100,
+            last_confirmed_at=timezone.now(),
+        )
+
+    def test_product_freshness_endpoint(self):
+        url = reverse(
+            "productfreshness-freshness",
+            kwargs={"pk": self.product.pk},
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data["freshness"],
+            Freshness.FRESH,
         )

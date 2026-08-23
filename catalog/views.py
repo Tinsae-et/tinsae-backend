@@ -1,10 +1,13 @@
 from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
+from .freshness import get_freshness
 from .models import Category, ConfirmationStatus, Product, ProductImage
-from .serializers import CategorySerializer, ProductSerializer
+from .serializers import CategorySerializer, ProductImageSerializer, ProductSerializer
 
 ORDERING_FIELDS = {
     "name",
@@ -91,3 +94,25 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if ordering:
             return qs.order_by(ordering)
         return qs.order_by("freshness_rank", "-last_signal")
+
+
+class ProductImageViewSet(viewsets.ModelViewSet):
+    queryset = ProductImage.objects.all()
+    serializer_class = ProductImageSerializer
+
+    def get_object(self):
+        return Product.objects.get(pk=self.kwargs["pk"])
+
+    def perform_create(self, serializer):
+        serializer.save(product=self.get_object())
+
+
+class ProductfreshnessViewSet(viewsets.ModelViewSet):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+
+    @action(detail=True, methods=["get"])
+    def freshness(self, request, pk=None):
+        product = Product.objects.get(pk=self.kwargs["pk"])
+        fresh = get_freshness(product.last_confirmed_at)
+        return Response({"freshness": fresh})
