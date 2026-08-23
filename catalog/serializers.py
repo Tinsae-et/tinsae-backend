@@ -29,6 +29,9 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
+    # Derived at read time from `last_confirmed_at`, never stored. Reads the
+    # model property, which costs nothing extra: the column is already loaded.
+    freshness = serializers.ReadOnlyField()
 
     class Meta:
         model = Product
@@ -44,6 +47,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "images",
             "last_confirmed_at",
             "confirmation_status",
+            "freshness",
             "slug",
             "specs",
         ]

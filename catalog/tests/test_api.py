@@ -231,6 +231,11 @@ class ProductRankingTest(TestCase):
         self.assertEqual(response.status_code, 200)
         return [r["slug"] for r in response.data["results"]]
 
+    def _results(self, query=""):
+        response = APIClient().get(f"/api/v1/catalog/products/{query}")
+        self.assertEqual(response.status_code, 200)
+        return {r["slug"]: r for r in response.data["results"]}
+
     def test_fresh_outranks_otherwise_identical_stale(self):
         # Created fresh-first on purpose: under the inherited "-created_at"
         # ordering the stale one would come back first, so this fails loudly if
@@ -279,6 +284,61 @@ class ProductRankingTest(TestCase):
         )
         self.assertIn("stale-one", self._slugs())
         self.assertNotIn("stale-one", self._slugs("?freshness=1"))
+
+    def test_fresh_filter_uses_confirmation_timestamp(self):
+        self._product(
+            "recent-confirmation",
+            confirmation_status="stale",
+            last_confirmed_at=timezone.now() - timedelta(days=1),
+        )
+        self._product(
+            "old-confirmation",
+            confirmation_status="fresh",
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+        )
+
+        self.assertEqual(self._slugs("?fresh=true"), ["recent-confirmation"])
+
+    def test_list_exposes_the_derived_freshness_tier(self):
+        self._product("just-confirmed", last_confirmed_at=timezone.now())
+        self._product("aging", last_confirmed_at=timezone.now() - timedelta(days=3))
+        self._product(
+            "long-gone", last_confirmed_at=timezone.now() - timedelta(days=10)
+        )
+        # confirmation_status is left at its "fresh" default throughout: the
+        # buyer-facing tier must ignore the sweep's column entirely.
+        self._product("never-confirmed")
+
+        results = self._results()
+        self.assertEqual(results["just-confirmed"]["freshness"], "fresh")
+        self.assertEqual(results["aging"]["freshness"], "almost_expired")
+        self.assertEqual(results["long-gone"]["freshness"], "expired")
+        self.assertEqual(results["never-confirmed"]["freshness"], "expired")
+
+    def test_detail_exposes_the_derived_freshness_tier(self):
+        # List and detail share one serializer, but nothing else pins that down.
+        self._product("solo", last_confirmed_at=timezone.now())
+        response = APIClient().get("/api/v1/catalog/products/solo/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["freshness"], "fresh")
+
+    def test_fresh_filter_excludes_never_confirmed(self):
+        # The most common row in the catalog today, so worth pinning at the API
+        # layer and not only on the queryset helper.
+        self._product("confirmed", last_confirmed_at=timezone.now())
+        self._product("never-confirmed")
+        self.assertEqual(self._slugs("?fresh=true"), ["confirmed"])
+
+    def test_fresh_false_does_not_filter(self):
+        # `fresh` is the one flag that reads its value rather than its presence:
+        # a buyer asking for fresh=false is asking for the unfiltered list.
+        self._product("confirmed", last_confirmed_at=timezone.now())
+        self._product(
+            "long-gone", last_confirmed_at=timezone.now() - timedelta(days=10)
+        )
+        self.assertEqual(
+            sorted(self._slugs("?fresh=false")), ["confirmed", "long-gone"]
+        )
 
     def test_explicit_ordering_overrides_ranking_without_a_search_term(self):
         # `ordering` used to be honoured only alongside `q`, so this asserts both
