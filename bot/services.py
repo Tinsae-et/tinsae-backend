@@ -1,5 +1,6 @@
 import logging
 import re
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -60,11 +61,11 @@ def _prompt_markup(request_id: int) -> dict:
         "inline_keyboard": [
             [
                 {
-                    "text": "✅ Yes, in stock",
+                    "text": "✅ Still available",
                     "callback_data": f"confirm_{request_id}",
                 },
                 {
-                    "text": "❌ No, out of stock",
+                    "text": "❌ Sold out",
                     "callback_data": f"deny_{request_id}",
                 },
             ]
@@ -72,15 +73,51 @@ def _prompt_markup(request_id: int) -> dict:
     }
 
 
-def can_prompt(product: Product, *, expiry_cutoff=None) -> bool:
+def prompt_text(product: Product) -> str:
+    """The merchant-facing prompt: what we're asking about, and how to answer.
+
+    Public and composed up front rather than inline in the send path, so
+    `send_prompt` can show the wording without a token configured and the two
+    openings cannot drift apart.
+
+    The YES/NO line is a promise, not decoration: those words are in
+    `AFFIRMATIVE`/`NEGATIVE` below, and `parse_answer` lowercases before matching.
+    """
+    shop = product.shop
+    if product.is_available:
+        opening = "Is this still available?"
+    else:
+        # We only re-ask about an unavailable product because the merchant told
+        # us it was out of stock a while ago. Asking "is it still available?"
+        # would read as though we had ignored them.
+        opening = "Is this back in stock?"
+
+    # A DecimalField only holds a Decimal once it has been round-tripped through
+    # the database; on an instance built in memory it is still whatever was
+    # assigned, and a str has no ",.2f" format. Coerce so this works either way.
+    price = Decimal(product.price)
+
+    return (
+        f"{opening}\n\n"
+        f"{product.brand} {product.name}\n"
+        f"{price:,.2f} {product.currency} · {shop.name}\n\n"
+        "Tap a button below, or just reply YES or NO."
+    )
+
+
+def can_prompt(product: Product, *, expiry_cutoff=None, force: bool = False) -> bool:
     """Would a prompt for this product actually be sent?
 
     The single source of truth for the gates, so `sweep_freshness --dry-run`
     cannot drift from the real send path. `expiry_cutoff` lets a dry run discount
     the pending requests that the real run's expiry pass would have cleared
     before it got here.
+
+    `force` lifts the policy flag and nothing else. An unlinked shop and an
+    outstanding request still block the send, whoever is asking -- one is a
+    message with nowhere to go, the other is the double-send guard.
     """
-    if not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
+    if not force and not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
         logger.info(
             "Telegram prompts are disabled (ENABLE_TELEGRAM_BOT_PROMPTS=False)."
         )
@@ -101,17 +138,30 @@ def can_prompt(product: Product, *, expiry_cutoff=None) -> bool:
     return True
 
 
-def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
+def send_confirmation_prompt(
+    product: Product, *, force: bool = False
+) -> ConfirmationRequest | None:
     """Ask a shop to confirm a product is still in stock.
 
     Returns the pending ConfirmationRequest, or None if the prompt was skipped or
     the send failed. A failed send leaves no pending row behind, so the next sweep
     retries instead of being blocked for the whole expiry window.
+
+    `force` is for the hand-run `send_prompt` command and lifts only the policy
+    flag; see `can_prompt`.
     """
-    if not can_prompt(product):
+    if not can_prompt(product, force=force):
         return None
 
+    if force and not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
+        logger.warning(
+            "Forced prompt for product %s while prompts are disabled.", product.pk
+        )
+
     shop = product.shop
+    # Composed before the transport is checked, so a tokenless run can still show
+    # the merchant-facing wording.
+    text = prompt_text(product)
 
     # can_prompt's duplicate test is a read-then-write, so a concurrent sweep can slip
     # between the two. The partial unique constraint on ConfirmationRequest is
@@ -130,19 +180,12 @@ def send_confirmation_prompt(product: Product) -> ConfirmationRequest | None:
 
     if not telegram.is_configured():
         logger.info(
-            "[Mock Telegram] Prompt for product %s to chat %s",
+            "[Mock Telegram] Prompt for product %s to chat %s: %r",
             product.pk,
             shop.telegram_chat_id,
+            text,
         )
         return confirmation_request
-
-    if product.is_available:
-        text = f"Is '{product.name}' still available at {shop.name}?"
-    else:
-        # We only re-ask about an unavailable product because the merchant told
-        # us it was out of stock a while ago. Asking "is it still available?"
-        # would read as though we had ignored them.
-        text = f"Is '{product.name}' back in stock at {shop.name}?"
 
     try:
         result = telegram.send_message(
