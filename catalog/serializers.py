@@ -29,7 +29,9 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
-    freshness = serializers.SerializerMethodField()
+    # Derived at read time from `last_confirmed_at`, never stored. Reads the
+    # model property, which costs nothing extra: the column is already loaded.
+    freshness = serializers.ReadOnlyField()
 
     class Meta:
         model = Product
@@ -59,6 +61,3 @@ class ProductSerializer(serializers.ModelSerializer):
         return ProductImageSerializer(
             obj.product_image.all(), many=True, context=self.context
         ).data
-
-    def get_freshness(self, obj):
-        return obj.freshness
