@@ -1,8 +1,8 @@
 from django.shortcuts import get_object_or_404
-from rest_framework import permissions, status, viewsets
-from rest_framework.response import Response
+from rest_framework import permissions, viewsets
 
-from catalog.models import Category, Product
+from catalog.models import Product
+from catalog.services import apply_confirmation
 
 from .models import Shop
 from .permissions import IsOwnerOrReadOnly
@@ -38,32 +38,37 @@ class ShopViewSet(viewsets.ModelViewSet):
         serializer.save(owner=self.request.user)
 
 
-class ManageMyProductsViewSet(viewsets.ModelViewSet):
-    queryset = Product.objects.all()
-    permission_classes = [IsOwnerOrReadOnly]
+class ShopProductViewSet(viewsets.ModelViewSet):
+    """A merchant's own catalogue, nested under the shop that owns it.
+
+    Nested rather than flat because `Shop.owner` is a plain FK -- one user can
+    own several shops, so "the" shop cannot be inferred from the request. The
+    slug in the URL says which one.
+    """
+
+    permission_classes = [permissions.IsAuthenticated, IsOwnerOrReadOnly]
     serializer_class = ShopProductSerializer
     lookup_field = "slug"
 
-    def create(self, request, *args, **kwargs):
-        data = request.data.copy()
-        data.pop("category_slug", None)
-        serializer = self.get_serializer(data=data)
-        serializer.is_valid(raise_exception=True)
-        self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
-        return Response(
-            serializer.data, status=status.HTTP_201_CREATED, headers=headers
+    def get_shop(self):
+        # Ownership is enforced once, here, for every action. Filtering on owner
+        # rather than checking it afterwards makes someone else's shop a 404 and
+        # not a 403, so the URL space does not confirm which slugs exist.
+        return get_object_or_404(
+            Shop, slug=self.kwargs["shop_slug"], owner=self.request.user
+        )
+
+    def get_queryset(self):
+        return Product.objects.filter(shop=self.get_shop()).select_related(
+            "category", "shop"
         )
 
     def perform_create(self, serializer):
-        serializer.save(
-            shop=self.get_shop(),
-            category=self.get_category(self.request.data.get("category_slug")),
-            confirmation_status="fresh",
-        )
-
-    def get_shop(self):
-        return get_object_or_404(Shop, owner=self.request.user)
-
-    def get_category(self, slug):
-        return get_object_or_404(Category, slug=slug)
+        product = serializer.save(shop=self.get_shop())
+        # A new listing opens fresh through the confirmation service, never by
+        # setting the column here. `confirmation_status="fresh"` on its own is
+        # both a no-op (it is the model default) and a lie: it leaves
+        # `last_confirmed_at` NULL, which the sweep reads as stale and the
+        # buyer-facing tier reports as "expired". `confirmed=` carries the
+        # merchant's own availability answer rather than assuming in-stock.
+        apply_confirmation(product, confirmed=product.is_available)
