@@ -95,9 +95,7 @@ class ShopProductApiTest(TestCase):
             username="other_merchant", password="pass"
         )
         self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
-        self.other_shop = Shop.objects.create(
-            name="Other Shop", owner=self.other_owner
-        )
+        self.other_shop = Shop.objects.create(name="Other Shop", owner=self.other_owner)
         self.category = Category.objects.create(name="Phones", slug="phones")
         self.product = Product.objects.create(
             shop=self.shop,
