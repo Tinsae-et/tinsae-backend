@@ -1,6 +1,6 @@
 from rest_framework import serializers
 
-from catalog.models import Category, Product
+from catalog.models import Category, Product, ProductImage
 
 from .models import Shop
 
@@ -70,6 +70,11 @@ class ShopProductSerializer(serializers.ModelSerializer):
     category = serializers.SlugRelatedField(
         slug_field="slug", queryset=Category.objects.all()
     )
+    # The dashboard's badge. Reads `Product.freshness`, which delegates to
+    # `catalog.freshness.get_freshness` -- the same function the buyer-facing
+    # serializer and the SQL annotation both go through. Nothing recomputes the
+    # window here, and nothing should recompute it in the client either.
+    freshness = serializers.ReadOnlyField()
 
     class Meta:
         model = Product
@@ -85,6 +90,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "is_available",
             "last_confirmed_at",
             "confirmation_status",
+            "freshness",
             "slug",
             "specs",
         ]
@@ -99,3 +105,39 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "last_confirmed_at",
             "confirmation_status",
         ]
+
+
+class ShopProductImageSerializer(serializers.ModelSerializer):
+    """Images for one of the merchant's own products.
+
+    `product` is read-only for the same reason `shop` is on the product
+    serializer: it comes from the URL, which has already been ownership-checked.
+    Accepting it in the body would let a merchant attach an image to someone
+    else's listing.
+    """
+
+    class Meta:
+        model = ProductImage
+        fields = ["id", "image", "display_order", "is_primary", "product"]
+        read_only_fields = ["product"]
+
+    def validate_is_primary(self, value):
+        """Surface the partial unique constraint as a field error, not a 500.
+
+        `ProductImage` carries a UniqueConstraint on (product) where
+        is_primary=True. Without this check the second primary image raises
+        IntegrityError out of the database and DRF returns a 500.
+        """
+        if not value:
+            return value
+        product = self.context.get("product")
+        if product is None:
+            return value
+        clash = ProductImage.objects.filter(product=product, is_primary=True)
+        if self.instance is not None:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                "This product already has a primary image."
+            )
+        return value
