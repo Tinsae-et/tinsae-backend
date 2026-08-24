@@ -76,3 +76,29 @@ def apply_confirmation(
                 "updated_at",
             ]
         )
+
+
+def pause_listing(product: Product) -> None:
+    """Take a listing off the storefront without making a stock claim.
+
+    Deliberately *not* `apply_confirmation(confirmed=False)`. "Sold out" is an
+    answer -- the merchant is telling us something true about stock right now, so
+    it restarts the clock. Pausing is a refusal to answer: the listing is hidden
+    because the merchant does not want it shown, which says nothing about whether
+    the item exists. Restarting the clock here would let a merchant launder a
+    stale listing fresh by pausing and resuming it.
+
+    So the clock is left exactly where it was, and a paused listing keeps ageing.
+    """
+    product.is_available = False
+    product.save(update_fields=["is_available", "updated_at"])
+
+
+def resume_listing(product: Product) -> None:
+    """Put a paused listing back on the storefront.
+
+    This one *is* an answer -- the merchant is asserting the item is available
+    again -- so it goes through the confirmation service and restarts the clock,
+    exactly as the bot's "yes, still available" callback does.
+    """
+    apply_confirmation(product, confirmed=True)
