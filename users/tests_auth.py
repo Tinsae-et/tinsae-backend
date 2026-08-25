@@ -507,6 +507,10 @@ class TestPasswordReset(ThrottleResetMixin, APITestCase):
             {"identifier": "sara", "password": PASSWORD},
             format="json",
         ).data
+        # That login wrote last_login, which default_token_generator hashes. Mint
+        # the token from the stale in-memory user and the view rejects the link,
+        # so the reset never happens and this test passes for the wrong reason.
+        self.user.refresh_from_db()
         self._confirm()
         replay = self.client.post(
             reverse("token_refresh"), {"refresh": tokens["refresh"]}, format="json"

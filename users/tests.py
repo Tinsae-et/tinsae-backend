@@ -179,7 +179,10 @@ class TestRegistration(ThrottleResetMixin, APITestCase):
         shop = Shop.objects.get(owner=user)
         self.assertEqual(shop.name, "Tinsae Shop")
         self.assertEqual(shop.city, "Hawassa")
-        self.assertEqual(shop.phone, "0908434350")
+        # Canonicalised by `validate_phone`, and the same value is written to
+        # both the merchant and their shop — they are one number at registration.
+        self.assertEqual(shop.phone, "+251908434350")
+        self.assertEqual(user.phone, shop.phone)
 
     def test_new_shop_is_unverified(self):
         self._register()
@@ -263,24 +266,25 @@ class TestRegistration(ThrottleResetMixin, APITestCase):
         self.assertEqual(Shop.objects.filter(name="Tinsae Shop").count(), 0)
 
     def test_registration_is_throttled(self):
+        # Each attempt needs its own email and phone: both are unique now, so
+        # overriding only the username makes the second call a 400 on the
+        # duplicate and the throttle under test is never reached.
+        def attempt(n):
+            return self._register(
+                username=f"merchant{n}",
+                email=f"merchant{n}@tinsae.com",
+                phone=f"091100000{n}",
+            )
+
         with mock.patch.object(
             ScopedRateThrottle,
             "THROTTLE_RATES",
             {"register": "2/hour", "login": "10/min"},
         ):
-            self.assertEqual(
-                self._register(username="one").status_code,
-                status.HTTP_201_CREATED,
-            )
-            self.assertEqual(
-                self._register(username="two").status_code,
-                status.HTTP_201_CREATED,
-            )
-            self.assertEqual(
-                self._register(username="three").status_code,
-                status.HTTP_429_TOO_MANY_REQUESTS,
-            )
-        self.assertFalse(User.objects.filter(username="three").exists())
+            self.assertEqual(attempt(1).status_code, status.HTTP_201_CREATED)
+            self.assertEqual(attempt(2).status_code, status.HTTP_201_CREATED)
+            self.assertEqual(attempt(3).status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertFalse(User.objects.filter(username="merchant3").exists())
 
 
 class TestLogin(ThrottleResetMixin, APITestCase):
