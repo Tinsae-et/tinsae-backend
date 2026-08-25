@@ -80,8 +80,7 @@ def normalize_identity(apps, schema_editor):
     if problems:
         raise RuntimeError(
             "Cannot apply users.0002: these values must be unique but are "
-            "duplicated. Resolve them and re-run the migration.\n"
-            + "\n".join(problems)
+            "duplicated. Resolve them and re-run the migration.\n" + "\n".join(problems)
         )
 
 

@@ -157,7 +157,10 @@ class TestMultiIdentifierLogin(ThrottleResetMixin, APITestCase):
 
     def _login(self, identifier, password=PASSWORD, **extra):
         return self.client.post(
-            self.url, {"identifier": identifier, "password": password}, format="json", **extra
+            self.url,
+            {"identifier": identifier, "password": password},
+            format="json",
+            **extra,
         )
 
     def test_login_by_username(self):
@@ -363,7 +366,9 @@ class TestLogout(ThrottleResetMixin, APITestCase):
     def test_cannot_revoke_another_users_session(self):
         others = self._login("rival")
         self._auth(self.tokens)
-        response = self.client.post(self.url, {"refresh": others["refresh"]}, format="json")
+        response = self.client.post(
+            self.url, {"refresh": others["refresh"]}, format="json"
+        )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_garbage_refresh_token_is_a_400(self):
@@ -425,9 +430,7 @@ class TestPasswordChange(ThrottleResetMixin, APITestCase):
     def test_returned_tokens_are_usable(self):
         """The caller must not be logged out by their own password change."""
         response = self._change()
-        self.client.credentials(
-            HTTP_AUTHORIZATION=f"Bearer {response.data['access']}"
-        )
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
         me = self.client.get(reverse("me"))
         self.assertEqual(me.status_code, status.HTTP_200_OK)
 
@@ -612,7 +615,9 @@ class TestLoginThrottles(ThrottleResetMixin, APITestCase):
 
     def test_ip_throttle_applies_across_accounts(self):
         User.objects.create_user(username="rival", password=PASSWORD)
-        with mock.patch.object(LoginIPThrottle, "THROTTLE_RATES", {"login_ip": "2/min"}):
+        with mock.patch.object(
+            LoginIPThrottle, "THROTTLE_RATES", {"login_ip": "2/min"}
+        ):
             self._attempt("sara")
             self._attempt("rival")
             third = self._attempt("someone-else")

@@ -2,6 +2,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import include, path
+
 from ops.urls import page_urlpatterns as ops_page_urlpatterns
 from users.views import ThrottledTokenObtainPairView, ThrottledTokenRefreshView
 

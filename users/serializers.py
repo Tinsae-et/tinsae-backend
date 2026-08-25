@@ -178,9 +178,7 @@ class MultiIdentifierTokenObtainPairSerializer(TokenObtainPairSerializer):
         # both means this ships without a coordinated frontend release; the alias
         # can be dropped once the form posts `identifier`.
         self.fields[self.username_field].required = False
-        self.fields["username"] = serializers.CharField(
-            write_only=True, required=False
-        )
+        self.fields["username"] = serializers.CharField(write_only=True, required=False)
 
     def validate(self, attrs):
         identifier = attrs.get(self.username_field) or attrs.pop("username", None)
