@@ -488,13 +488,15 @@ class TestPasswordReset(ThrottleResetMixin, APITestCase):
         self.assertFalse(send_password_reset_email(noemail))
         self.assertEqual(len(mail.outbox), 0)
 
-    def test_smtp_failure_does_not_leak_account_existence(self):
+    @mock.patch("users.views.logger")
+    def test_smtp_failure_does_not_leak_account_existence(self, mock_logger):
         # A 500 here would distinguish a registered address as loudly as a 404.
         with mock.patch(
             "users.views.send_password_reset_email", side_effect=OSError("smtp down")
         ):
             response = self._request("sara@shop.et")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_logger.exception.assert_called_once()
 
     def test_confirm_sets_the_new_password(self):
         self.assertEqual(self._confirm().status_code, status.HTTP_200_OK)
