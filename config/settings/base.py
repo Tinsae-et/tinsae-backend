@@ -1,3 +1,4 @@
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -19,6 +20,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
     "health",
     "users",
@@ -63,6 +65,12 @@ DATABASES = {"default": env.db("DATABASE_URL")}
 
 AUTH_USER_MODEL = "users.User"
 
+# Replaces ModelBackend rather than sitting alongside it: MultiIdentifierBackend
+# subclasses it and handles the plain `username=` kwarg, so the admin login form
+# keeps working and admins gain email/phone login too. Listing both would only
+# mean every failed login runs the password hasher twice.
+AUTHENTICATION_BACKENDS = ["users.backends.MultiIdentifierBackend"]
+
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"
@@ -98,9 +106,52 @@ REST_FRAMEWORK = {
         # Registration is the spam target, not login: it needs no credentials
         # and writes two rows per call, so it is deliberately tighter.
         "register": "10/hour",
-        "login": "10/min",
+        # Login is limited on two axes at once (users.throttles). A single
+        # per-IP cap is wrong in both directions: it locks out a NAT'd carrier
+        # block on legitimate traffic while leaving an attacker who spreads one
+        # account's guesses across many IPs unlimited.
+        "login_ip": "30/min",
+        "login_account": "5/min",
+        # A well-behaved client refreshes ~4x/hour at a 15-minute access
+        # lifetime. This is loose enough for a shared egress IP and still caps
+        # grinding the endpoint.
+        "token_refresh": "60/min",
+        # Each request sends an email. Tight on purpose.
+        "password_reset": "5/hour",
     },
 }
+
+SIMPLE_JWT = {
+    # 5 minutes (the library default) means a refresh every few clicks. 15 is
+    # long enough to be invisible and short enough to bound the window in which
+    # a leaked access token — or one belonging to a session that has since
+    # logged out — still works.
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    # The default is 1 day, i.e. merchants log in again every morning.
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=14),
+    # Together these make a refresh single-use: each one issues a new token and
+    # blacklists the one it consumed, so replaying a stolen refresh fails and is
+    # visible in the blacklist table.
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    # Off by default, which leaves `last_login` null forever — the admin and
+    # ops/metrics cannot then tell an active merchant from a dormant one.
+    "UPDATE_LAST_LOGIN": True,
+}
+
+# Console backend by default so password reset is fully exercisable in dev with
+# no SMTP anywhere. Unlike DJANGO_SECRET_KEY and DATABASE_URL these do not fail
+# loudly when unset: a missing mail server should not stop the server booting.
+EMAIL_BACKEND = env(
+    "DJANGO_EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend"
+)
+DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Tinsae <no-reply@tinsae.et>")
+
+# Password reset links point at the Next.js reset page, not at Django — the
+# backend never renders a page for this flow, it only validates the uid/token
+# pair the frontend posts back.
+FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
+PASSWORD_RESET_TIMEOUT = env.int("PASSWORD_RESET_TIMEOUT", default=60 * 60 * 3)
 
 # Throttle counters live here. LocMemCache is per-process: under multi-worker
 # gunicorn every worker keeps its own counter and the effective rate becomes
@@ -153,3 +204,8 @@ CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
 # Products per page in the bot's /myproducts listing. Telegram inline keyboards
 # become unusable past a handful of rows, so the listing pages instead of capping.
 MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
+
+# Hours an admin-issued Telegram link code stays valid. Short on purpose: the
+# code is a bearer credential for a shop's prompt channel, and it reaches the
+# merchant over whatever channel support happens to be using that day.
+TELEGRAM_LINK_CODE_TTL_HOURS = env.int("TELEGRAM_LINK_CODE_TTL_HOURS", default=24)

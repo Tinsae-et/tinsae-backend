@@ -653,7 +653,7 @@ class MyProductsHandlerTests(BotTestCase):
 
         async_to_sync(my_products)(update, None)
 
-        self.assertIn("/start", message.reply_text.call_args.args[0])
+        self.assertIn("/link", message.reply_text.call_args.args[0])
 
     def test_an_up_to_date_shop_is_told_there_is_nothing_to_do(self):
         Product.objects.filter(pk=self.stale_product.pk).update(
