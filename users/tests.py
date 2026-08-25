@@ -11,6 +11,7 @@ from shops.models import Shop
 
 from .models import User
 from .serializers import ShopOwnerRegistrationSerializer, UserSerializer
+from .throttles import LoginAccountThrottle
 
 # Registration runs AUTH_PASSWORD_VALIDATORS, so payload passwords have to pass
 # them; `create_user()` does not, which is why fixtures built directly below
@@ -71,11 +72,21 @@ class TestShopOwnerRegistrationSerializer(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("username", serializer.errors)
 
-    def test_duplicate_email_is_allowed(self):
-        # Email carries no unique constraint and is not the login identifier.
+    def test_duplicate_email_is_rejected(self):
+        # Email is unique when present -- it is a login identifier and the
+        # account-recovery channel, so it cannot address two accounts.
         serializer = ShopOwnerRegistrationSerializer(
             data=self._data(email="existing@tinsae.com")
         )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("email", serializer.errors)
+
+    def test_email_is_optional(self):
+        # Deliberately optional: a large share of merchants have no email they
+        # read, and forcing the field yields a unique constraint over fake data.
+        data = self._data()
+        del data["email"]
+        serializer = ShopOwnerRegistrationSerializer(data=data)
         self.assertTrue(serializer.is_valid(), serializer.errors)
 
     def test_duplicate_shop_name_is_allowed(self):
@@ -198,9 +209,10 @@ class TestRegistration(ThrottleResetMixin, APITestCase):
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn("username", response.data)
 
-    def test_duplicate_email_registration_succeeds(self):
+    def test_duplicate_email_registration_is_rejected(self):
         response = self._register(email="test@tinsae.com")
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("email", response.data)
 
     def test_duplicate_shop_name_registration_succeeds(self):
         response = self._register(shop_name="Existing Shop")
@@ -304,10 +316,11 @@ class TestLogin(ThrottleResetMixin, APITestCase):
         self.assertEqual(unknown.data, wrong_password.data)
 
     def test_login_is_throttled(self):
+        # Login no longer runs on ScopedRateThrottle: it is capped per-IP and
+        # per-account at once (users.throttles). This exercises the per-account
+        # cap, which is the one that stops a password guessing run.
         with mock.patch.object(
-            ScopedRateThrottle,
-            "THROTTLE_RATES",
-            {"register": "10/hour", "login": "2/min"},
+            LoginAccountThrottle, "THROTTLE_RATES", {"login_account": "2/min"}
         ):
             payload = {"username": "shopowner", "password": "wrong"}
             self.client.post(self.token_url, payload, format="json")

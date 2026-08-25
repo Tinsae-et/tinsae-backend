@@ -12,4 +12,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings.dev"
-python_files = ["test_*.py", "tests.py"]
+# "tests_*.py" matters: without it pytest silently skips tests_isolation.py,
+# tests_freshness.py and tests_auth.py, which Django's own runner does collect.
+python_files = ["test_*.py", "tests.py", "tests_*.py"]
