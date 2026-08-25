@@ -1,5 +1,12 @@
-from django.contrib import admin
+from django.contrib import admin, messages
+from django.utils.html import format_html
+from django.utils.timezone import localtime
 
+# `bot` depends on `shops`, not the other way round — but the link code is a
+# Telegram concept and belongs in `bot`, and the action that mints one has to
+# hang off ShopAdmin. Admin modules load after the app registry is populated, so
+# this is safe; it mirrors the existing catalog import below.
+from bot.services import issue_link_code
 from catalog.models import Product
 
 from .models import Shop
@@ -15,9 +22,49 @@ class ProductInline(admin.TabularInline):
 
 @admin.register(Shop)
 class ShopAdmin(admin.ModelAdmin):
-    list_display = ("name", "city", "is_verified", "owner", "created_at")
-    list_filter = ("is_verified", "city")
+    list_display = (
+        "name",
+        "city",
+        "is_verified",
+        "telegram_linked",
+        "owner",
+        "created_at",
+    )
+    list_filter = (
+        "is_verified",
+        "city",
+        # `telegram_chat_id` is blank rather than null when unset, which
+        # EmptyFieldListFilter treats as empty — so this reads as linked/unlinked.
+        ("telegram_chat_id", admin.EmptyFieldListFilter),
+    )
     search_fields = ("name", "city")
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("created_at", "updated_at")
     inlines = [ProductInline]
+    actions = ["generate_telegram_link_code"]
+
+    @admin.display(boolean=True, description="Telegram", ordering="telegram_chat_id")
+    def telegram_linked(self, obj):
+        """Whether the bot has anywhere to send this shop's prompts."""
+        return bool(obj.telegram_chat_id)
+
+    @admin.action(description="Generate Telegram link code")
+    def generate_telegram_link_code(self, request, queryset):
+        """Mint one code per selected shop and show it for copy-paste.
+
+        Shown as a message rather than surfaced on the change form: the code is a
+        bearer credential and this is the only place it needs to be readable.
+        """
+        for shop in queryset:
+            link_code = issue_link_code(shop, created_by=request.user)
+            self.message_user(
+                request,
+                format_html(
+                    "{}: ask the merchant to send <code>/link {}</code> to the "
+                    "bot. Valid until {}.",
+                    shop.name,
+                    link_code.code,
+                    localtime(link_code.expires_at).strftime("%Y-%m-%d %H:%M"),
+                ),
+                messages.SUCCESS,
+            )

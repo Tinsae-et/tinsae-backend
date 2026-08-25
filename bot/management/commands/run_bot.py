@@ -27,6 +27,8 @@ from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
     handle_text_reply,
+    link_shop_to_chat,
+    looks_like_link_code,
 )
 
 # Telegram truncates long button labels unhelpfully; do it ourselves so the
@@ -46,12 +48,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(
         "Inbound /start from user %s (chat %s)", update.effective_user.username, chat_id
     )
-    # The chat ID is echoed back because it is exactly what a merchant needs to
-    # paste into their shop record before confirmation prompts can reach them.
+    # The link code, not the chat ID, is what a merchant now needs: `/link` binds
+    # the shop for them. The chat ID stays on the last line because support still
+    # asks for it when diagnosing a shop that is prompting the wrong chat.
     text = (
-        "Welcome to tinsae marketplace\n"
-        f"Your chat ID is {chat_id}\n"
-        "enter /help for help."
+        "Welcome to Tinsae marketplace.\n\n"
+        "To connect your shop, send me its link code — like this:\n"
+        "/link TIN-ABC2345\n\n"
+        "Ask us for a code if you don't have one. Enter /help for help.\n"
+        f"(Support may ask for this chat ID: {chat_id})"
     )
     await update.message.reply_text(text=text)
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
@@ -63,7 +68,8 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Inbound /help from user %s (chat %s)", update.effective_user.username, chat_id
     )
     text = (
-        "This is help page what do you want to know?\n"
+        "This is the help page — what do you want to know?\n"
+        "/link <code> — connect this chat to your shop.\n"
         "/myproducts — list the products waiting on your confirmation."
     )
     await update.message.reply_text(text=text)
@@ -126,8 +132,8 @@ async def my_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not shops:
         await update.message.reply_text(
-            "This chat is not linked to a shop yet. Send /start, then paste the "
-            "chat ID it gives you into your shop record."
+            "This chat is not linked to a shop yet. Send your shop's link code — "
+            "like /link TIN-ABC2345 — or ask us for one."
         )
         return
 
@@ -218,6 +224,63 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+def _link_ack(outcome: str, shop) -> str:
+    """One short line per link outcome. Every failure names a way forward."""
+    if outcome == "linked":
+        return (
+            "✅ Linked! This chat now receives stock confirmations for "
+            f"{shop.name}.\nSend /myproducts to see what's waiting on you."
+        )
+    if outcome == "relinked":
+        return (
+            f"✅ Done — {shop.name} now sends its confirmations here instead of "
+            "the chat it used before.\nSend /myproducts to see what's waiting."
+        )
+    if outcome == "already_linked":
+        return (
+            f"👍 This chat is already linked to {shop.name}. "
+            "Send /myproducts to see what's waiting on you."
+        )
+    if outcome == "expired":
+        return (
+            "That code has expired — they are only good for a short while. "
+            "Ask us for a new one and send it here."
+        )
+    if outcome == "used":
+        return (
+            "That code has already been used. Ask us for a new one if this chat "
+            "still needs linking to your shop."
+        )
+    return (
+        "I don't recognise that code. They look like TIN-ABC2345 — check it and "
+        "send it again, or ask us for a new one."
+    )
+
+
+async def _apply_link(update: Update, chat_id, code: str):
+    """Spend a code and report the outcome. Shared by /link and a bare paste."""
+    outcome, shop = await sync_to_async(link_shop_to_chat, thread_sensitive=True)(
+        code=code, chat_id=str(chat_id)
+    )
+    await update.message.reply_text(_link_ack(outcome, shop))
+
+
+async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bind this chat to a shop using a one-time code issued in the admin."""
+    chat_id = update.effective_chat.id
+    # The code itself is never logged: it is a bearer credential until spent.
+    logger.info("Inbound /link from chat %s", chat_id)
+
+    argument = " ".join(context.args) if context.args else ""
+    if not argument:
+        await update.message.reply_text(
+            "Send the code along with the command, like this:\n/link TIN-ABC2345"
+        )
+        return
+
+    await _apply_link(update, chat_id, argument)
+
+
 def _text_reply_ack(outcome: str, product) -> str:
     """One short line per outcome. Every failure names a way forward."""
     if outcome == "confirmed":
@@ -247,6 +310,16 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     chat_id = update.effective_chat.id
     reply_to = message.reply_to_message.message_id if message.reply_to_message else None
+
+    # A merchant who pastes the bare code without the command still gets linked.
+    # Checked first, and only for text already shaped like a code, so the yes/no
+    # path below is untouched. Logged before the text is, so the code never
+    # reaches the log line underneath.
+    if looks_like_link_code(message.text):
+        logger.info("Inbound bare link code from chat %s", chat_id)
+        await _apply_link(update, chat_id, message.text)
+        return
+
     logger.info(
         "Inbound text %r from chat %s (reply_to=%s)", message.text, chat_id, reply_to
     )
@@ -260,7 +333,10 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 class Command(BaseCommand):
-    help = "Runs the Telegram listener: onboarding, /myproducts, and stock callbacks."
+    help = (
+        "Runs the Telegram listener: onboarding, shop linking, /myproducts, "
+        "and stock callbacks."
+    )
 
     def handle(self, *args, **options):
         token = settings.TELEGRAM_BOT_TOKEN
@@ -272,6 +348,7 @@ class Command(BaseCommand):
         app = Application.builder().token(token).build()
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help))
+        app.add_handler(CommandHandler("link", link))
         app.add_handler(CommandHandler("myproducts", my_products))
         app.add_handler(CallbackQueryHandler(on_callback))
         # Last, and command-free: a merchant who ignores the buttons and just

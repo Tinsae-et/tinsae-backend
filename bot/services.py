@@ -4,12 +4,20 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from catalog.models import Product
 from catalog.services import apply_confirmation
+from shops.models import Shop
 
 from . import telegram_api as telegram
-from .models import ConfirmationRequest
+from .models import (
+    LINK_CODE_ALPHABET,
+    LINK_CODE_LENGTH,
+    LINK_CODE_PREFIX,
+    ConfirmationRequest,
+    ShopLinkCode,
+)
 from .selectors import pending_request_for_chat
 
 logger = logging.getLogger(__name__)
@@ -17,6 +25,14 @@ logger = logging.getLogger(__name__)
 # /myproducts buttons are product-keyed and colon-separated, so they cannot be
 # confused with the underscore-separated `confirm_<request_pk>` prompt callbacks.
 PRODUCT_CALLBACK_ACTIONS = {"pconfirm": True, "pdeny": False}
+
+# A well-formed code sitting inside a longer message. The trailing lookahead stops
+# a mistyped, over-long code from matching on its first seven characters and
+# quietly binding the shop the merchant did not mean.
+LINK_CODE_RE = re.compile(
+    rf"{re.escape(LINK_CODE_PREFIX)}[{LINK_CODE_ALPHABET}]{{{LINK_CODE_LENGTH}}}"
+    r"(?![0-9A-Z])"
+)
 
 # Free-text answers, matched as whole normalised phrases. Kept deliberately
 # small and exact: a wrong guess writes to the catalogue, and substring matching
@@ -378,3 +394,165 @@ def handle_text_reply(
     apply_confirmation(product, confirmed=confirmed, request=request)
     logger.info("Applied text reply %r to product %s.", text, product.pk)
     return ("confirmed" if confirmed else "sold_out"), product
+
+
+def issue_link_code(shop: Shop, *, created_by=None) -> ShopLinkCode:
+    """Mint a link code for a shop, retiring any it already has outstanding.
+
+    One live code per shop. Two in circulation means the merchant who is read the
+    older one gets a baffling failure, and it doubles the window in which a
+    leaked code still works. Retiring by expiry rather than deletion keeps the
+    audit trail and makes the stale one report "expired", which is the truth.
+    """
+    now = timezone.now()
+    with transaction.atomic():
+        # `.update()` does not fire auto_now, so updated_at is set by hand.
+        ShopLinkCode.objects.filter(
+            shop=shop, used_at__isnull=True, expires_at__gt=now
+        ).update(expires_at=now, updated_at=now)
+
+        # `code` is assigned blind in save(); the unique constraint is the guard.
+        for _ in range(5):
+            try:
+                with transaction.atomic():
+                    return ShopLinkCode.objects.create(shop=shop, created_by=created_by)
+            except IntegrityError:
+                continue
+        raise RuntimeError("Could not generate a unique Telegram link code.")
+
+
+def normalise_link_code(text: str) -> str:
+    """Canonicalise whatever the merchant typed, or "" if it isn't code-shaped.
+
+    Generous on input because the code travels by voice and by copy-paste:
+    lowercase, stray spaces and a dropped prefix are all forgiven. The alphabet
+    and length checks are what keep it strict.
+    """
+    if not text:
+        return ""
+    compact = "".join(text.split()).upper()
+    if compact.startswith(LINK_CODE_PREFIX):
+        compact = compact[len(LINK_CODE_PREFIX) :]
+    compact = compact.lstrip("-")
+    if len(compact) != LINK_CODE_LENGTH:
+        return ""
+    if any(character not in LINK_CODE_ALPHABET for character in compact):
+        return ""
+    return f"{LINK_CODE_PREFIX}{compact}"
+
+
+def resolve_link_code(text: str) -> str:
+    """The code the merchant meant, or "" if there isn't one.
+
+    Two passes, because codes arrive two ways. The whole message may *be* the
+    code — then case, spacing and a dropped prefix are all forgiven, since it is
+    read aloud down a phone line as often as it is pasted. Or the code sits
+    inside a sentence ("here's my code TIN-ABC2345"), where it must be
+    well-formed and prefixed before it is safe to pick out.
+    """
+    whole = normalise_link_code(text)
+    if whole:
+        return whole
+    if not text:
+        return ""
+    match = LINK_CODE_RE.search(text.upper())
+    return match.group(0) if match else ""
+
+
+def looks_like_link_code(text: str) -> bool:
+    """Is this bare message about linking, rather than an answer to a prompt?
+
+    Routes free text in `run_bot` before it reaches `handle_text_reply`. A prefix
+    is required either way — at the start of the message, or on a code embedded
+    in one. `/link` is more forgiving, because there the merchant has already
+    said what they mean.
+
+    A message that merely *opens* with the prefix routes here even when the code
+    is malformed: that earns "I don't recognise that code", which is the useful
+    failure, rather than being handed to the yes/no parser and nagged about
+    stock. And because the prefix is uppercase and punctuated, no member of
+    AFFIRMATIVE/NEGATIVE can reach this path — `tests_linking` pins that against
+    the real vocabularies rather than a sample.
+    """
+    if not text:
+        return False
+    if "".join(text.split()).upper().startswith(LINK_CODE_PREFIX):
+        return True
+    return bool(LINK_CODE_RE.search(text.upper()))
+
+
+def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
+    """Bind a Telegram chat to the Shop named by a one-time code.
+
+    Returns `(outcome, shop)`, where outcome is one of "linked", "relinked",
+    "already_linked", "unknown", "expired", "used". The caller owns the wording —
+    the same split as `handle_text_reply`.
+
+    Linking is additive per chat and exclusive per shop: one chat may run several
+    shops (see `selectors.shops_for_chat`), but a shop has exactly one chat.
+
+    The code is never logged. It is a bearer credential, and a log aggregator is
+    not a place to leave one.
+    """
+    normalised = resolve_link_code(code)
+    if not normalised or chat_id in (None, ""):
+        return "unknown", None
+
+    chat_id = str(chat_id)
+    now = timezone.now()
+
+    with transaction.atomic():
+        try:
+            # Locked, not merely fetched: two chats racing one code must not
+            # both come away believing they won it.
+            link_code = (
+                ShopLinkCode.objects.select_for_update()
+                .select_related("shop")
+                .get(code=normalised)
+            )
+        except ShopLinkCode.DoesNotExist:
+            logger.info("Link attempt from chat %s with an unknown code.", chat_id)
+            return "unknown", None
+
+        shop = link_code.shop
+
+        if link_code.used_at is not None:
+            # A merchant who taps send twice should hear "you're already linked",
+            # not "invalid code". Anyone else replaying it hears "used".
+            if (
+                str(link_code.used_by_chat_id) == chat_id
+                and str(shop.telegram_chat_id) == chat_id
+            ):
+                return "already_linked", shop
+            logger.warning(
+                "Chat %s replayed a spent link code for shop %s (spent by chat %s).",
+                chat_id,
+                shop.pk,
+                link_code.used_by_chat_id,
+            )
+            return "used", None
+
+        if link_code.expires_at <= now:
+            logger.info("Link attempt from chat %s with an expired code.", chat_id)
+            return "expired", None
+
+        previous = str(shop.telegram_chat_id or "")
+        if previous == chat_id:
+            outcome = "already_linked"
+        elif previous:
+            outcome = "relinked"
+            logger.warning(
+                "Shop %s moved from chat %s to chat %s.", shop.pk, previous, chat_id
+            )
+        else:
+            outcome = "linked"
+
+        shop.telegram_chat_id = chat_id
+        shop.save(update_fields=["telegram_chat_id", "updated_at"])
+
+        link_code.used_at = now
+        link_code.used_by_chat_id = chat_id
+        link_code.save(update_fields=["used_at", "used_by_chat_id", "updated_at"])
+
+    logger.info("Chat %s linked to shop %s (%s).", chat_id, shop.pk, outcome)
+    return outcome, shop
