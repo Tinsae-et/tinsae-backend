@@ -32,6 +32,8 @@ class ProductSerializer(serializers.ModelSerializer):
     # Derived at read time from `last_confirmed_at`, never stored. Reads the
     # model property, which costs nothing extra: the column is already loaded.
     freshness = serializers.ReadOnlyField()
+    verified_score = serializers.IntegerField(read_only=True)
+    typo_score = serializers.FloatField(read_only=True)
 
     class Meta:
         model = Product
@@ -47,6 +49,8 @@ class ProductSerializer(serializers.ModelSerializer):
             "images",
             "last_confirmed_at",
             "confirmation_status",
+            "verified_score",
+            "typo_score",
             "freshness",
             "slug",
             "specs",

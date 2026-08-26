@@ -13,7 +13,9 @@ keys as strings.
 
 import logging
 
+from django.contrib.postgres.search import TrigramSimilarity
 from django.db import transaction
+from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 
 from bot.models import ConfirmationRequest
@@ -102,3 +104,46 @@ def resume_listing(product: Product) -> None:
     exactly as the bot's "yes, still available" callback does.
     """
     apply_confirmation(product, confirmed=True)
+
+
+SYNONYMS = {
+    "phone": ["mobile", "smartphone"],
+    "mobile": ["phone", "smartphone"],
+    "laptop": ["computer", "notebook"],
+    "computer": ["laptop", "notebook"],
+}
+
+
+def searched_items(query: str):
+    query = query.lower().strip()
+    terms = {query}
+    words = query.split()
+    for word in words:
+        terms.add(word)
+        terms.update(SYNONYMS.get(word, []))
+    return terms
+
+
+def SearchProduct(query: str):
+    terms = searched_items(query)
+    search_filter = Q()
+    for term in terms:
+        search_filter = search_filter | (
+            Q(name__icontains=term)
+            | Q(brand__icontains=term)
+            | Q(category__name__icontains=term)
+        )
+    return (
+        Product.objects.filter(search_filter, is_available=True)
+        .annotate(
+            typo_score=(
+                TrigramSimilarity("name", query) + TrigramSimilarity("brand", query)
+            ),
+            verified_score=Case(
+                When(shop__is_verified=True, then=Value(10)),
+                default=Value(0),
+                output_field=IntegerField(),
+            ),
+        )
+        .order_by("-last_confirmed_at", "-verified_score", "typo_score")
+    )

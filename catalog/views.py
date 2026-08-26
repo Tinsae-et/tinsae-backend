@@ -5,6 +5,7 @@ from rest_framework.exceptions import ValidationError
 
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
+from .services import SearchProduct
 
 ORDERING_FIELDS = {
     "name",
@@ -98,3 +99,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if ordering:
             return qs.order_by(ordering)
         return qs.order_by("freshness_rank", "-last_signal")
+
+
+class ProductSearchViewSet(viewsets.ModelViewSet):
+    serializer_class = ProductSerializer
+
+    def get_queryset(self):
+        query = self.request.query_params.get("q", "").strip()
+        if not query:
+            return Product.objects.none()
+        return SearchProduct(query)

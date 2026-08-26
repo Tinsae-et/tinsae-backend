@@ -372,3 +372,201 @@ class ProductRankingTest(TestCase):
         self.assertEqual(
             self._slugs("?category=phones"), ["phone-fresh", "phone-stale"]
         )
+
+
+class ProductSearchTest(TestCase):
+    """Tests for product search and ranking."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="search_merchant",
+            password="pass",
+        )
+
+        self.verified_shop = Shop.objects.create(
+            name="Verified Shop",
+            slug="verified-shop",
+            owner=self.owner,
+            is_verified=True,
+        )
+
+        self.unverified_shop = Shop.objects.create(
+            name="Unverified Shop",
+            slug="unverified-shop",
+            owner=self.owner,
+            is_verified=False,
+        )
+
+        self.phone_category = Category.objects.create(
+            name="Phones",
+            slug="phones",
+        )
+
+        self.laptop_category = Category.objects.create(
+            name="Laptops",
+            slug="laptops",
+        )
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.phone_category,
+            "shop": self.verified_shop,
+            "brand": "Samsung",
+            "name": "Samsung Phone",
+            "slug": slug,
+            "price": "10000.00",
+            "specs": {},
+            "last_confirmed_at": None,
+            "is_available": True,
+        }
+
+        fields.update(overrides)
+
+        return Product.objects.create(**fields)
+
+    def _slugs(self, query=""):
+        response = APIClient().get(f"/api/v1/catalog/productsearch/{query}")
+        self.assertEqual(response.status_code, 200)
+
+        return [r["slug"] for r in response.data["results"]]
+
+    def _results(self, query=""):
+        response = APIClient().get(f"/api/v1/catalog/productsearch/{query}")
+
+        self.assertEqual(response.status_code, 200)
+
+        return {r["slug"]: r for r in response.data["results"]}
+
+    def test_search_by_product_name(self):
+        self._product(
+            "samsung-s24",
+            name="Samsung Galaxy S24",
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            ["samsung-s24"],
+        )
+
+    def test_search_by_brand(self):
+        self._product(
+            "samsung-phone",
+            brand="Samsung",
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            ["samsung-phone"],
+        )
+
+    def test_search_by_category(self):
+        self._product(
+            "samsung-s24",
+            name="Galaxy S24",
+            brand="Samsung",
+            category=self.phone_category,
+        )
+
+        self.assertIn(
+            "samsung-s24",
+            self._slugs("?q=phones"),
+        )
+
+    def test_search_synonym(self):
+        self._product(
+            "samsung-phone",
+            name="Samsung Galaxy",
+            brand="Samsung",
+        )
+
+        self.assertIn(
+            "samsung-phone",
+            self._slugs("?q=phone"),
+        )
+
+    def test_search_multiple_words(self):
+        self._product(
+            "samsung-s24",
+            name="Samsung Galaxy S24",
+            brand="Samsung",
+        )
+
+        self.assertIn(
+            "samsung-s24",
+            self._slugs("?q=samsung phone"),
+        )
+
+    def test_unavailable_products_are_excluded(self):
+        self._product(
+            "available-phone",
+            name="Samsung Phone",
+            is_available=True,
+        )
+
+        self._product(
+            "sold-out-phone",
+            name="Samsung Phone",
+            is_available=False,
+        )
+
+        results = self._slugs("?q=samsung")
+
+        self.assertIn("available-phone", results)
+        self.assertNotIn("sold-out-phone", results)
+
+    def test_verified_shop_gets_higher_score(self):
+        self._product(
+            "verified-phone",
+            name="Samsung Phone",
+            shop=self.verified_shop,
+        )
+
+        self._product(
+            "unverified-phone",
+            name="Samsung Phone",
+            shop=self.unverified_shop,
+        )
+
+        results = self._results("?q=samsung")
+
+        self.assertEqual(
+            results["verified-phone"]["verified_score"],
+            10,
+        )
+
+        self.assertEqual(
+            results["unverified-phone"]["verified_score"],
+            0,
+        )
+
+    def test_verified_product_ranks_higher(self):
+        self._product(
+            "unverified-phone",
+            name="Samsung Phone",
+            shop=self.unverified_shop,
+        )
+
+        self._product(
+            "verified-phone",
+            name="Samsung Phone",
+            shop=self.verified_shop,
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            [
+                "verified-phone",
+                "unverified-phone",
+            ],
+        )
+
+    def test_empty_search_returns_no_products(self):
+        self._product(
+            "samsung-phone",
+            name="Samsung Phone",
+        )
+
+        self.assertEqual(
+            self._slugs("?q="),
+            [],
+        )
