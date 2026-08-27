@@ -92,6 +92,18 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "core.pagination.DefaultPagination",
     "PAGE_SIZE": 20,
+    # How many proxies sit in front of the app. Load-bearing for the login
+    # throttles below, which key on DRF's `get_ident()`: left unset, DRF trusts
+    # X-Forwarded-For and takes the client-supplied end of the chain, so a
+    # caller picks their own throttle bucket by sending the header and the
+    # per-IP cap stops meaning anything. Counting back a fixed number of hops
+    # instead makes the value forgeable only by the proxies themselves.
+    #
+    # 0 locally and in CI (nothing in front, so REMOTE_ADDR is the client); set
+    # it to the real hop count in production -- 1 behind a single Railway or
+    # nginx layer. Too high is as wrong as too low: it reads an address the
+    # client controls.
+    "NUM_PROXIES": env.int("NUM_PROXIES", default=0),
     "DEFAULT_PERMISSION_CLASSES": (
         "rest_framework.permissions.IsAuthenticatedOrReadOnly",
     ),

@@ -54,9 +54,15 @@
   </div>
   <div>
     <span class="ops-big">{{ health.catalog.stale }}</span>
-    stale
+    stale &mdash; due a prompt
     <span class="ops-muted">({{ health.catalog.stale_by_clock }} by live
       clock)</span>
+  </div>
+  <div>
+    <span class="ops-big">{{ health.catalog.unconfirmed }}</span>
+    unconfirmed
+    <span class="ops-muted">prompted, no answer &mdash; still listed, no
+      badge</span>
   </div>
   <div>
     <span class="ops-big">{{ health.requests.pending }}</span>
@@ -74,7 +80,7 @@
 <p>
   {{ health.requests.total }} ever sent &mdash;
   {{ health.requests.confirmed }} confirmed,
-  {{ health.requests.denied }} denied,
+  {{ health.requests.sold_out }} sold out,
   {{ health.requests.expired }} expired,
   {{ health.requests.pending }} pending.
   Overall response rate:

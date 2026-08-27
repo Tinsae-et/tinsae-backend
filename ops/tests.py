@@ -47,6 +47,24 @@ class MetricsTests(TestCase):
         self.assertEqual(catalog["fresh_pct"], 66.7)
         self.assertEqual(catalog["unavailable"], 1)
 
+    def test_unconfirmed_products_are_counted_and_do_not_read_as_drift(self):
+        """UNCONFIRMED is past the clock too, so drift measures against the sum.
+
+        Counting drift against `stale` alone would report a sweep that is doing
+        its job exactly right as broken, which is the one number an operator
+        uses to decide whether to go looking.
+        """
+        shop = self._shop("S", telegram_chat_id="1")
+        self._product(shop, "silent", days_ago=45, status="unconfirmed")
+        self._product(shop, "due", days_ago=45, status=ConfirmationStatus.STALE)
+
+        catalog = collect_health()["catalog"]
+        self.assertEqual(catalog["unconfirmed"], 1)
+        self.assertEqual(catalog["stale"], 1)
+        self.assertEqual(catalog["stale_by_clock"], 2)
+        self.assertEqual(catalog["sweep_drift"], 0)
+        self.assertTrue(catalog["sweep_current"])
+
     def test_sweep_drift_detects_an_unrun_sweep(self):
         shop = self._shop("S")
         # Past the 30-day window but still stored as fresh: exactly what a
@@ -75,7 +93,7 @@ class MetricsTests(TestCase):
         p1 = self._product(answering, "p1")
         p2 = self._product(silent, "p2")
         for shop, product, statuses in [
-            (answering, p1, ["confirmed", "denied", "expired", "expired"]),
+            (answering, p1, ["confirmed", "sold_out", "expired", "expired"]),
             (silent, p2, ["expired", "expired"]),
         ]:
             for status in statuses:
@@ -114,7 +132,7 @@ class MetricsTests(TestCase):
         shop = self._shop("S", telegram_chat_id="1")
         p1 = self._product(shop, "p1")
         self._product(shop, "p2")
-        for status in ["confirmed", "expired", "denied"]:
+        for status in ["confirmed", "expired", "sold_out"]:
             ConfirmationRequest.objects.create(product=p1, shop=shop, status=status)
 
         row = collect_health()["shops"][0]

@@ -22,6 +22,7 @@ from bot.services import (
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
+from catalog.services import apply_confirmation
 from shops.models import Shop
 
 User = get_user_model()
@@ -350,6 +351,63 @@ class SweepTests(BotTestCase):
         self.assertEqual(old.status, "expired")
         # A timeout is the absence of an answer, so it leaves no response time.
         self.assertIsNone(old.responded_at)
+        # And the silence is recorded on the product, not only on the request.
+        self.stale_product.refresh_from_db()
+        self.assertEqual(
+            self.stale_product.confirmation_status,
+            ConfirmationStatus.UNCONFIRMED,
+        )
+
+    def test_a_timed_out_product_is_not_downgraded_by_the_same_sweep(self):
+        """Step 1 writes UNCONFIRMED; step 2 must not walk back over it.
+
+        Both values satisfy `needing_confirmation`, so the reconcile pass sees a
+        product step 1 just marked and would set it to STALE on the very same
+        run -- losing the one piece of evidence the timeout produced.
+        """
+        old = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        ConfirmationRequest.objects.filter(pk=old.pk).update(
+            created_at=timezone.now() - timedelta(hours=50)
+        )
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
+            call_command("sweep_freshness", "--expiry-hours=48", stdout=StringIO())
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(
+            self.stale_product.confirmation_status,
+            ConfirmationStatus.UNCONFIRMED,
+        )
+
+    def test_answering_clears_unconfirmed(self):
+        """The only way back up the ladder is a merchant's answer."""
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            confirmation_status=ConfirmationStatus.UNCONFIRMED
+        )
+        self.stale_product.refresh_from_db()
+
+        apply_confirmation(self.stale_product, confirmed=True)
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+
+    def test_an_unconfirmed_product_is_still_prompted(self):
+        """Going silent must not remove a merchant from the loop for good."""
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            confirmation_status=ConfirmationStatus.UNCONFIRMED
+        )
+        out = StringIO()
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
+            call_command("sweep_freshness", stdout=out)
+
+        self.assertIn("Prompts sent: 1", out.getvalue())
 
     def test_sweep_restores_a_product_that_is_no_longer_stale(self):
         """The reconcile runs both ways, so a threshold change self-corrects."""
