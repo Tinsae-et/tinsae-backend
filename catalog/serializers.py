@@ -29,12 +29,28 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
-    # Derived at read time from `last_confirmed_at`, never stored. Reads the
-    # model property, which costs nothing extra: the column is already loaded.
-    freshness = serializers.ReadOnlyField()
 
     class Meta:
         model = Product
+        # One trust signal for buyers, plus the raw timestamp behind it.
+        #
+        # `freshness` used to ship here too, and the pair could disagree in a
+        # single response: a product confirmed ten days ago serialised as
+        # {"confirmation_status": "fresh", "freshness": "expired"}, because the
+        # two read different clocks -- 30 days for the prompting workflow, 48h/7d
+        # for the derived tier. A client had to pick one, and whichever it picked
+        # the other was wrong on screen.
+        #
+        # `confirmation_status` won because it is the one the loop actually
+        # maintains and the only one that can say `unconfirmed`. The derived tier
+        # is still computed and still load-bearing -- `ProductViewSet` ranks on
+        # it via `freshness_rank` -- it just is not a label buyers are shown.
+        # `ShopProductSerializer` keeps it: merchants benefit from the finer
+        # signal, and there is no second label there to contradict.
+        #
+        # Render age from `last_confirmed_at` ("confirmed 3 days ago") rather
+        # than from a tier name. It cannot drift and needs no threshold pinned
+        # before real shops have told us what the thresholds should be.
         fields = [
             "id",
             "title",
@@ -47,7 +63,6 @@ class ProductSerializer(serializers.ModelSerializer):
             "images",
             "last_confirmed_at",
             "confirmation_status",
-            "freshness",
             "slug",
             "specs",
         ]

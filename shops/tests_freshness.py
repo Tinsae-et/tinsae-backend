@@ -112,10 +112,29 @@ class ShopProductTransitionTests(TestCase):
         self.assertEqual(product.last_confirmed_at, before)
         self.assertEqual(product.freshness, Freshness.EXPIRED)
 
-    def test_resume_brings_it_back_and_restarts_the_clock(self):
+    def test_resume_brings_it_back_without_restarting_the_clock(self):
+        # The mirror of pause, and the reason pause is safe. Un-pausing retracts
+        # no stock claim, so a listing that was stale going in is still stale
+        # coming out -- otherwise the pair is a two-click freshness reset on a
+        # listing of any age.
         product = self._product("phone", is_available=False)
+        before = product.last_confirmed_at
 
         response = self.client.post(self._url(product, "resume/"))
+
+        self.assertEqual(response.status_code, 200)
+        product.refresh_from_db()
+        self.assertTrue(product.is_available)
+        self.assertEqual(product.last_confirmed_at, before)
+        self.assertEqual(product.freshness, Freshness.EXPIRED)
+
+    def test_resume_then_confirm_is_how_a_listing_comes_back_fresh(self):
+        # What the above leaves open, and the point of splitting them: coming
+        # back fresh takes the same tap it would have taken without the pause.
+        product = self._product("phone", is_available=False)
+
+        self.client.post(self._url(product, "resume/"))
+        response = self.client.post(self._url(product, "confirm/"))
 
         self.assertEqual(response.status_code, 200)
         product.refresh_from_db()

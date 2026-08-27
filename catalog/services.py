@@ -95,10 +95,19 @@ def pause_listing(product: Product) -> None:
 
 
 def resume_listing(product: Product) -> None:
-    """Put a paused listing back on the storefront.
+    """Put a paused listing back on the storefront. The mirror of `pause_listing`.
 
-    This one *is* an answer -- the merchant is asserting the item is available
-    again -- so it goes through the confirmation service and restarts the clock,
-    exactly as the bot's "yes, still available" callback does.
+    Deliberately *not* `apply_confirmation(confirmed=True)`, which is what this
+    used to be -- and what the paragraph above says must never happen. Pausing
+    makes no stock claim, so un-pausing retracts none either: together they are
+    a round trip that leaves the clock exactly where it started. Routing resume
+    through the confirmation service made the pair a two-click freshness reset
+    on a listing of any age, which is the laundering `pause_listing` refuses to
+    allow one function earlier.
+
+    A merchant asserting the item really is available again does that through
+    `confirm`. That act costs one tap either side of a pause, and it is the same
+    act -- which is the property that makes the confirmation clock mean anything.
     """
-    apply_confirmation(product, confirmed=True)
+    product.is_available = True
+    product.save(update_fields=["is_available", "updated_at"])

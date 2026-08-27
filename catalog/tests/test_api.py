@@ -299,28 +299,45 @@ class ProductRankingTest(TestCase):
 
         self.assertEqual(self._slugs("?fresh=true"), ["recent-confirmation"])
 
-    def test_list_exposes_the_derived_freshness_tier(self):
+    def test_list_carries_one_trust_signal_and_its_timestamp(self):
+        # Replaces test_list_exposes_the_derived_freshness_tier. That test pinned
+        # `freshness` into the buyer payload alongside `confirmation_status`,
+        # which is how the two came to contradict each other on screen: the same
+        # product could serialise as fresh on one field and expired on the other,
+        # because they read a 30-day and a 7-day clock respectively.
+        #
+        # Buyers now get the column the confirmation loop maintains, plus the
+        # timestamp, and the client renders age from the timestamp.
         self._product("just-confirmed", last_confirmed_at=timezone.now())
-        self._product("aging", last_confirmed_at=timezone.now() - timedelta(days=3))
         self._product(
             "long-gone", last_confirmed_at=timezone.now() - timedelta(days=10)
         )
-        # confirmation_status is left at its "fresh" default throughout: the
-        # buyer-facing tier must ignore the sweep's column entirely.
-        self._product("never-confirmed")
 
         results = self._results()
-        self.assertEqual(results["just-confirmed"]["freshness"], "fresh")
-        self.assertEqual(results["aging"]["freshness"], "almost_expired")
-        self.assertEqual(results["long-gone"]["freshness"], "expired")
-        self.assertEqual(results["never-confirmed"]["freshness"], "expired")
+        for slug in ("just-confirmed", "long-gone"):
+            with self.subTest(slug=slug):
+                self.assertIn("confirmation_status", results[slug])
+                self.assertIn("last_confirmed_at", results[slug])
+                self.assertNotIn("freshness", results[slug])
 
-    def test_detail_exposes_the_derived_freshness_tier(self):
+    def test_unconfirmed_products_are_labelled_not_hidden(self):
+        # The whole point of the three-value ladder: a merchant who stopped
+        # answering costs the listing its badge, never its visibility.
+        self._product("silent", confirmation_status="unconfirmed")
+        self._product("answering", last_confirmed_at=timezone.now())
+
+        results = self._results()
+        self.assertIn("silent", results)
+        self.assertEqual(results["silent"]["confirmation_status"], "unconfirmed")
+        self.assertEqual(results["answering"]["confirmation_status"], "fresh")
+
+    def test_detail_carries_the_same_signal_as_the_list(self):
         # List and detail share one serializer, but nothing else pins that down.
         self._product("solo", last_confirmed_at=timezone.now())
         response = APIClient().get("/api/v1/catalog/products/solo/")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["freshness"], "fresh")
+        self.assertEqual(response.data["confirmation_status"], "fresh")
+        self.assertNotIn("freshness", response.data)
 
     def test_fresh_filter_excludes_never_confirmed(self):
         # The most common row in the catalog today, so worth pinning at the API

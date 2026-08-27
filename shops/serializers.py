@@ -23,7 +23,23 @@ class ShopSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["slug", "is_verified", "owner", "created_at", "updated_at"]
+        # `telegram_chat_id` is readable here so an owner can see whether their
+        # shop is linked, but it is never writable over the API. It is the bot's
+        # routing address and it carries no unique constraint, so a writable
+        # field lets any merchant PATCH another shop's chat id onto their own --
+        # `bot.selectors.shops_for_chat` then returns both shops and the
+        # victim's Telegram session reaches the intruder's catalogue. The only
+        # way to bind a chat is `ShopLinkCode`: one-time, short-lived, and spent
+        # under a row lock. Same reasoning as `ShopProductSerializer`, which
+        # withholds the confirmation clock.
+        read_only_fields = [
+            "slug",
+            "telegram_chat_id",
+            "is_verified",
+            "owner",
+            "created_at",
+            "updated_at",
+        ]
 
 
 class ShopPublicSerializer(serializers.ModelSerializer):

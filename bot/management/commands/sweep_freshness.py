@@ -53,12 +53,24 @@ class Command(BaseCommand):
 
         # 1. Expire requests the merchant never answered. This has to run first:
         # an unanswered request blocks re-prompting until it is cleared.
+        #
+        # Their products drop to UNCONFIRMED rather than staying STALE. Both mean
+        # "past the clock", but only this one carries evidence: we reached the
+        # merchant, they said nothing, and the silence is the finding. A product
+        # nobody has got round to asking about yet is not the same thing, and
+        # collapsing the two loses the signal that separates a quiet catalogue
+        # from a disengaged one.
         expired_qs = ConfirmationRequest.objects.filter(
             status="pending", created_at__lt=expiry_cutoff
         )
-        expired_count = expired_qs.count()
+        unanswered_pks = list(expired_qs.values_list("product_id", flat=True))
+        expired_count = len(unanswered_pks)
         if not dry_run:
             expired_qs.update(status="expired")
+            if unanswered_pks:
+                Product.objects.filter(pk__in=unanswered_pks).update(
+                    confirmation_status=ConfirmationStatus.UNCONFIRMED
+                )
 
         # 2. Reconcile confirmation_status in both directions. The predicate lives
         # on ProductQuerySet so this command and the bot's /myproducts listing
@@ -68,10 +80,15 @@ class Command(BaseCommand):
                 "shop"
             )
         )
+        # UNCONFIRMED is excluded, not merely already-STALE: step 1 has just set
+        # it on this run, and both values satisfy `needing_confirmation`. Without
+        # the exclusion this line walks straight back over that write and every
+        # unanswered prompt is downgraded to STALE by the same sweep that
+        # recorded it. Only a merchant's answer moves a product back up, and it
+        # does that through `apply_confirmation`.
+        held_back = (ConfirmationStatus.STALE, ConfirmationStatus.UNCONFIRMED)
         newly_stale_pks = [
-            p.pk
-            for p in stale_products
-            if p.confirmation_status != ConfirmationStatus.STALE
+            p.pk for p in stale_products if p.confirmation_status not in held_back
         ]
         went_fresh_pks = list(
             Product.objects.confirmed_since(staleness_cutoff)
