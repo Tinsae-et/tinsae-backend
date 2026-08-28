@@ -83,8 +83,9 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 # Three tiers, best first. A product the merchant confirmed 40
                 # days ago still carries more signal than one they have never
                 # confirmed at all, so the NULL check has to come before the
-                # status check -- the sweep marks both "stale", and this pulls
-                # the never-confirmed ones below the once-confirmed ones.
+                # status check -- `stale` and `unconfirmed` both fall to the
+                # middle tier, and this pulls the never-confirmed ones below
+                # the once-confirmed ones.
                 freshness_rank=Case(
                     When(last_confirmed_at__isnull=True, then=Value(2)),
                     When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
