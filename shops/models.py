@@ -2,8 +2,11 @@ from django.conf import settings
 from django.db import models
 from django.utils.text import slugify
 
+from core.models import BaseModel
+from core.slugs import save_with_unique_slug
 
-class Shop(models.Model):
+
+class Shop(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, blank=True)
     description = models.TextField(blank=True)
@@ -16,22 +19,16 @@ class Shop(models.Model):
         on_delete=models.CASCADE,
         related_name="shops",
     )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
+    class Meta(BaseModel.Meta):
         ordering = ["name"]
 
     def __str__(self):
         return self.name
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            base = slugify(self.name)
-            slug = base
-            counter = 1
-            while Shop.objects.filter(slug=slug).exclude(pk=self.pk).exists():
-                counter += 1
-                slug = f"{base}-{counter}"
-            self.slug = slug
-        super().save(*args, **kwargs)
+        if self.slug:
+            return super().save(*args, **kwargs)
+        return save_with_unique_slug(
+            self, slugify(self.name), super().save, *args, **kwargs
+        )
