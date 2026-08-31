@@ -6,7 +6,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.freshness import Freshness
-from catalog.models import Category, ConfirmationStatus, Product
+from catalog.models import Category, ConfirmationStatus, Product, ProductCondition
 from users.models import User
 
 from .models import Shop
@@ -343,3 +343,103 @@ class ShopProductApiTest(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("category", response.data)
+
+    # --- condition field -------------------------------------------------
+
+    def test_owner_can_create_product_with_explicit_condition(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Apple",
+                "name": "Used iPhone 14",
+                "price": "40000.00",
+                "category": self.category.slug,
+                "condition": "used",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Product.objects.get(slug=response.data["slug"])
+        self.assertEqual(created.condition, ProductCondition.USED)
+        self.assertEqual(response.data["condition"], "used")
+
+    def test_owner_create_product_defaults_condition_to_new(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Apple",
+                "name": "New iPhone 15",
+                "price": "60000.00",
+                "category": self.category.slug,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        created = Product.objects.get(slug=response.data["slug"])
+        self.assertEqual(created.condition, ProductCondition.NEW)
+        self.assertEqual(response.data["condition"], "new")
+
+    def test_owner_can_update_product_condition(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"condition": "refurbished"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.condition, ProductCondition.REFURBISHED)
+        self.assertEqual(response.data["condition"], "refurbished")
+
+    def test_invalid_condition_is_rejected_on_create(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self._url(),
+            {
+                "brand": "Apple",
+                "name": "Broken iPhone",
+                "price": "5000.00",
+                "category": self.category.slug,
+                "condition": "broken",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("condition", response.data)
+
+    def test_invalid_condition_is_rejected_on_edit(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"condition": "invalid_value"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("condition", response.data)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.condition, ProductCondition.NEW)
+
+    def test_non_owner_cannot_set_product_condition(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.patch(
+            self._url(slug=self.product.slug),
+            {"condition": "used"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.condition, ProductCondition.NEW)

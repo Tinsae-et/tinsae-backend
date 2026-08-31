@@ -32,6 +32,43 @@ class ProductApiTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["slug"], "galaxy-a15")
+        self.assertEqual(response.data["results"][0]["condition"], "new")
+
+    def test_product_detail_by_slug(self):
+        response = APIClient().get("/api/v1/catalog/products/galaxy-a15/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["specs"], {"ram": "4GB", "storage": "128GB"})
+        self.assertEqual(response.data["condition"], "new")
+
+    def test_public_read_exposes_used_and_refurbished_condition(self):
+        Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Apple",
+            name="iPhone 13",
+            slug="iphone-13-used",
+            price="45000.00",
+            condition="used",
+            last_confirmed_at=timezone.now(),
+        )
+        Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Apple",
+            name="iPhone 14",
+            slug="iphone-14-refurb",
+            price="55000.00",
+            condition="refurbished",
+            last_confirmed_at=timezone.now(),
+        )
+
+        detail_used = APIClient().get("/api/v1/catalog/products/iphone-13-used/")
+        self.assertEqual(detail_used.status_code, 200)
+        self.assertEqual(detail_used.data["condition"], "used")
+
+        detail_refurb = APIClient().get("/api/v1/catalog/products/iphone-14-refurb/")
+        self.assertEqual(detail_refurb.status_code, 200)
+        self.assertEqual(detail_refurb.data["condition"], "refurbished")
 
     def test_filter_by_category_slug(self):
         acc = Category.objects.create(name="Accessories", slug="accessories")
@@ -47,11 +84,6 @@ class ProductApiTest(TestCase):
         response = APIClient().get("/api/v1/catalog/products/?category=phones")
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A15")
-
-    def test_product_detail_by_slug(self):
-        response = APIClient().get("/api/v1/catalog/products/galaxy-a15/")
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["specs"], {"ram": "4GB", "storage": "128GB"})
 
     def test_search_keyword_match(self):
         response = APIClient().get("/api/v1/catalog/products/?q=gala")
