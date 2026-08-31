@@ -101,6 +101,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "description",
             "price",
             "currency",
+            "condition",
             "shop",
             "category",
             "is_available",
