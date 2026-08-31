@@ -1,3 +1,4 @@
+from decimal import Decimal
 from unittest import mock
 
 from django.core.cache import cache
@@ -118,6 +119,37 @@ class TestShopOwnerRegistrationSerializer(TestCase):
         self.assertIn("password", serializer.errors)
         self.assertIn("shop_name", serializer.errors)
 
+    def test_registration_with_coordinates(self):
+        data = self._data(latitude="9.024970", longitude="38.746890")
+        serializer = ShopOwnerRegistrationSerializer(data=data)
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        shop = user.shops.first()
+        self.assertEqual(shop.latitude, Decimal("9.024970"))
+        self.assertEqual(shop.longitude, Decimal("38.746890"))
+
+    def test_registration_without_coordinates_stores_null(self):
+        serializer = ShopOwnerRegistrationSerializer(data=self._data())
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        user = serializer.save()
+        shop = user.shops.first()
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+    def test_registration_with_invalid_latitude_rejected(self):
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(latitude="95.000000")
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("latitude", serializer.errors)
+
+    def test_registration_with_invalid_longitude_rejected(self):
+        serializer = ShopOwnerRegistrationSerializer(
+            data=self._data(longitude="185.000000")
+        )
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("longitude", serializer.errors)
+
 
 class TestUserSerializer(TestCase):
     def setUp(self):
@@ -125,7 +157,12 @@ class TestUserSerializer(TestCase):
             username="testuser", email="test@tinsae.com", password="password123"
         )
         self.shop1 = Shop.objects.create(
-            owner=self.user, name="Shop 1", city="Addis Ababa", phone="0911234567"
+            owner=self.user,
+            name="Shop 1",
+            city="Addis Ababa",
+            phone="0911234567",
+            latitude=Decimal("9.024970"),
+            longitude=Decimal("38.746890"),
         )
         self.shop2 = Shop.objects.create(
             owner=self.user, name="Shop 2", city="Hawassa", phone="0922345678"
@@ -136,6 +173,11 @@ class TestUserSerializer(TestCase):
         self.assertEqual(data["username"], "testuser")
         self.assertEqual(data["email"], "test@tinsae.com")
         self.assertEqual(len(data["shops"]), 2)
+        by_name = {s["name"]: s for s in data["shops"]}
+        self.assertEqual(by_name["Shop 1"]["latitude"], "9.024970")
+        self.assertEqual(by_name["Shop 1"]["longitude"], "38.746890")
+        self.assertIsNone(by_name["Shop 2"]["latitude"])
+        self.assertIsNone(by_name["Shop 2"]["longitude"])
 
     def test_password_is_never_serialized(self):
         self.assertNotIn("password", UserSerializer(self.user).data)
@@ -183,6 +225,31 @@ class TestRegistration(ThrottleResetMixin, APITestCase):
         # both the merchant and their shop — they are one number at registration.
         self.assertEqual(shop.phone, "+251908434350")
         self.assertEqual(user.phone, shop.phone)
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+    def test_successful_registration_with_coordinates(self):
+        response = self._register(
+            latitude="9.024970",
+            longitude="38.746890",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+
+        user = User.objects.get(username="ashenafi")
+        shop = Shop.objects.get(owner=user)
+        self.assertEqual(shop.latitude, Decimal("9.024970"))
+        self.assertEqual(shop.longitude, Decimal("38.746890"))
+        self.assertEqual(response.data["user"]["shops"][0]["latitude"], "9.024970")
+        self.assertEqual(response.data["user"]["shops"][0]["longitude"], "38.746890")
+
+    def test_registration_rejects_out_of_range_coordinates(self):
+        response_lat = self._register(latitude="95.000000", longitude="38.000000")
+        self.assertEqual(response_lat.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("latitude", response_lat.data)
+
+        response_lng = self._register(latitude="9.000000", longitude="200.000000")
+        self.assertEqual(response_lng.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("longitude", response_lng.data)
 
     def test_new_shop_is_unverified(self):
         self._register()
