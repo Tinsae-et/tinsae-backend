@@ -6,13 +6,21 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0010_alter_product_confirmation_status'),
+        ("catalog", "0010_alter_product_confirmation_status"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='product',
-            name='condition',
-            field=models.CharField(choices=[('new', 'New'), ('used', 'Used'), ('refurbished', 'Refurbished')], default='new', max_length=20),
+            model_name="product",
+            name="condition",
+            field=models.CharField(
+                choices=[
+                    ("new", "New"),
+                    ("used", "Used"),
+                    ("refurbished", "Refurbished"),
+                ],
+                default="new",
+                max_length=20,
+            ),
         ),
     ]

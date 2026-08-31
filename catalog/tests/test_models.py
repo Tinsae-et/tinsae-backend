@@ -69,7 +69,9 @@ class ProductModelTest(TestCase):
         self.assertEqual(product.condition, "new")
 
     def test_explicit_condition_is_saved(self):
-        used_product = self._product(name="Used iPhone", condition=ProductCondition.USED)
+        used_product = self._product(
+            name="Used iPhone", condition=ProductCondition.USED
+        )
         refurb_product = self._product(
             name="Refurbished iPhone", condition=ProductCondition.REFURBISHED
         )
