@@ -1,6 +1,7 @@
 from datetime import timedelta
 from decimal import Decimal
 
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -33,6 +34,53 @@ class ShopModelTest(TestCase):
         self.assertNotEqual(first.slug, second.slug)
         self.assertEqual(second.slug, "abebe-grocery-2")
 
+    def test_create_without_coordinates_defaults_to_none(self):
+        shop = Shop.objects.create(name="No Location Shop", owner=self.owner)
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+    def test_create_with_coordinates(self):
+        shop = Shop.objects.create(
+            name="Located Shop",
+            owner=self.owner,
+            latitude=Decimal("9.024970"),
+            longitude=Decimal("38.746890"),
+        )
+        self.assertEqual(shop.latitude, Decimal("9.024970"))
+        self.assertEqual(shop.longitude, Decimal("38.746890"))
+
+    def test_out_of_range_latitude_rejected_by_model(self):
+        shop = Shop(
+            name="Invalid Lat",
+            owner=self.owner,
+            latitude=Decimal("90.000001"),
+            longitude=Decimal("38.000000"),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            shop.full_clean()
+        self.assertIn("latitude", ctx.exception.message_dict)
+
+        shop.latitude = Decimal("-90.000001")
+        with self.assertRaises(ValidationError) as ctx:
+            shop.full_clean()
+        self.assertIn("latitude", ctx.exception.message_dict)
+
+    def test_out_of_range_longitude_rejected_by_model(self):
+        shop = Shop(
+            name="Invalid Lng",
+            owner=self.owner,
+            latitude=Decimal("9.000000"),
+            longitude=Decimal("180.000001"),
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            shop.full_clean()
+        self.assertIn("longitude", ctx.exception.message_dict)
+
+        shop.longitude = Decimal("-180.000001")
+        with self.assertRaises(ValidationError) as ctx:
+            shop.full_clean()
+        self.assertIn("longitude", ctx.exception.message_dict)
+
 
 class ShopDetailExposureTest(TestCase):
     """The shop detail endpoint is readable anonymously — internal fields on it
@@ -50,8 +98,16 @@ class ShopDetailExposureTest(TestCase):
             owner=self.owner,
             phone="+251911100001",
             telegram_chat_id="987654321",
+            latitude=Decimal("9.024970"),
+            longitude=Decimal("38.746890"),
+        )
+        self.shop_no_coords = Shop.objects.create(
+            name="Merkato Accessories",
+            owner=self.owner,
+            phone="+251911100002",
         )
         self.url = f"/api/v1/shops/{self.shop.slug}/"
+        self.url_no_coords = f"/api/v1/shops/{self.shop_no_coords.slug}/"
 
     def test_anonymous_detail_hides_internal_fields(self):
         response = APIClient().get(self.url)
@@ -84,6 +140,200 @@ class ShopDetailExposureTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("telegram_chat_id", response.data["results"][0])
+
+    def test_anonymous_detail_exposes_coordinates(self):
+        response = APIClient().get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["latitude"], "9.024970")
+        self.assertEqual(response.data["longitude"], "38.746890")
+
+    def test_anonymous_detail_returns_null_coordinates_when_unset(self):
+        response = APIClient().get(self.url_no_coords)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["latitude"])
+        self.assertIsNone(response.data["longitude"])
+
+    def test_list_exposes_coordinates(self):
+        response = APIClient().get("/api/v1/shops/")
+
+        self.assertEqual(response.status_code, 200)
+        by_slug = {s["slug"]: s for s in response.data["results"]}
+        self.assertEqual(by_slug[self.shop.slug]["latitude"], "9.024970")
+        self.assertEqual(by_slug[self.shop.slug]["longitude"], "38.746890")
+        self.assertIsNone(by_slug[self.shop_no_coords.slug]["latitude"])
+        self.assertIsNone(by_slug[self.shop_no_coords.slug]["longitude"])
+
+
+class ShopCoordinatesApiTest(TestCase):
+    """CRUD, editing in settings, and validation for shop coordinates."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="merchant", email="merchant@example.com", password="pass"
+        )
+        self.other_user = User.objects.create_user(
+            username="other", email="other@example.com", password="pass"
+        )
+        self.client = APIClient()
+
+    def test_create_shop_with_coordinates(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(
+            "/api/v1/shops/",
+            {
+                "name": "Bole Mobiles",
+                "city": "Addis Ababa",
+                "phone": "0911000001",
+                "latitude": "9.005401",
+                "longitude": "38.784520",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["latitude"], "9.005401")
+        self.assertEqual(response.data["longitude"], "38.784520")
+
+        shop = Shop.objects.get(slug=response.data["slug"])
+        self.assertEqual(shop.latitude, Decimal("9.005401"))
+        self.assertEqual(shop.longitude, Decimal("38.784520"))
+
+    def test_create_shop_without_coordinates_returns_nulls(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(
+            "/api/v1/shops/",
+            {
+                "name": "Arat Kilo Books",
+                "city": "Addis Ababa",
+                "phone": "0911000002",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIsNone(response.data["latitude"])
+        self.assertIsNone(response.data["longitude"])
+
+        shop = Shop.objects.get(slug=response.data["slug"])
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+    def test_owner_can_add_coordinates_later(self):
+        shop = Shop.objects.create(
+            name="Initial No Coords",
+            owner=self.owner,
+            city="Hawassa",
+            phone="0911000003",
+        )
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/shops/{shop.slug}/",
+            {
+                "latitude": "7.050400",
+                "longitude": "38.495500",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["latitude"], "7.050400")
+        self.assertEqual(response.data["longitude"], "38.495500")
+
+        shop.refresh_from_db()
+        self.assertEqual(shop.latitude, Decimal("7.050400"))
+        self.assertEqual(shop.longitude, Decimal("38.495500"))
+
+    def test_owner_can_clear_coordinates(self):
+        shop = Shop.objects.create(
+            name="Has Coords",
+            owner=self.owner,
+            latitude=Decimal("9.024970"),
+            longitude=Decimal("38.746890"),
+        )
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/shops/{shop.slug}/",
+            {
+                "latitude": None,
+                "longitude": None,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["latitude"])
+        self.assertIsNone(response.data["longitude"])
+
+        shop.refresh_from_db()
+        self.assertIsNone(shop.latitude)
+        self.assertIsNone(shop.longitude)
+
+    def test_invalid_latitude_rejected_on_create(self):
+        self.client.force_authenticate(self.owner)
+        for invalid_lat in ("90.000001", "-90.000001", "100.0", "-150.0"):
+            with self.subTest(lat=invalid_lat):
+                response = self.client.post(
+                    "/api/v1/shops/",
+                    {
+                        "name": "Bad Lat Shop",
+                        "latitude": invalid_lat,
+                        "longitude": "38.740000",
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("latitude", response.data)
+
+    def test_invalid_longitude_rejected_on_create(self):
+        self.client.force_authenticate(self.owner)
+        for invalid_lng in ("180.000001", "-180.000001", "200.0", "-250.0"):
+            with self.subTest(lng=invalid_lng):
+                response = self.client.post(
+                    "/api/v1/shops/",
+                    {
+                        "name": "Bad Lng Shop",
+                        "latitude": "9.000000",
+                        "longitude": invalid_lng,
+                    },
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("longitude", response.data)
+
+    def test_invalid_latitude_rejected_on_update(self):
+        shop = Shop.objects.create(name="Valid Shop", owner=self.owner)
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/shops/{shop.slug}/",
+            {"latitude": "95.000000"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("latitude", response.data)
+
+    def test_invalid_longitude_rejected_on_update(self):
+        shop = Shop.objects.create(name="Valid Shop", owner=self.owner)
+        self.client.force_authenticate(self.owner)
+        response = self.client.patch(
+            f"/api/v1/shops/{shop.slug}/",
+            {"longitude": "-185.000000"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("longitude", response.data)
+
+    def test_non_owner_cannot_update_shop_coordinates(self):
+        shop = Shop.objects.create(name="Victim Shop", owner=self.owner)
+        self.client.force_authenticate(self.other_user)
+        response = self.client.patch(
+            f"/api/v1/shops/{shop.slug}/",
+            {"latitude": "9.000000", "longitude": "38.000000"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        shop.refresh_from_db()
+        self.assertIsNone(shop.latitude)
 
 
 class ShopProductApiTest(TestCase):
