@@ -37,12 +37,32 @@ class ProductSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Product
+        # One trust signal for buyers, plus the raw timestamp behind it.
+        #
+        # `freshness` used to ship here too, and the pair could disagree in a
+        # single response: a product confirmed ten days ago serialised as
+        # {"confirmation_status": "fresh", "freshness": "expired"}, because the
+        # two read different clocks -- 30 days for the prompting workflow, 48h/7d
+        # for the derived tier. A client had to pick one, and whichever it picked
+        # the other was wrong on screen.
+        #
+        # `confirmation_status` won because it is the one the loop actually
+        # maintains and the only one that can say `unconfirmed`. The derived tier
+        # is still computed and still load-bearing -- `ProductViewSet` ranks on
+        # it via `freshness_rank` -- it just is not a label buyers are shown.
+        # `ShopProductSerializer` keeps it: merchants benefit from the finer
+        # signal, and there is no second label there to contradict.
+        #
+        # Render age from `last_confirmed_at` ("confirmed 3 days ago") rather
+        # than from a tier name. It cannot drift and needs no threshold pinned
+        # before real shops have told us what the thresholds should be.
         fields = [
             "id",
             "title",
             "description",
             "price",
             "currency",
+            "condition",
             "shop_name",
             "shop_verified",
             "category",
@@ -51,7 +71,6 @@ class ProductSerializer(serializers.ModelSerializer):
             "confirmation_status",
             "verified_score",
             "typo_score",
-            "freshness",
             "slug",
             "specs",
         ]

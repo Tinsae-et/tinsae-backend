@@ -1,4 +1,7 @@
+from decimal import Decimal
+
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils.text import slugify
 
@@ -9,6 +12,26 @@ class Shop(models.Model):
     description = models.TextField(blank=True)
     phone = models.CharField(max_length=30, blank=True)
     city = models.CharField(max_length=100, blank=True)
+    latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[
+            MinValueValidator(Decimal("-90.0")),
+            MaxValueValidator(Decimal("90.0")),
+        ],
+    )
+    longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        validators=[
+            MinValueValidator(Decimal("-180.0")),
+            MaxValueValidator(Decimal("180.0")),
+        ],
+    )
     telegram_chat_id = models.CharField(max_length=50, blank=True)
     is_verified = models.BooleanField(default=False)
     owner = models.ForeignKey(

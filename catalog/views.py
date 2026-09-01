@@ -1,3 +1,5 @@
+from decimal import Decimal, InvalidOperation
+
 from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
@@ -18,6 +20,40 @@ ORDERING_FIELDS = {
 }
 
 TRUTHY = {"1", "true", "yes", "on"}
+
+
+# `Product.price` is max_digits=10, decimal_places=2, so nothing at or above
+# this can be stored -- and a filter bound that large is a number Postgres has
+# to be protected from rather than a query worth running. See `price_param`.
+PRICE_LIMIT = Decimal("1e8")
+
+
+def price_param(params, name):
+    """Coerce a price filter to a Decimal, or reject it as a field error.
+
+    Handing the raw string to `price__gte` lets DecimalField raise Django's own
+    `ValidationError` from inside query construction. DRF's exception handler
+    only translates `rest_framework.exceptions.ValidationError`, so that one
+    escapes the view as an unhandled 500 -- an unparseable query string is a
+    client error, and anyone could trigger it from a URL bar. Checked here for
+    the same reason `ordering` is checked against an allowlist below.
+
+    Parsing alone is not enough, which is the non-obvious part. "nan",
+    "Infinity" and "1e999999" are all valid Decimal literals: they clear the
+    parse and fail later and worse. NaN compares false against every row, so the
+    endpoint quietly returns nothing; an exponent past the numeric format
+    overflows inside the driver, which is another 500 by a different route.
+    """
+    raw = params.get(name)
+    if not raw:
+        return None
+    try:
+        value = Decimal(raw)
+    except InvalidOperation:
+        value = None
+    if value is None or not value.is_finite() or abs(value) >= PRICE_LIMIT:
+        raise ValidationError({name: f"Not a valid price: {raw}."})
+    return value
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -74,9 +110,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 | Q(description__icontains=q)
                 | Q(brand__icontains=q)
             )
-        if min_price := self.request.query_params.get("min_price"):
+        min_price = price_param(self.request.query_params, "min_price")
+        if min_price is not None:
             qs = qs.filter(price__gte=min_price)
-        if max_price := self.request.query_params.get("max_price"):
+        max_price = price_param(self.request.query_params, "max_price")
+        if max_price is not None:
             qs = qs.filter(price__lte=max_price)
         if self.request.query_params.get("verified_only"):
             qs = qs.filter(shop__is_verified=True)

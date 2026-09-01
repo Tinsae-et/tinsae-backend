@@ -39,5 +39,11 @@ jobs:
         run: ruff check .
       - name: Black (format check)
         run: black --check .
+      # Catches a model edit that shipped without its migration. That drift is
+      # invisible locally -- the dev database already has the column from a
+      # `migrate` run someone did by hand -- and only surfaces on a fresh
+      # deploy, which is the worst place to find it.
+      - name: Migration check
+        run: python manage.py makemigrations --check --dry-run
       - name: Run tests
         run: pytest

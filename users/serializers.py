@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.tokens import default_token_generator
 from django.contrib.auth.validators import UnicodeUsernameValidator
@@ -68,10 +70,35 @@ class ShopOwnerRegistrationSerializer(serializers.ModelSerializer):
     phone = serializers.CharField(max_length=30)
     shop_name = serializers.CharField(max_length=200)
     city = serializers.CharField(max_length=100)
+    latitude = serializers.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("-90.0"),
+        max_value=Decimal("90.0"),
+    )
+    longitude = serializers.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("-180.0"),
+        max_value=Decimal("180.0"),
+    )
 
     class Meta:
         model = User
-        fields = ["username", "email", "password", "shop_name", "city", "phone"]
+        fields = [
+            "username",
+            "email",
+            "password",
+            "shop_name",
+            "city",
+            "phone",
+            "latitude",
+            "longitude",
+        ]
         extra_kwargs = {"password": {"write_only": True}}
 
     def validate_username(self, value):
@@ -128,6 +155,8 @@ class ShopOwnerRegistrationSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         shop_name = validated_data.pop("shop_name")
         city = validated_data.pop("city")
+        latitude = validated_data.pop("latitude", None)
+        longitude = validated_data.pop("longitude", None)
         # Left in validated_data as well: the merchant's own number and their
         # shop's published contact number are the same at registration time.
         phone = validated_data["phone"]
@@ -141,6 +170,8 @@ class ShopOwnerRegistrationSerializer(serializers.ModelSerializer):
                 name=shop_name,
                 phone=phone,
                 city=city,
+                latitude=latitude,
+                longitude=longitude,
                 owner=user,
             )
         return user

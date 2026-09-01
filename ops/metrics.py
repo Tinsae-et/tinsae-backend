@@ -18,7 +18,14 @@ from shops.models import Shop
 
 # A merchant who answered either way responded. "Out of stock" is an answer --
 # it restarts the confirmation clock exactly like "still available" does.
-ANSWERED_STATUSES = ("confirmed", "denied")
+#
+# These must be values `ConfirmationRequest.STATUS_CHOICES` actually allows. They
+# were not: this read ("confirmed", "denied") long after migration 0004 renamed
+# "denied" to "sold_out", so every sold-out answer counted as silence and the
+# merchants who gave it were queued for unverification. A filter on a status that
+# cannot occur fails silently -- it just counts zero -- so the guard is a test,
+# `tests.test_review_regressions.OpsMetricsReadTheStatusTheSystemActuallyWrites`.
+ANSWERED_STATUSES = ("confirmed", "sold_out")
 
 # How many requests a shop must have let lapse before we call it unresponsive.
 # One expired prompt is not evidence, it is a merchant who was busy that week,
@@ -44,6 +51,9 @@ def _catalog_health(staleness_cutoff) -> dict:
         available=Count("pk"),
         fresh=Count("pk", filter=Q(confirmation_status=ConfirmationStatus.FRESH)),
         stale=Count("pk", filter=Q(confirmation_status=ConfirmationStatus.STALE)),
+        unconfirmed=Count(
+            "pk", filter=Q(confirmation_status=ConfirmationStatus.UNCONFIRMED)
+        ),
         never_confirmed=Count("pk", filter=Q(last_confirmed_at__isnull=True)),
     )
 
@@ -57,8 +67,16 @@ def _catalog_health(staleness_cutoff) -> dict:
     counts["unavailable"] = Product.objects.filter(is_available=False).count()
     counts["fresh_pct"] = _pct(counts["fresh"], counts["available"])
     counts["stale_by_clock"] = stale_by_clock
-    counts["sweep_drift"] = stale_by_clock - counts["stale"]
-    counts["sweep_current"] = stale_by_clock == counts["stale"]
+
+    # Both stored values mean "past the clock", so drift measures against their
+    # sum. Comparing against `stale` alone would count every product the sweep
+    # correctly marked UNCONFIRMED as drift, and a loop working exactly as
+    # designed would report itself broken -- worse than no metric, because this
+    # is the number that decides whether anyone goes looking.
+    past_clock = counts["stale"] + counts["unconfirmed"]
+    counts["past_clock"] = past_clock
+    counts["sweep_drift"] = stale_by_clock - past_clock
+    counts["sweep_current"] = stale_by_clock == past_clock
     return counts
 
 
@@ -73,10 +91,10 @@ def _request_health(expiry_cutoff) -> dict:
             "pk", filter=Q(status="pending", created_at__lt=expiry_cutoff)
         ),
         confirmed=Count("pk", filter=Q(status="confirmed")),
-        denied=Count("pk", filter=Q(status="denied")),
+        sold_out=Count("pk", filter=Q(status="sold_out")),
         expired=Count("pk", filter=Q(status="expired")),
     )
-    answered = counts["confirmed"] + counts["denied"]
+    answered = counts["confirmed"] + counts["sold_out"]
     counts["answered"] = answered
     counts["resolved"] = answered + counts["expired"]
     counts["response_rate"] = _pct(answered, counts["resolved"])
@@ -94,12 +112,19 @@ def _shop_rows() -> list[dict]:
         available_products=Count(
             "products", distinct=True, filter=Q(products__is_available=True)
         ),
+        # Both stored values mean "past the clock", so the per-shop column counts
+        # them together for the same reason `sweep_drift` does -- filtering on
+        # STALE alone would quietly drop every product whose merchant went
+        # silent, which is precisely the shop this row exists to surface.
         stale_products=Count(
             "products",
             distinct=True,
             filter=Q(
                 products__is_available=True,
-                products__confirmation_status=ConfirmationStatus.STALE,
+                products__confirmation_status__in=(
+                    ConfirmationStatus.STALE,
+                    ConfirmationStatus.UNCONFIRMED,
+                ),
             ),
         ),
         answered=Count(

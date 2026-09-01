@@ -22,14 +22,43 @@ class ConfirmationStatus(models.TextChoices):
     Orthogonal to `Product.is_available`: `is_available` is what the merchant
     last told us, `confirmation_status` is how much we still believe it.
 
-    Not the buyer-facing freshness label either -- that one is derived at read
-    time on a much shorter clock, in `catalog/freshness.py`. This column exists
-    because prompting is a workflow with memory (who have we already asked?) and
-    a workflow cannot be recomputed from a timestamp alone.
+    This column exists because prompting is a workflow with memory (who have we
+    already asked, and did they answer?) and a workflow cannot be recomputed
+    from a timestamp alone. The three values are a ladder, worst last:
+
+        FRESH        answered inside the window
+        STALE        past the window, due to be asked
+        UNCONFIRMED  asked, and the merchant never answered
+
+    STALE and UNCONFIRMED both mean "past the clock", so anything measuring
+    catalogue health has to count them together -- see `ops.metrics`. What
+    separates them is whether we have evidence the merchant is disengaged, which
+    is the difference between "prompt them" and "follow up with them".
+
+    This is the buyer-facing label. `catalog/freshness.py` derives a finer tier
+    from `last_confirmed_at` on a shorter clock, and that one is now kept for
+    ranking only: shipping both to buyers meant one payload could call the same
+    product fresh and expired at once.
     """
 
     FRESH = "fresh", "Fresh"
     STALE = "stale", "Stale"
+    UNCONFIRMED = "unconfirmed", "Unconfirmed"
+
+
+class ProductCondition(models.TextChoices):
+    """The physical condition of a listed product.
+
+    Referenced by the dashboard listing form and the product comparison view.
+    Stored on `Product.condition` and defaults to `NEW`.
+    """
+
+    NEW = "new", "New"
+    USED = "used", "Used"
+    REFURBISHED = "refurbished", "Refurbished"
+
+
+Condition = ProductCondition
 
 
 class Category(BaseModel):
@@ -111,6 +140,11 @@ class Product(BaseModel):
     slug = models.SlugField(max_length=200, unique=True, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
+    condition = models.CharField(
+        max_length=20,
+        choices=ProductCondition.choices,
+        default=ProductCondition.NEW,
+    )
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
     confirmation_status = models.CharField(
         max_length=20, choices=ConfirmationStatus.choices, default="fresh"
