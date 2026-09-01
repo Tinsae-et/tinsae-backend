@@ -1,10 +1,13 @@
 from datetime import timedelta
+from unittest.mock import patch
 
+from django.core.management import call_command
+from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from catalog.models import Category, Product
+from catalog.models import Category, ConfirmationStatus, Product, SearchLog
 from shops.models import Shop
 from users.models import User
 
@@ -421,3 +424,320 @@ class ProductRankingTest(TestCase):
         self.assertEqual(
             self._slugs("?category=phones"), ["phone-fresh", "phone-stale"]
         )
+
+
+class ProductSearchTest(TestCase):
+    """Tests for product search and ranking."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(
+            username="search_merchant",
+            password="pass",
+        )
+
+        self.verified_shop = Shop.objects.create(
+            name="Verified Shop",
+            slug="verified-shop",
+            owner=self.owner,
+            is_verified=True,
+        )
+
+        self.unverified_shop = Shop.objects.create(
+            name="Unverified Shop",
+            slug="unverified-shop",
+            owner=self.owner,
+            is_verified=False,
+        )
+
+        self.phone_category = Category.objects.create(
+            name="Phones",
+            slug="phones",
+        )
+
+        self.laptop_category = Category.objects.create(
+            name="Laptops",
+            slug="laptops",
+        )
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.phone_category,
+            "shop": self.verified_shop,
+            "brand": "Samsung",
+            "name": "Samsung Phone",
+            "slug": slug,
+            "price": "10000.00",
+            "specs": {},
+            "last_confirmed_at": None,
+            "is_available": True,
+        }
+
+        fields.update(overrides)
+
+        return Product.objects.create(**fields)
+
+    def _slugs(self, query=""):
+        response = APIClient().get(f"/api/v1/catalog/products/{query}")
+        self.assertEqual(response.status_code, 200)
+
+        return [r["slug"] for r in response.data["results"]]
+
+    def _results(self, query=""):
+        response = APIClient().get(f"/api/v1/catalog/products/{query}")
+
+        self.assertEqual(response.status_code, 200)
+
+        return {r["slug"]: r for r in response.data["results"]}
+
+    def test_search_by_product_name(self):
+        self._product(
+            "samsung-s24",
+            name="Samsung Galaxy S24",
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            ["samsung-s24"],
+        )
+
+    def test_search_by_brand(self):
+        self._product(
+            "samsung-phone",
+            brand="Samsung",
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            ["samsung-phone"],
+        )
+
+    def test_search_by_category(self):
+        self._product(
+            "samsung-s24",
+            name="Galaxy S24",
+            brand="Samsung",
+            category=self.phone_category,
+        )
+
+        self.assertIn(
+            "samsung-s24",
+            self._slugs("?q=phones"),
+        )
+
+    def test_search_synonym(self):
+        self._product(
+            "samsung-phone",
+            name="Samsung Galaxy",
+            brand="Samsung",
+        )
+
+        self.assertIn(
+            "samsung-phone",
+            self._slugs("?q=phone"),
+        )
+
+    def test_search_multiple_words(self):
+        self._product(
+            "samsung-s24",
+            name="Samsung Galaxy S24",
+            brand="Samsung",
+        )
+
+        self.assertIn(
+            "samsung-s24",
+            self._slugs("?q=samsung phone"),
+        )
+
+    def test_unavailable_products_are_excluded(self):
+        self._product(
+            "available-phone",
+            name="Samsung Phone",
+            is_available=True,
+        )
+
+        self._product(
+            "sold-out-phone",
+            name="Samsung Phone",
+            is_available=False,
+        )
+
+        results = self._slugs("?q=samsung")
+
+        self.assertIn("available-phone", results)
+        self.assertNotIn("sold-out-phone", results)
+
+    def test_ranking_internals_are_not_serialised(self):
+        # The scores are implementation detail of `apply_search` and move every
+        # time the weights are retuned. Rank reaches clients as list order.
+        self._product("samsung-phone", name="Samsung Phone")
+
+        product = self._results("?q=samsung")["samsung-phone"]
+
+        for key in ("typo_score", "verified_score", "rank_score", "freshness_score"):
+            self.assertNotIn(key, product)
+
+    def test_verified_product_ranks_higher(self):
+        self._product(
+            "unverified-phone",
+            name="Samsung Phone",
+            shop=self.unverified_shop,
+        )
+
+        self._product(
+            "verified-phone",
+            name="Samsung Phone",
+            shop=self.verified_shop,
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung"),
+            [
+                "verified-phone",
+                "unverified-phone",
+            ],
+        )
+
+    def test_empty_query_is_an_absent_filter_not_an_empty_result(self):
+        # Changed with TIN-58. Search moved onto the catalogue list route, where
+        # `q` is one filter among several -- and an absent filter narrows
+        # nothing. `?q=` is the buyer clearing the search box, which should show
+        # them the catalogue, not a blank page.
+        self._product("samsung-phone", name="Samsung Phone")
+
+        self.assertEqual(self._slugs("?q="), ["samsung-phone"])
+
+    def test_extra_words_narrow_rather_than_widen(self):
+        # Terms AND. The previous filter ORed them, so every added word grew the
+        # result set and the more specific a buyer was the worse they did.
+        self._product("samsung-laptop", brand="Samsung", name="Samsung Notebook 14")
+        self._product("hp-laptop", brand="HP", name="HP Notebook 15")
+        self._product("samsung-phone", brand="Samsung", name="Samsung Galaxy S24")
+
+        self.assertEqual(self._slugs("?q=samsung laptop"), ["samsung-laptop"])
+
+    def test_relevance_outranks_freshness(self):
+        # The ordering this replaced sorted on `last_confirmed_at` first, which
+        # meant a barely-relevant fresh listing beat an exact match.
+        self._product(
+            "weak-match-fresh",
+            brand="Samsung",
+            name="Samsung Galaxy S24",
+            description="ships in a box with a free notebook",
+            last_confirmed_at=timezone.now(),
+        )
+        self._product(
+            "strong-match-stale",
+            brand="Lenovo",
+            name="Notebook Pro",
+            category=self.laptop_category,
+            confirmation_status=ConfirmationStatus.STALE,
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+        )
+
+        self.assertEqual(self._slugs("?q=notebook")[0], "strong-match-stale")
+
+    def test_never_confirmed_does_not_float_to_the_top(self):
+        # Postgres sorts NULLs first on DESC. Ordering on `-last_confirmed_at`
+        # therefore put never-confirmed listings above every confirmed one.
+        self._product("never-confirmed", name="Samsung Phone", last_confirmed_at=None)
+        self._product(
+            "confirmed",
+            name="Samsung Phone",
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+        )
+
+        self.assertEqual(self._slugs("?q=samsung")[0], "confirmed")
+
+    def test_search_composes_with_filters(self):
+        # The removed /productsearch/ route dropped every filter on the floor.
+        self._product("cheap-phone", name="Samsung Phone", price="5000.00")
+        self._product("pricey-phone", name="Samsung Phone", price="90000.00")
+
+        self.assertEqual(self._slugs("?q=samsung&max_price=10000"), ["cheap-phone"])
+
+    def test_explicit_ordering_overrides_relevance(self):
+        self._product("cheap-phone", name="Samsung Phone", price="5000.00")
+        self._product(
+            "pricey-phone",
+            name="Samsung Phone",
+            price="90000.00",
+            shop=self.verified_shop,
+        )
+
+        self.assertEqual(
+            self._slugs("?q=samsung&ordering=price"),
+            ["cheap-phone", "pricey-phone"],
+        )
+
+
+class SearchLoggingTest(TestCase):
+    """TIN-58 AC4. Nothing else in the ticket is tunable without these rows."""
+
+    def _search(self, query):
+        return APIClient().get(f"/api/v1/catalog/products/?q={query}")
+
+    def test_search_is_logged_with_its_result_count(self):
+        self._search("samsung")
+
+        entry = SearchLog.objects.get()
+        self.assertEqual(entry.raw_query, "samsung")
+        self.assertEqual(entry.result_count, 0)
+        self.assertIsNone(entry.user)
+
+    def test_query_is_normalised_for_aggregation(self):
+        self._search("  Samsung   PHONE ")
+
+        self.assertEqual(SearchLog.objects.get().normalized, "samsung phone")
+
+    def test_browsing_without_a_query_logs_nothing(self):
+        APIClient().get("/api/v1/catalog/products/")
+        APIClient().get("/api/v1/catalog/products/?q=")
+
+        self.assertEqual(SearchLog.objects.count(), 0)
+
+    def test_logging_failure_does_not_break_search(self):
+        with patch(
+            "catalog.services.SearchLog.objects.create",
+            side_effect=DatabaseError("disk full"),
+        ):
+            response = self._search("samsung")
+
+        self.assertEqual(response.status_code, 200)
+
+
+class SearchLogRetentionTest(TestCase):
+    """D9's open item. Search terms tied to accounts need a stated expiry."""
+
+    def _log(self, query, age_days):
+        entry = SearchLog.objects.create(
+            raw_query=query, normalized=query, result_count=0
+        )
+        # `created_at` is auto_now_add, so it cannot be set on create.
+        SearchLog.objects.filter(pk=entry.pk).update(
+            created_at=timezone.now() - timedelta(days=age_days)
+        )
+        return entry
+
+    def test_rows_past_retention_are_deleted(self):
+        self._log("old", age_days=200)
+        self._log("recent", age_days=10)
+
+        call_command("sweep_search_logs", verbosity=0)
+
+        self.assertEqual(
+            list(SearchLog.objects.values_list("raw_query", flat=True)), ["recent"]
+        )
+
+    def test_dry_run_deletes_nothing(self):
+        self._log("old", age_days=200)
+
+        call_command("sweep_search_logs", "--dry-run", verbosity=0)
+
+        self.assertEqual(SearchLog.objects.count(), 1)
+
+    def test_retention_days_can_be_overridden(self):
+        self._log("five-days-old", age_days=5)
+
+        call_command("sweep_search_logs", "--retention-days", "1", verbosity=0)
+
+        self.assertEqual(SearchLog.objects.count(), 0)

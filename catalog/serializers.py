@@ -29,6 +29,13 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
+    # `typo_score`, `freshness_score` and `rank_score` are deliberately not
+    # serialised. They are internals of `catalog.services.apply_search` whose
+    # values will move every time the weights are retuned against query logs,
+    # and shipping them would turn each retune into a breaking payload change.
+    # `shop_verified` already tells a client everything the verified boost
+    # encodes. Rank is expressed as the order of the list, which is the part
+    # clients can actually use.
 
     class Meta:
         model = Product
