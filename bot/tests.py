@@ -472,6 +472,33 @@ class SweepTests(BotTestCase):
         self.assertIn("Prompts sent: 1", out.getvalue())
 
 
+class DashboardAnswersCloseOutstandingPrompts(BotTestCase):
+    """A merchant answers once, through whichever channel is in front of them.
+
+    The bot prompts, then the merchant opens the dashboard instead of tapping
+    the button. Both are answers, and only one of them was being recorded.
+    """
+
+    def test_confirming_in_the_dashboard_resolves_a_pending_prompt(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        apply_confirmation(self.stale_product, confirmed=True)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+        self.assertIsNotNone(request.responded_at)
+
+    def test_marking_sold_out_in_the_dashboard_resolves_it_too(self):
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, status="pending"
+        )
+        apply_confirmation(self.stale_product, confirmed=False)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "sold_out")
+
+
 class RunBotCommandTest(SimpleTestCase):
     def test_run_bot_requires_token(self):
         with override_settings(TELEGRAM_BOT_TOKEN=""):

@@ -11,6 +11,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from core.models import BaseModel
+from core.slugs import save_with_unique_slug
 
 from .freshness import FRESH_WINDOW, freshness_case, get_freshness
 from .image_utils import validate_image_file
@@ -177,17 +178,12 @@ class Product(BaseModel):
         return f"{self.brand} {self.name}"
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            # Same shop reposting the same item must not collide on the unique
-            # slug: `shop-brand-name`, then `-2`, `-3`, ... like Shop.save().
-            base = slugify(f"{self.shop.slug}-{self.brand}-{self.name}")
-            slug = base
-            counter = 1
-            while Product.objects.filter(slug=slug).exclude(pk=self.pk).exists():
-                counter += 1
-                slug = f"{base}-{counter}"
-            self.slug = slug
-        super().save(*args, **kwargs)
+        if self.slug:
+            return super().save(*args, **kwargs)
+        # Same shop reposting the same item must not collide on the unique
+        # slug: `shop-brand-name`, then `-2`, `-3`, ... like Shop.save().
+        base = slugify(f"{self.shop.slug}-{self.brand}-{self.name}")
+        return save_with_unique_slug(self, base, super().save, *args, **kwargs)
 
 
 def product_image_path(instance, filename):

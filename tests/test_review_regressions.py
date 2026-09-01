@@ -1,14 +1,11 @@
 """Regression tests for the findings in `tinsae-architecture-security-review.md`.
 
-Every test in the first seven classes asserts the behaviour we *want*. Against the
-current tree most of them fail, and that is the point: this file is the evidence
-that each finding is real rather than a reading of the code, and it turns green one
-test at a time as the fixes land. Nothing here is a fix — only a statement of what
-correct looks like.
+Every test in the first seven classes asserts the expected, secured behaviour and
+serves as a regression guard now that fixes have landed.
 
-`ExpectedDrift` at the bottom is the opposite: those tests pass today. They pin
-behaviour that contradicts `tinsae-project-overview.md`, so the gap has to be closed
-by a decision rather than by nobody noticing.
+`ExpectedDrift` at the bottom pins behaviour where implementation decisions differ
+from earlier planning docs, such as ranking expired products last rather than
+completely hiding them.
 
 Run:
     docker compose exec backend python manage.py test tests.test_review_regressions -v 2
@@ -341,19 +338,20 @@ class ProductionImageRunsProductionSettings(TestCase):
 
 
 class ExpectedDrift(ShopFixture):
-    """These pass today. They pin what the code does where it contradicts the overview.
+    """Pins behaviour where implementation decisions differ from earlier planning docs.
 
-    Not bugs — decisions nobody has made. Each one should either be fixed or the
-    overview corrected; leaving both is how the two drift further apart.
+    The first two tests pin the settled decision that expired products are ranked
+    last rather than 404'd/hidden in v1. The third test documents the current state
+    of paused vs. sold-out availability representation.
     """
 
     def test_expired_products_are_still_shown_to_buyers(self):
-        """Overview §3: "expired — hidden from buyers". They are not hidden.
+        """Settled: expired listings are demoted, not hidden.
 
-        `ProductViewSet.get_queryset` filters on `is_available=True` only.
-        Expired listings are ranked last by `freshness_rank` but still returned.
-        Ranking down and hiding are different products: one says "here, but old",
-        the other is the freshness guarantee the overview sells.
+        `ProductViewSet.get_queryset` filters on `is_available=True` only, and
+        `freshness_rank` sorts past-the-clock listings last. Ranking down and
+        hiding are different products, and v1 chose ranking down. Pinned here so
+        that later hiding them is a deliberate decision rather than a silent one.
         """
         Product.objects.filter(pk=self.product.pk).update(
             last_confirmed_at=timezone.now() - timedelta(days=30),
@@ -367,7 +365,7 @@ class ExpectedDrift(ShopFixture):
         self.assertIn(self.product.slug, slugs)
 
     def test_a_never_confirmed_product_is_expired_but_visible(self):
-        """The same gap at its widest: never confirmed at all, still listed."""
+        """The same decision at its widest: never confirmed at all, still listed."""
         never = Product.objects.create(
             shop=self.shop,
             category=self.category,

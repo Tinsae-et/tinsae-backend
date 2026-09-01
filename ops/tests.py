@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from bot.models import ConfirmationRequest
 from catalog.models import Category, ConfirmationStatus, Product
+from catalog.services import apply_confirmation
 from ops.metrics import collect_health
 from shops.models import Shop
 from users.models import User
@@ -119,6 +120,27 @@ class MetricsTests(TestCase):
         self.assertEqual(health["requests"]["answered"], 2)
         self.assertEqual(health["requests"]["expired"], 4)
         self.assertEqual(health["requests"]["response_rate"], 33.3)
+
+    def test_a_shop_answering_in_the_dashboard_is_not_flagged_unresponsive(self):
+        """`expired` is the denominator of the response rate.
+
+        A prompt the merchant answered elsewhere must not lapse: two lapses put
+        a shop in `never_responds`, and the remedy that list feeds is
+        unverification. This shop replied to everything it was asked.
+        """
+        shop = self._shop("Replies", telegram_chat_id="1")
+        for name in ("a", "b"):
+            product = self._product(shop, name, days_ago=45)
+            ConfirmationRequest.objects.create(
+                product=product, shop=shop, status="pending"
+            )
+            apply_confirmation(product, confirmed=True)
+
+        health = collect_health()
+        self.assertEqual(health["requests"]["answered"], 2)
+        self.assertEqual(health["requests"]["expired"], 0)
+        self.assertEqual(health["requests"]["response_rate"], 100.0)
+        self.assertEqual(health["attention"]["never_responds"], [])
 
     def test_a_single_lapse_is_not_enough_to_be_flagged(self):
         shop = self._shop("OneMiss", telegram_chat_id="1")

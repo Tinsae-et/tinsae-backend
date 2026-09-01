@@ -1,13 +1,16 @@
 from datetime import timedelta
 from decimal import Decimal
+from unittest import mock
 
 from django.core.exceptions import ValidationError
+from django.db import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.freshness import Freshness
 from catalog.models import Category, ConfirmationStatus, Product, ProductCondition
+from core.slugs import available_slug
 from users.models import User
 
 from .models import Shop
@@ -33,6 +36,40 @@ class ShopModelTest(TestCase):
         self.assertEqual(first.slug, "abebe-grocery")
         self.assertNotEqual(first.slug, second.slug)
         self.assertEqual(second.slug, "abebe-grocery-2")
+
+    def test_a_slug_taken_between_the_scan_and_the_insert_is_retried(self):
+        """The scan is check-then-act; only the unique index arbitrates.
+
+        Two concurrent creates of the same name both scan, both find the slug
+        free, and both insert. Standing in for that race: hand the first
+        attempt a slug that is already taken, which is exactly what the loser
+        of it sees. This is also the only test that exercises the savepoint --
+        without `atomic()` around each attempt the retry's own query would
+        raise TransactionManagementError instead of retrying.
+        """
+        Shop.objects.create(name="Abebe Grocery", owner=self.owner)
+
+        with mock.patch(
+            "core.slugs.available_slug",
+            side_effect=["abebe-grocery", "abebe-grocery-2"],
+        ) as scan:
+            second = Shop.objects.create(name="Abebe Grocery", owner=self.owner)
+
+        self.assertEqual(second.slug, "abebe-grocery-2")
+        self.assertEqual(scan.call_count, 2)
+
+    def test_an_unrelated_integrity_error_is_not_retried(self):
+        """A violation that is not a slug collision surfaces on attempt one.
+
+        Retrying it would reproduce the same error five times over and bury the
+        real one. Here it is a NOT NULL on `name`, which has nothing to do with
+        the slug.
+        """
+        with mock.patch("core.slugs.available_slug", wraps=available_slug) as scan:
+            with self.assertRaises(IntegrityError):
+                Shop.objects.create(name=None, owner=self.owner)
+
+        self.assertEqual(scan.call_count, 1)
 
     def test_create_without_coordinates_defaults_to_none(self):
         shop = Shop.objects.create(name="No Location Shop", owner=self.owner)

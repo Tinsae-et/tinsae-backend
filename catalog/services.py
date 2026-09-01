@@ -58,10 +58,30 @@ def apply_confirmation(
     stock" is fresh information about an unavailable product — availability and
     freshness are separate axes.
 
-    `request` is optional because a product listed by /myproducts usually has no
-    outstanding ConfirmationRequest; with prompts disabled, none was ever sent.
+    `request` is optional because the caller does not always have one to hand --
+    /myproducts and the dashboard both answer about a product, not about a
+    prompt. When it is omitted the product's outstanding prompt, if any, is
+    looked up and resolved anyway: the answer is the same answer regardless of
+    which channel carried it.
     """
     with transaction.atomic():
+        if request is None:
+            # A merchant who answers in the dashboard has answered. Whichever
+            # channel they used, an outstanding prompt for this product *is*
+            # being responded to, and letting it lapse instead records a
+            # non-response against a shop that did reply -- `ops.metrics` puts
+            # `expired` in the denominator of the response rate, and two of them
+            # lands the shop in `never_responds`, whose remedy is unverification.
+            #
+            # `select_for_update` because the Telegram callback may be resolving
+            # the same row concurrently. `resolve_request` no-ops on anything
+            # already resolved, so the loser of that race does nothing.
+            request = (
+                ConfirmationRequest.objects.select_for_update()
+                .filter(product=product, status="pending")
+                .first()
+            )
+
         if request is not None:
             resolve_request(request, "confirmed" if confirmed else "sold_out")
 

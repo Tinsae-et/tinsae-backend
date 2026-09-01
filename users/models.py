@@ -27,7 +27,12 @@ class User(AbstractUser):
     telegram_chat_id = models.CharField(max_length=50, blank=True)
 
     class Meta:
-        ordering = ["email"]
+        # Not `email`: it is nullable by design (see the class docstring, and a
+        # large share of merchants have none), and Postgres gives no defined
+        # order among NULLs. A paginated list of users could therefore show the
+        # same row on two pages and never show another at all, and vary between
+        # identical requests. `username` is non-null and unique.
+        ordering = ["username"]
         constraints = [
             # `username` already has a plain unique index from AbstractUser. This
             # adds case-insensitivity, so `Sara` and `sara` cannot both exist --

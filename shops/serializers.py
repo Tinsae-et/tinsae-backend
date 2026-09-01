@@ -88,8 +88,8 @@ class ShopListSerializer(serializers.ModelSerializer):
 class ShopProductSerializer(serializers.ModelSerializer):
     """The merchant's write shape for their own products.
 
-    Deliberately narrower than `catalog.ShopProductSerializer`'s buyer-facing
-    cousin on the write side: the confirmation clock is not a merchant-editable
+    Deliberately narrower than `catalog.ProductSerializer`, the buyer-facing
+    view of the same model: the confirmation clock is not a merchant-editable
     field. See `read_only_fields`.
     """
 
