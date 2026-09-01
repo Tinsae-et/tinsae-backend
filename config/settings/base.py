@@ -18,6 +18,7 @@ INSTALLED_APPS = [
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
+    "django.contrib.postgres",
     "django.contrib.staticfiles",
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
@@ -212,6 +213,19 @@ PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
 CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
     "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
 )
+
+# Days a SearchLog row is kept before `sweep_search_logs` deletes it.
+#
+# These rows are search terms attached to user accounts, so they are personal
+# data with no expiry of their own -- the table only grows. 180 days is chosen
+# to be longer than the tuning loop needs (a few weeks of traffic is enough to
+# rank synonym gaps) and short enough that we are not holding a year of buyers'
+# queries to no purpose.
+#
+# Deleting a row does not lose the lesson it taught: the output of this table is
+# aggregate counts of failed queries, which get acted on by adding synonyms and
+# aliases. Once that edit is made, the individual row is spent.
+SEARCH_LOG_RETENTION_DAYS = env.int("SEARCH_LOG_RETENTION_DAYS", default=180)
 
 # Products per page in the bot's /myproducts listing. Telegram inline keyboards
 # become unusable past a handful of rows, so the listing pages instead of capping.

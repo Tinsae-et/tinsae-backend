@@ -3,7 +3,7 @@ from django.db import migrations
 
 
 class Migration(migrations.Migration):
-    """Enable pg_trgm, which `catalog.services.SearchProduct` needs.
+    """Enable pg_trgm, which `catalog.services.apply_search` needs.
 
     Replaces `0010_auto_20260826_1711`, which branched off 0009 alongside
     `0010_alter_product_confirmation_status` and left the graph with two leaf

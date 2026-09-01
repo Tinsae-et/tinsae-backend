@@ -1,6 +1,8 @@
 from pathlib import Path
 from uuid import uuid4
 
+from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import FileExtensionValidator
@@ -161,7 +163,18 @@ class Product(BaseModel):
         indexes = [
             models.Index(
                 fields=["last_confirmed_at"], name="product_last_confirmed_idx"
-            )
+            ),
+            # `icontains` and `similarity()` both scan every row without these:
+            # a leading-wildcard LIKE cannot use a btree index, and trigram
+            # similarity has nothing to prune against. GIN + gin_trgm_ops serves
+            # both, which is the main argument for keeping search on trigram
+            # rather than moving to tsvector -- see docs/decisions.md, D8.
+            GinIndex(
+                fields=["name"], name="product_name_trgm", opclasses=["gin_trgm_ops"]
+            ),
+            GinIndex(
+                fields=["brand"], name="product_brand_trgm", opclasses=["gin_trgm_ops"]
+            ),
         ]
 
     @property
@@ -229,3 +242,53 @@ class ProductImage(BaseModel):
 def delete_image_file(sender, instance, **kwargs):
     if instance.image:
         instance.image.delete(save=False)
+
+
+class SearchLog(BaseModel):
+    """One buyer search, recorded so ranking can be tuned against real traffic.
+
+    TIN-58 asks for ranking "tuned on real query logs" and a search-backend
+    decision made "with data, not ahead of it". Neither is answerable without
+    this table, which is why it lands before the tuning rather than after: the
+    weights in `catalog.services` and the synonym list are both provisional
+    guesses until there are weeks of rows here to check them against.
+
+    The `result_count=0` rows are the point. A query that returns nothing is a
+    buyer telling us exactly which word we failed to understand -- a missing
+    synonym, a brand spelled the way people actually spell it, or an Amharic
+    term the catalogue has no alias for. That list is the input to the alias
+    work, and it is why `normalized` is indexed: the query that matters is
+    "most frequent normalized queries with no results".
+
+    Not an analytics event stream. No click-through, no session, no result
+    slugs. Those need a frontend contract and a retention policy of their own;
+    this is the smallest thing that unblocks the two blocked criteria.
+    """
+
+    raw_query = models.CharField(max_length=200)
+    # Whitespace-collapsed and lowercased, so "  Samsung  PHONE " and
+    # "samsung phone" aggregate into one row when counting. `raw_query` is kept
+    # beside it because the exact keystrokes are the evidence for typo work --
+    # normalising them away would discard the thing we want to measure.
+    normalized = models.CharField(max_length=200, db_index=True)
+    result_count = models.PositiveIntegerField()
+    # Nullable and SET_NULL: most searches are anonymous, and a buyer deleting
+    # their account must not delete the traffic history the ranking is tuned on.
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="search_logs",
+    )
+
+    class Meta(BaseModel.Meta):
+        verbose_name_plural = "search logs"
+        indexes = [
+            models.Index(
+                fields=["result_count", "-created_at"], name="searchlog_misses_idx"
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.raw_query!r} -> {self.result_count}"

@@ -1,13 +1,13 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
+from django.db.models import Case, IntegerField, Prefetch, Value, When
 from django.db.models.functions import Coalesce
 from rest_framework import viewsets
 from rest_framework.exceptions import ValidationError
 
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
-from .services import SearchProduct
+from .services import apply_search, log_search
 
 ORDERING_FIELDS = {
     "name",
@@ -104,12 +104,13 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                     {"ordering": f"Invalid ordering field: {ordering}."}
                 )
 
-        if q := self.request.query_params.get("q"):
-            qs = qs.filter(
-                Q(name__icontains=q)
-                | Q(description__icontains=q)
-                | Q(brand__icontains=q)
-            )
+        # Ranked search lives on this route because this is the route the
+        # frontend calls (`frontend-implementation-guide.md`: "GET
+        # /catalog/products/?q=..."). TIN-58 asked to upgrade the TIN-16 search,
+        # and a second endpoint beside it would have been a fork, not an
+        # upgrade: two ranking rules, and only one of them wired to a client.
+        if query := (self.request.query_params.get("q") or "").strip():
+            qs = apply_search(qs, query)
         min_price = price_param(self.request.query_params, "min_price")
         if min_price is not None:
             qs = qs.filter(price__gte=min_price)
@@ -131,29 +132,34 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if category := self.request.query_params.get("category"):
             qs = qs.filter(category__slug=category)
 
-        # An explicit sort replaces the freshness ranking rather than nesting
-        # underneath it: a buyer who asks for cheapest-first means it. Filters
-        # compose with the ranking; sorts override it.
+        # An explicit sort replaces the ranking rather than nesting underneath
+        # it: a buyer who asks for cheapest-first means it. Filters compose with
+        # the ranking; sorts override it.
         if ordering:
             return qs.order_by(ordering)
+        if query:
+            # `apply_search` already ordered by relevance. Re-sorting on
+            # freshness here would undo the entire ranking.
+            return qs
         return qs.order_by("freshness_rank", "-last_signal")
 
+    def list(self, request, *args, **kwargs):
+        """Serve the page, then record the search that produced it.
 
-class ProductSearchViewSet(viewsets.ReadOnlyModelViewSet):
-    """Ranked search. Read-only, like every other buyer-facing catalogue route.
+        After `super()`, not inside `get_queryset`, for two reasons: the count
+        is only real once the page has been built, and `get_queryset` is not a
+        place with side effects -- DRF is free to call it more than once per
+        request, and every extra call would be a duplicate row.
+        """
+        response = super().list(request, *args, **kwargs)
+        if query := (request.query_params.get("q") or "").strip():
+            log_search(query, response.data.get("count", 0), request.user)
+        return response
 
-    Deliberately *not* a `ModelViewSet`. The project default permission is
-    `IsAuthenticatedOrReadOnly`, so a full ModelViewSet here exposes PUT, PATCH
-    and DELETE to every account that can log in -- and `get_queryset` returning
-    `none()` for an empty `q` is not a guard, because the write routes take a
-    `q` too. Product writes belong to the shop-scoped routes, which check
-    ownership.
-    """
 
-    serializer_class = ProductSerializer
-
-    def get_queryset(self):
-        query = self.request.query_params.get("q", "").strip()
-        if not query:
-            return Product.objects.none()
-        return SearchProduct(query)
+# `ProductSearchViewSet` was removed here. It was a second search endpoint at
+# /catalog/productsearch/ with its own ranking, no price/category/freshness
+# filters, and no client -- the frontend has always called /catalog/products/?q=.
+# It was also a plain `ModelViewSet`, which under the project default of
+# `IsAuthenticatedOrReadOnly` exposed PUT, PATCH and DELETE on products to every
+# account that could log in. Its ranking now lives in `ProductViewSet` above.
