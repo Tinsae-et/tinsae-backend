@@ -17,6 +17,8 @@ class ShopSerializer(serializers.ModelSerializer):
             "description",
             "phone",
             "city",
+            "latitude",
+            "longitude",
             "telegram_chat_id",
             "is_verified",
             "owner",
@@ -60,6 +62,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
             "description",
             "phone",
             "city",
+            "latitude",
+            "longitude",
             "is_verified",
             "created_at",
             "updated_at",
@@ -69,7 +73,16 @@ class ShopPublicSerializer(serializers.ModelSerializer):
 class ShopListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shop
-        fields = ["id", "name", "slug", "description", "city", "is_verified"]
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "description",
+            "city",
+            "latitude",
+            "longitude",
+            "is_verified",
+        ]
 
 
 class ShopProductSerializer(serializers.ModelSerializer):
@@ -101,6 +114,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "description",
             "price",
             "currency",
+            "condition",
             "shop",
             "category",
             "is_available",

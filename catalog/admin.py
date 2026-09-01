@@ -15,6 +15,7 @@ class ProductAdmin(admin.ModelAdmin):
     list_display = [
         "brand",
         "name",
+        "condition",
         "price",
         "confirmation_status",
         "last_confirmed_at",
@@ -22,7 +23,14 @@ class ProductAdmin(admin.ModelAdmin):
         "shop",
         "category",
     ]
-    list_filter = ["confirmation_status", "is_available", "category", "brand", "shop"]
+    list_filter = [
+        "condition",
+        "confirmation_status",
+        "is_available",
+        "category",
+        "brand",
+        "shop",
+    ]
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
     autocomplete_fields = ["shop", "category"]

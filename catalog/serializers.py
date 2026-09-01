@@ -57,6 +57,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "description",
             "price",
             "currency",
+            "condition",
             "shop_name",
             "shop_verified",
             "category",

@@ -17,7 +17,7 @@ from catalog.freshness import (
     Freshness,
     get_freshness,
 )
-from catalog.models import Category, Product, ProductImage
+from catalog.models import Category, Product, ProductCondition, ProductImage
 from catalog.serializers import ProductSerializer
 from shops.models import Shop
 
@@ -62,6 +62,27 @@ class ProductModelTest(TestCase):
         }
         data.update(overrides)
         return Product.objects.create(**data)
+
+    def test_default_condition_is_new(self):
+        product = self._product()
+        self.assertEqual(product.condition, ProductCondition.NEW)
+        self.assertEqual(product.condition, "new")
+
+    def test_explicit_condition_is_saved(self):
+        used_product = self._product(
+            name="Used iPhone", condition=ProductCondition.USED
+        )
+        refurb_product = self._product(
+            name="Refurbished iPhone", condition=ProductCondition.REFURBISHED
+        )
+        self.assertEqual(used_product.condition, "used")
+        self.assertEqual(refurb_product.condition, "refurbished")
+
+    def test_invalid_condition_is_rejected_by_validation(self):
+        product = self._product(condition="broken")
+        with self.assertRaises(ValidationError) as ctx:
+            product.full_clean()
+        self.assertIn("condition", ctx.exception.message_dict)
 
     def test_slug_is_generated_when_blank(self):
         product = self._product()
@@ -124,6 +145,7 @@ class ProductImageModelTest(TestCase):
         self.assertEqual(data["shop_name"], "Test shop")
         self.assertFalse(data["shop_verified"])
         self.assertEqual(data["category"]["name"], "Electronics")
+        self.assertEqual(data["condition"], "new")
         self.assertEqual(len(data["images"]), 1)
         self.assertEqual(data["images"][0]["display_order"], 0)
 

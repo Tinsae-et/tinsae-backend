@@ -47,6 +47,21 @@ class ConfirmationStatus(models.TextChoices):
     UNCONFIRMED = "unconfirmed", "Unconfirmed"
 
 
+class ProductCondition(models.TextChoices):
+    """The physical condition of a listed product.
+
+    Referenced by the dashboard listing form and the product comparison view.
+    Stored on `Product.condition` and defaults to `NEW`.
+    """
+
+    NEW = "new", "New"
+    USED = "used", "Used"
+    REFURBISHED = "refurbished", "Refurbished"
+
+
+Condition = ProductCondition
+
+
 class Category(BaseModel):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
@@ -126,6 +141,11 @@ class Product(BaseModel):
     slug = models.SlugField(max_length=200, unique=True, blank=True)
     price = models.DecimalField(max_digits=10, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
+    condition = models.CharField(
+        max_length=20,
+        choices=ProductCondition.choices,
+        default=ProductCondition.NEW,
+    )
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
     confirmation_status = models.CharField(
         max_length=20, choices=ConfirmationStatus.choices, default="fresh"
