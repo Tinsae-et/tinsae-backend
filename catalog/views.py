@@ -139,7 +139,17 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         return qs.order_by("freshness_rank", "-last_signal")
 
 
-class ProductSearchViewSet(viewsets.ModelViewSet):
+class ProductSearchViewSet(viewsets.ReadOnlyModelViewSet):
+    """Ranked search. Read-only, like every other buyer-facing catalogue route.
+
+    Deliberately *not* a `ModelViewSet`. The project default permission is
+    `IsAuthenticatedOrReadOnly`, so a full ModelViewSet here exposes PUT, PATCH
+    and DELETE to every account that can log in -- and `get_queryset` returning
+    `none()` for an empty `q` is not a guard, because the write routes take a
+    `q` too. Product writes belong to the shop-scoped routes, which check
+    ownership.
+    """
+
     serializer_class = ProductSerializer
 
     def get_queryset(self):

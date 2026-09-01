@@ -15,7 +15,16 @@ import logging
 
 from django.contrib.postgres.search import TrigramSimilarity
 from django.db import transaction
-from django.db.models import Case, IntegerField, Q, Value, When
+from django.db.models import (
+    Case,
+    ExpressionWrapper,
+    F,
+    FloatField,
+    IntegerField,
+    Q,
+    Value,
+    When,
+)
 from django.utils import timezone
 
 from bot.models import ConfirmationRequest
@@ -144,6 +153,7 @@ def SearchProduct(query: str):
         )
     return (
         Product.objects.filter(search_filter, is_available=True)
+        .select_related("category", "shop")
         .annotate(
             typo_score=(
                 TrigramSimilarity("name", query) + TrigramSimilarity("brand", query)
@@ -153,6 +163,45 @@ def SearchProduct(query: str):
                 default=Value(0),
                 output_field=IntegerField(),
             ),
+            # Weights are baked into the tier values rather than applied as
+            # multipliers, so the whole ranking formula is readable in one place.
+            #
+            # `typo_score` runs 0..2 and dominates on purpose: a buyer who types
+            # "laptop" wants laptops. Freshness and verification are tiebreakers
+            # between comparably relevant products, not overrides -- the previous
+            # ordering sorted on `last_confirmed_at` first, which made relevance
+            # unreachable in practice, since two products almost never share a
+            # confirmation timestamp.
+            #
+            # The three freshness tiers mirror `ProductViewSet.freshness_rank`
+            # and must keep agreeing with it: a product confirmed 40 days ago
+            # still carries more signal than one never confirmed at all, so
+            # never-confirmed scores 0 and sits below stale.
+            freshness_score=Case(
+                When(last_confirmed_at__isnull=True, then=Value(0.0)),
+                When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0.30)),
+                default=Value(0.10),
+                output_field=FloatField(),
+            ),
+            verified_boost=Case(
+                When(shop__is_verified=True, then=Value(0.15)),
+                default=Value(0.0),
+                output_field=FloatField(),
+            ),
         )
-        .order_by("-last_confirmed_at", "-verified_score", "typo_score")
+        .annotate(
+            rank_score=ExpressionWrapper(
+                F("typo_score") + F("freshness_score") + F("verified_boost"),
+                output_field=FloatField(),
+            )
+        )
+        # `nulls_last` because Postgres puts NULLs first on DESC, which is what
+        # floated never-confirmed listings to the top of every result page. `pk`
+        # last so equal-scoring rows keep a stable order across pages -- without
+        # it, pagination can repeat or skip rows between requests.
+        .order_by(
+            "-rank_score",
+            F("last_confirmed_at").desc(nulls_last=True),
+            "-pk",
+        )
     )

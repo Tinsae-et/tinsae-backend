@@ -29,9 +29,9 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
-    # Derived at read time from `last_confirmed_at`, never stored. Reads the
-    # model property, which costs nothing extra: the column is already loaded.
-    freshness = serializers.ReadOnlyField()
+    # Annotated by `catalog.services.SearchProduct`, so they are absent on the
+    # plain list/detail routes. Read-only means DRF raises SkipField rather than
+    # AttributeError there, and the keys are simply omitted.
     verified_score = serializers.IntegerField(read_only=True)
     typo_score = serializers.FloatField(read_only=True)
 
