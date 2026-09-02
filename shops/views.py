@@ -6,7 +6,7 @@ from rest_framework.response import Response
 from catalog.models import Product, ProductImage
 from catalog.services import apply_confirmation, pause_listing, resume_listing
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
 from .serializers import (
     ShopListSerializer,
@@ -14,6 +14,7 @@ from .serializers import (
     ShopProductSerializer,
     ShopPublicSerializer,
     ShopSerializer,
+    VerificationRequestSerializer,
 )
 
 # A ceiling on "confirm all". Not a performance limit -- it is what keeps one
@@ -206,3 +207,32 @@ class ShopProductImageViewSet(viewsets.ModelViewSet):
         # Deleting an image is handled by the stock destroy(); the post_delete
         # receiver in catalog.models removes the file from storage.
         serializer.save(product=self.get_product())
+
+
+class VerificationViewSet(viewsets.ModelViewSet):
+    serializer_class = VerificationRequestSerializer
+    permission_classes = [IsOwnerOrReadOnly, permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        return VerificationRequest.objects.filter(shop__slug=self.kwargs["shop_slug"])
+
+    def get_object(self):
+        return self.get_queryset().last()
+
+    def get_shop(self):
+        return get_object_or_404(
+            Shop, slug=self.kwargs["shop_slug"], owner=self.request.user
+        )
+
+    def perform_create(self, serializer):
+        if self.get_queryset().filter(state="pending").exists():
+            raise serializers.ValidationError(
+                {
+                    "detail": "A pending verification request already exists for this shop."
+                }
+            )
+        elif self.get_shop().is_verified:
+            raise serializers.ValidationError(
+                {"detail": "This shop is already verified."}
+            )
+        serializer.save(shop=self.get_shop())

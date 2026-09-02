@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from catalog.models import Category, Product, ProductImage
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -178,3 +178,26 @@ class ShopProductImageSerializer(serializers.ModelSerializer):
                 "This product already has a primary image."
             )
         return value
+
+
+class VerificationRequestSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VerificationRequest
+        fields = [
+            "id",
+            "shop",
+            "submited_at",
+            "reviewed_at",
+            "reviewer",
+            "state",
+            "rejection_reason",
+            "supporting_detail",
+        ]
+        read_only_fields = [
+            "shop",
+            "submited_at",
+            "reviewed_at",
+            "reviewer",
+            "state",
+            "rejection_reason",
+        ]

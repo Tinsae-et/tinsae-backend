@@ -9,7 +9,7 @@ from django.utils.timezone import localtime
 from bot.services import issue_link_code
 from catalog.models import Product
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 
 
 class ProductInline(admin.TabularInline):
@@ -18,6 +18,19 @@ class ProductInline(admin.TabularInline):
     fields = ["brand", "name", "price", "last_confirmed_at", "category"]
     autocomplete_fields = ["category"]
     show_change_link = True
+
+
+@admin.register(VerificationRequest)
+class VerificationRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "shop__name",
+        "submited_at",
+        "reviewed_at",
+        "reviewer",
+        "state",
+    )
+    list_filter = ("state",)
+    search_fields = ("shop__name",)
 
 
 @admin.register(Shop)

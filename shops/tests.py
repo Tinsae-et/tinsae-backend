@@ -13,7 +13,7 @@ from catalog.models import Category, ConfirmationStatus, Product, ProductConditi
 from core.slugs import available_slug
 from users.models import User
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 
 
 class ShopModelTest(TestCase):
@@ -730,3 +730,92 @@ class ShopProductApiTest(TestCase):
         self.assertEqual(response.status_code, 404)
         self.product.refresh_from_db()
         self.assertEqual(self.product.condition, ProductCondition.NEW)
+
+
+class VerificationRequestApiTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="owner", password="pass")
+        self.other_owner = User.objects.create_user(
+            username="other-owner", password="pass"
+        )
+        self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
+        self.other_shop = Shop.objects.create(name="Other Shop", owner=self.other_owner)
+        self.client = APIClient()
+        self.url = f"/api/v1/shops/{self.shop.slug}/verification/"
+
+    def test_owner_can_submit_verification_request(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self.url,
+            {"supporting_detail": "Business license and storefront photos."},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        request = VerificationRequest.objects.get(shop=self.shop)
+        self.assertEqual(request.state, "pending")
+        self.assertEqual(
+            request.supporting_detail, "Business license and storefront photos."
+        )
+
+    def test_duplicate_pending_submission_is_rejected(self):
+        VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="First submission"
+        )
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self.url, {"supporting_detail": "Second submission"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(VerificationRequest.objects.filter(shop=self.shop).count(), 1)
+
+    def test_submission_while_verified_is_rejected(self):
+        self.shop.is_verified = True
+        self.shop.save(update_fields=["is_verified"])
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            self.url, {"supporting_detail": "Already verified"}, format="json"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(VerificationRequest.objects.filter(shop=self.shop).exists())
+
+    def test_approved_request_sets_shop_verified(self):
+        verification_request = VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Documents"
+        )
+
+        verification_request.state = "approved"
+        verification_request.save()
+
+        self.shop.refresh_from_db()
+        self.assertTrue(self.shop.is_verified)
+
+    def test_rejected_request_records_reason(self):
+        verification_request = VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Documents"
+        )
+
+        verification_request.state = "rejected"
+        verification_request.rejection_reason = "Document is expired."
+        verification_request.save()
+
+        verification_request.refresh_from_db()
+        self.assertEqual(verification_request.state, "rejected")
+        self.assertEqual(verification_request.rejection_reason, "Document is expired.")
+
+    def test_other_shop_owner_cannot_submit_for_this_shop(self):
+        self.client.force_authenticate(self.other_owner)
+
+        response = self.client.post(
+            self.url,
+            {"supporting_detail": "Unauthorized submission"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(VerificationRequest.objects.filter(shop=self.shop).exists())
