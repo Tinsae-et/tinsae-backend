@@ -82,13 +82,17 @@ class TestShopOwnerRegistrationSerializer(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("email", serializer.errors)
 
-    def test_email_is_optional(self):
-        # Deliberately optional: a large share of merchants have no email they
-        # read, and forcing the field yields a unique constraint over fake data.
+    def test_email_is_required(self):
+        # Was deliberately optional, on the grounds that many merchants have no
+        # email they read. Now required: `request_otp` can only deliver a
+        # verification code to an email address, so an account without one
+        # cannot be verified or recovered. The column stays nullable for rows
+        # that predate the rule -- see `User`.
         data = self._data()
         del data["email"]
         serializer = ShopOwnerRegistrationSerializer(data=data)
-        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("email", serializer.errors)
 
     def test_duplicate_shop_name_is_allowed(self):
         # Shop.save() resolves the slug collision; the names may match.
@@ -111,13 +115,32 @@ class TestShopOwnerRegistrationSerializer(TestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("password", serializer.errors)
 
-    def test_missing_required_fields(self):
+    def test_missing_required_fields_for_a_buyer(self):
+        # No shop fields, so this is a buyer: `shop_name` and `city` are not
+        # required of it and `password` is the only thing missing.
         serializer = ShopOwnerRegistrationSerializer(
             data={"username": "newuser", "email": "newuser@tinsae.com"}
         )
         self.assertFalse(serializer.is_valid())
         self.assertIn("password", serializer.errors)
+        self.assertNotIn("shop_name", serializer.errors)
+
+    def test_missing_shop_fields_for_an_owner(self):
+        # A valid password on purpose: the shop fields are enforced in
+        # `validate()`, which DRF skips entirely while any field-level error
+        # stands. Omit the password too and only the password error comes back.
+        serializer = ShopOwnerRegistrationSerializer(
+            data={
+                "username": "newuser",
+                "email": "newuser@tinsae.com",
+                "password": "SecurePassword123!",
+                "role": "owner",
+            }
+        )
+        self.assertFalse(serializer.is_valid())
         self.assertIn("shop_name", serializer.errors)
+        self.assertIn("city", serializer.errors)
+        self.assertIn("phone", serializer.errors)
 
     def test_registration_with_coordinates(self):
         data = self._data(latitude="9.024970", longitude="38.746890")
@@ -287,11 +310,52 @@ class TestRegistration(ThrottleResetMixin, APITestCase):
     def test_duplicate_shop_name_registration_succeeds(self):
         response = self._register(shop_name="Existing Shop")
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-
         shops = Shop.objects.filter(name="Existing Shop").order_by("slug")
         self.assertEqual(shops.count(), 2)
         # Same name, distinct slugs — Shop.save() resolves the collision.
         self.assertEqual([s.slug for s in shops], ["existing-shop", "existing-shop-2"])
+
+    def test_buyer_registration_succeeds_without_shop(self):
+        data = {
+            "username": "buyeruser",
+            "email": "buyer@example.com",
+            "password": "ValidPassword123!",
+            "role": "buyer",
+        }
+        response = self.client.post(self.registration_url, data, format="json")
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data["user"]["shops"], [])
+
+        user = User.objects.get(username="buyeruser")
+        self.assertEqual(user.shops.count(), 0)
+
+    def test_buyer_can_create_first_shop_but_not_second(self):
+        data = {
+            "username": "futuremerchant",
+            "email": "future@example.com",
+            "password": "ValidPassword123!",
+            "role": "buyer",
+        }
+        res = self.client.post(self.registration_url, data, format="json")
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        token = res.data["access"]
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        shop_res = client.post(
+            "/api/v1/shops/",
+            {"name": "First Shop", "city": "Addis Ababa", "phone": "+251911111111"},
+            format="json",
+        )
+        self.assertEqual(shop_res.status_code, status.HTTP_201_CREATED)
+
+        second_shop_res = client.post(
+            "/api/v1/shops/",
+            {"name": "Second Shop", "city": "Addis Ababa", "phone": "+251911111111"},
+            format="json",
+        )
+        self.assertEqual(second_shop_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("detail", second_shop_res.data)
 
     def test_weak_password_registration(self):
         response = self._register(password="abc")

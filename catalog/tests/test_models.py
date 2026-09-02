@@ -107,6 +107,20 @@ class ProductModelTest(TestCase):
         self.assertEqual(first.slug, "test-shop-apple-iphone-15-pro")
         self.assertEqual(second.slug, "test-shop-apple-iphone-15-pro-2")
 
+    def test_default_status_stock_views_inquiries(self):
+        product = self._product()
+        self.assertEqual(product.status, "live")
+        self.assertEqual(product.stock, 1)
+        self.assertEqual(product.views, 0)
+        self.assertEqual(product.inquiries, 0)
+        self.assertTrue(product.is_available)
+
+    def test_sold_and_draft_status_sets_is_available_false(self):
+        draft = self._product(name="Draft Item", status="draft")
+        sold = self._product(name="Sold Item", status="sold")
+        self.assertFalse(draft.is_available)
+        self.assertFalse(sold.is_available)
+
 
 @override_settings(MEDIA_ROOT=tempfile.mkdtemp())
 class ProductImageModelTest(TestCase):

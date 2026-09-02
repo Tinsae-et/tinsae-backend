@@ -131,6 +131,9 @@ REST_FRAMEWORK = {
         "token_refresh": "60/min",
         # Each request sends an email. Tight on purpose.
         "password_reset": "5/hour",
+        # Profile writes: identity-adjacent and each one may carry a 2 MB
+        # upload. Loose enough that nobody editing their own page reaches it.
+        "profile_update": "20/hour",
     },
 }
 

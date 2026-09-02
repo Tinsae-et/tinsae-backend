@@ -64,6 +64,19 @@ class ProductCondition(models.TextChoices):
 Condition = ProductCondition
 
 
+class ProductStatus(models.TextChoices):
+    """The listing state of a product.
+
+    LIVE: Active and visible to buyers.
+    DRAFT: Incomplete or unpublished by merchant.
+    SOLD: Marked sold out.
+    """
+
+    LIVE = "live", "Live"
+    DRAFT = "draft", "Draft"
+    SOLD = "sold", "Sold"
+
+
 class Category(BaseModel):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
@@ -152,6 +165,14 @@ class Product(BaseModel):
     confirmation_status = models.CharField(
         max_length=20, choices=ConfirmationStatus.choices, default="fresh"
     )
+    status = models.CharField(
+        max_length=20,
+        choices=ProductStatus.choices,
+        default=ProductStatus.LIVE,
+    )
+    stock = models.PositiveIntegerField(default=1)
+    views = models.PositiveIntegerField(default=0)
+    inquiries = models.PositiveIntegerField(default=0)
     is_available = models.BooleanField(default=True)
     specs = models.JSONField(default=dict, blank=True)
 
@@ -191,6 +212,8 @@ class Product(BaseModel):
         return f"{self.brand} {self.name}"
 
     def save(self, *args, **kwargs):
+        if self.status in (ProductStatus.SOLD, ProductStatus.DRAFT):
+            self.is_available = False
         if self.slug:
             return super().save(*args, **kwargs)
         # Same shop reposting the same item must not collide on the unique

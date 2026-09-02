@@ -13,13 +13,15 @@ from .models import User
 from .serializers import (
     LogoutSerializer,
     MultiIdentifierTokenObtainPairSerializer,
+    OTPRequestSerializer,
+    OTPVerifySerializer,
     PasswordChangeSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
-    ShopOwnerRegistrationSerializer,
+    RegistrationSerializer,
     UserSerializer,
 )
-from .services import revoke_all_refresh_tokens
+from .services import request_otp, revoke_all_refresh_tokens, verify_otp
 from .throttles import LoginAccountThrottle, LoginIPThrottle
 
 logger = logging.getLogger(__name__)
@@ -58,10 +60,15 @@ class ThrottledTokenRefreshView(TokenRefreshView):
     throttle_scope = "token_refresh"
 
 
-class ShopOwnerRegistrationView(generics.CreateAPIView):
+class RegistrationView(generics.CreateAPIView):
+    """Register a buyer, or a merchant and their first shop.
+
+    Which one is decided by `role` in the body -- see `RegistrationSerializer`.
+    """
+
     queryset = User.objects.all()
     permission_classes = [AllowAny]
-    serializer_class = ShopOwnerRegistrationSerializer
+    serializer_class = RegistrationSerializer
     throttle_scope = "register"
 
     def create(self, request, *args, **kwargs):
@@ -72,9 +79,19 @@ class ShopOwnerRegistrationView(generics.CreateAPIView):
         # Tokens in the 201 so the client lands on the dashboard directly rather
         # than replaying the credentials it just sent against /auth/token/.
         return Response(
-            {**token_pair(user), "user": UserSerializer(user).data},
+            {
+                **token_pair(user),
+                # Context, so `avatar` serialises to an absolute URL here as it
+                # does from /me/. Without it this response says `/media/...`
+                # and that one says `http://host/media/...` for the same user.
+                "user": UserSerializer(user, context={"request": request}).data,
+            },
             status=status.HTTP_201_CREATED,
         )
+
+
+# The old name, kept so existing imports keep working.
+ShopOwnerRegistrationView = RegistrationView
 
 
 class LogoutView(APIView):
@@ -177,11 +194,97 @@ class PasswordResetConfirmView(APIView):
         )
 
 
-class GetMyShops(generics.RetrieveAPIView):
+class UserProfileView(generics.RetrieveUpdateAPIView):
+    """Read or update the authenticated user's profile.
+
+    `email` and `phone` are read-only in the serializer — an unverified change
+    to either is an account takeover, not a profile edit.
+    """
+
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
+    throttle_scope = "profile_update"
 
     def get_object(self):
         # The authenticated user, never a lookup — there is no pk in the URL, so
         # one user's data cannot be requested through another's token.
         return self.request.user
+
+    def get_throttles(self):
+        # GET /me/ is hit on every page load; only the writes are capped.
+        if self.request.method in ("PUT", "PATCH"):
+            return super().get_throttles()
+        return []
+
+
+# The old name, kept so existing imports keep working.
+GetMyShops = UserProfileView
+
+
+class OTPRequestView(APIView):
+    """Request a 6-digit OTP code for signin or signup.
+
+    Enforces cooldown and rate limits. If mode is "signin" and the account
+    does not exist, answers 404 cleanly.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_scope = "register"
+
+    def post(self, request):
+        serializer = OTPRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        destination = serializer.validated_data["destination"]
+        mode = serializer.validated_data["mode"]
+
+        result = request_otp(destination=destination, mode=mode)
+        if result is None:
+            return Response(
+                {"detail": "No account found with this email or phone number."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        return Response(result, status=status.HTTP_200_OK)
+
+
+class OTPVerifyView(APIView):
+    """Verify an OTP code and return JWT tokens + user data.
+
+    Supports passwordless signin and signup.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = OTPVerifySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = verify_otp(
+            destination=serializer.validated_data["destination"],
+            code=serializer.validated_data["code"],
+            mode=serializer.validated_data["mode"],
+            role=serializer.validated_data.get("role"),
+            shop_name=serializer.validated_data.get("shop_name"),
+            city=serializer.validated_data.get("city"),
+            username=serializer.validated_data.get("username"),
+            full_name=serializer.validated_data.get("full_name"),
+            latitude=serializer.validated_data.get("latitude"),
+            longitude=serializer.validated_data.get("longitude"),
+        )
+
+        resp_status = (
+            status.HTTP_201_CREATED
+            if serializer.validated_data["mode"] == "signup"
+            else status.HTTP_200_OK
+        )
+        return Response(
+            {
+                **token_pair(user),
+                # Context, so `avatar` serialises to an absolute URL here as it
+                # does from /me/. Without it this response says `/media/...`
+                # and that one says `http://host/media/...` for the same user.
+                "user": UserSerializer(user, context={"request": request}).data,
+            },
+            status=resp_status,
+        )
