@@ -43,6 +43,10 @@ class ShopViewSet(viewsets.ModelViewSet):
         return user.is_staff or self.get_object().owner_id == user.pk
 
     def perform_create(self, serializer):
+        if Shop.objects.filter(owner=self.request.user).exists():
+            raise serializers.ValidationError(
+                {"detail": "This account already has a registered shop."}
+            )
         serializer.save(owner=self.request.user)
 
 

@@ -57,3 +57,32 @@ def send_password_reset_email(user):
         fail_silently=False,
     )
     return True
+
+
+OTP_SUBJECT = "Your Tinsae verification code"
+
+OTP_BODY = """Hello,
+
+Your verification code is:
+
+{code}
+
+This code is valid for 10 minutes and can only be used once. If you did not request this code, you can safely ignore this email.
+
+-- Tinsae
+"""
+
+
+def send_otp_email(email, code):
+    """Send a 6-digit OTP code to the given email address."""
+    if not email:
+        return False
+
+    send_mail(
+        subject=OTP_SUBJECT,
+        message=OTP_BODY.format(code=code),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[email],
+        fail_silently=False,
+    )
+    return True

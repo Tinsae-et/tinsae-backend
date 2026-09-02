@@ -115,6 +115,10 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "price",
             "currency",
             "condition",
+            "status",
+            "stock",
+            "views",
+            "inquiries",
             "shop",
             "category",
             "is_available",
@@ -129,11 +133,14 @@ class ShopProductSerializer(serializers.ModelSerializer):
         # the confirmation clock; exposing these would let a merchant PATCH their
         # own listings permanently fresh and hollow out the whole signal.
         # `shop` comes from the URL, and `slug` is derived in `Product.save()`.
+        # `views` and `inquiries` are metric counters updated through analytics.
         read_only_fields = [
             "shop",
             "slug",
             "last_confirmed_at",
             "confirmation_status",
+            "views",
+            "inquiries",
         ]
 
 
