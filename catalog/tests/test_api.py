@@ -741,3 +741,69 @@ class SearchLogRetentionTest(TestCase):
         call_command("sweep_search_logs", "--retention-days", "1", verbosity=0)
 
         self.assertEqual(SearchLog.objects.count(), 0)
+
+
+class SimilarProductsApiTest(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user(username="similar_merchant", password="pass")
+        self.shop = Shop.objects.create(
+            name="Similar Shop", slug="similar-shop", owner=owner
+        )
+        self.phone_category = Category.objects.create(
+            name="Phones", slug="similar-phones"
+        )
+        self.laptop_category = Category.objects.create(
+            name="Laptops", slug="similar-laptops"
+        )
+        self.source = self._product("source-phone", brand="Samsung", price="10000.00")
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.phone_category,
+            "shop": self.shop,
+            "brand": "Apple",
+            "name": "Test Product",
+            "slug": slug,
+            "price": "10000.00",
+            "last_confirmed_at": timezone.now(),
+            "is_available": True,
+        }
+        fields.update(overrides)
+        return Product.objects.create(**fields)
+
+    def _slugs(self):
+        response = APIClient().get(f"/api/v1/catalog/similar/{self.source.slug}/")
+        self.assertEqual(response.status_code, 200)
+        return {item["slug"] for item in response.data["results"]}
+
+    def test_matching_rules_include_category_price_brand_and_combination(self):
+        self._product("same-category-price", price="11000.00")
+        self._product(
+            "same-brand",
+            category=self.laptop_category,
+            brand="Samsung",
+            price="50000.00",
+        )
+        self._product("same-category-and-brand", brand="Samsung", price="10500.00")
+
+        self.assertEqual(
+            self._slugs(),
+            {"same-category-price", "same-brand", "same-category-and-brand"},
+        )
+
+    def test_source_product_is_excluded(self):
+        self._product("another-phone", price="10500.00")
+
+        self.assertNotIn(self.source.slug, self._slugs())
+
+    def test_expired_products_are_excluded(self):
+        self._product(
+            "expired-phone",
+            price="10500.00",
+            last_confirmed_at=timezone.now() - timedelta(days=8),
+        )
+
+        self.assertNotIn("expired-phone", self._slugs())
+
+    def test_empty_case_returns_no_similar_products(self):
+        self.assertEqual(self._slugs(), set())

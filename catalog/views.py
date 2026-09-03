@@ -1,10 +1,12 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, IntegerField, Prefetch, Value, When
+from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
-from rest_framework import viewsets
+from django.utils import timezone
+from rest_framework import generics, viewsets
 from rest_framework.exceptions import ValidationError
 
+from .freshness import ALMOST_EXPIRED_WINDOW
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
 from .services import apply_search, log_search
@@ -164,3 +166,54 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
 # It was also a plain `ModelViewSet`, which under the project default of
 # `IsAuthenticatedOrReadOnly` exposed PUT, PATCH and DELETE on products to every
 # account that could log in. Its ranking now lives in `ProductViewSet` above.
+
+
+class SimilarProductsView(generics.ListAPIView):
+    serializer_class = ProductSerializer
+
+    def get_product(self):
+        slug = self.kwargs.get("slug")
+        try:
+            product = Product.objects.get(slug=slug)
+        except Product.DoesNotExist:
+            raise ValidationError("Product with a given slug does not exist.") from None
+        return product
+
+    def get_queryset(self):
+        product = self.get_product()
+        # Price bounds are 20% above and below the product's price.
+        upper_price_bound = product.price * Decimal("0.2") + product.price
+        lower_price_bound = product.price - product.price * Decimal("0.2")
+
+        qs = (
+            Product.objects.filter(
+                Q(
+                    category=product.category,
+                    price__range=(lower_price_bound, upper_price_bound),
+                )
+                | Q(brand=product.brand),
+                is_available=True,
+                last_confirmed_at__gte=timezone.now() - ALMOST_EXPIRED_WINDOW,
+            )
+            .exclude(id=product.id)
+            .select_related("category", "shop")
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
+            )
+            .annotate(
+                freshness_rank=Case(
+                    When(last_confirmed_at__isnull=True, then=Value(2)),
+                    When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                ),
+                last_signal=Coalesce("last_confirmed_at", "created_at"),
+            )
+        )
+
+        return qs.order_by("freshness_rank", "-last_signal")[:4]
