@@ -105,9 +105,8 @@ class ProductQuerySet(models.QuerySet):
     """The one definition of the confirmation clock.
 
     `sweep_freshness` and the bot's /myproducts listing must agree exactly about
-    which products need a merchant's answer. Two copies of this predicate would
-    let them drift apart silently -- the bot would prompt for one set while the
-    API's ?freshness= filter reported another.
+    which products need a merchant's answer. The buyer-facing API filter is
+    `?fresh=` and uses the live confirmation timestamp below.
     """
 
     def needing_confirmation(self, cutoff):
