@@ -164,9 +164,7 @@ class ProductApiTest(TestCase):
         self.assertEqual(len(response.data["results"]), 2)
 
     @patch("catalog.views.logger.warning")
-    def test_freshness_is_deprecated_and_not_interchangeable_with_fresh(
-        self, warning
-    ):
+    def test_freshness_is_deprecated_and_not_interchangeable_with_fresh(self, warning):
         Product.objects.create(
             category=self.cat,
             shop=self.shop,
@@ -179,9 +177,7 @@ class ProductApiTest(TestCase):
             confirmation_status="stale",
         )
 
-        fresh_response = APIClient().get(
-            "/api/v1/catalog/products/?fresh=true"
-        )
+        fresh_response = APIClient().get("/api/v1/catalog/products/?fresh=true")
         deprecated_response = APIClient().get(
             "/api/v1/catalog/products/?freshness=true"
         )
@@ -194,7 +190,9 @@ class ProductApiTest(TestCase):
         )
         self.assertEqual(deprecated_response.data["count"], 2)
         warning.assert_called_once()
-        self.assertIn("Deprecated query parameter ?freshness=", warning.call_args.args[0])
+        self.assertIn(
+            "Deprecated query parameter ?freshness=", warning.call_args.args[0]
+        )
 
     @patch("catalog.views.logger.warning")
     def test_empty_deprecated_freshness_parameter_is_logged(self, warning):
