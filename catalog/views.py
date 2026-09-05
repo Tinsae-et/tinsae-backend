@@ -3,8 +3,13 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from django.utils import timezone
-from rest_framework import generics, viewsets
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from rest_framework import generics, views, viewsets
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+
+from shops.models import Shop
 
 from .freshness import ALMOST_EXPIRED_WINDOW
 from .models import Category, ConfirmationStatus, Product, ProductImage
@@ -22,7 +27,7 @@ ORDERING_FIELDS = {
 }
 
 TRUTHY = {"1", "true", "yes", "on"}
-
+PUBLIC_STATS_TTL = 60 * 60 * 24
 
 # `Product.price` is max_digits=10, decimal_places=2, so nothing at or above
 # this can be stored -- and a filter bound that large is a number Postgres has
@@ -217,3 +222,42 @@ class SimilarProductsView(generics.ListAPIView):
         )
 
         return qs.order_by("freshness_rank", "-last_signal")[:4]
+
+
+class PublicStatsView(views.APIView):
+    throttle_scope = "public_stats"
+
+    @method_decorator(cache_page(PUBLIC_STATS_TTL))
+    def get(self, request, *args, **kwargs):
+        product_qs = (
+            Product.objects.select_related("category", "shop")
+            .filter(is_available=True)
+            .fresh()
+        )
+        shop_qs = Shop.objects.prefetch_related("products")
+
+        verified_shops = shop_qs.filter(is_verified=True).count()
+        verified_shop_products = product_qs.filter(shop__is_verified=True).count()
+        total_products = product_qs.count()
+
+        categories = [category.slug for category in Category.objects.all()]
+        shops = [shop.slug for shop in shop_qs.all()]
+
+        shop_product_count = {}
+        category_product_count = {}
+        for category in categories:
+            category_product_count[category] = product_qs.filter(
+                category__slug=category
+            ).count()
+
+        for shop in shops:
+            shop_product_count[shop] = product_qs.filter(shop__slug=shop).count()
+
+        data = {
+            "verified_shops": verified_shops,
+            "total_products": total_products,
+            "verified_shop_products": verified_shop_products,
+            "category_product_count": category_product_count,
+            "shop_product_count": shop_product_count,
+        }
+        return Response(data)

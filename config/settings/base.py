@@ -134,6 +134,7 @@ REST_FRAMEWORK = {
         # Profile writes: identity-adjacent and each one may carry a 2 MB
         # upload. Loose enough that nobody editing their own page reaches it.
         "profile_update": "20/hour",
+        "public_stats": "60/min",
     },
 }
 

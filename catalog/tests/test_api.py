@@ -1,6 +1,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.db import DatabaseError
 from django.test import TestCase
@@ -807,3 +808,79 @@ class SimilarProductsApiTest(TestCase):
 
     def test_empty_case_returns_no_similar_products(self):
         self.assertEqual(self._slugs(), set())
+
+
+class PublicStatsApiTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        owner = User.objects.create_user(username="stats_merchant", password="pass")
+        self.shop = Shop.objects.create(
+            name="Stats Shop", slug="stats-shop", owner=owner, is_verified=True
+        )
+        self.category = Category.objects.create(
+            name="Stats Phones", slug="stats-phones"
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.category,
+            "shop": self.shop,
+            "brand": "Samsung",
+            "name": "Stats Product",
+            "slug": slug,
+            "price": "12500.00",
+            "is_available": True,
+            "last_confirmed_at": timezone.now(),
+        }
+        fields.update(overrides)
+        return Product.objects.create(**fields)
+
+    def test_counts_exclude_expired_listings(self):
+        self._product("fresh-stats-product")
+        self._product(
+            "expired-stats-product",
+            last_confirmed_at=timezone.now() - timedelta(days=3),
+        )
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_products"], 1)
+        self.assertEqual(response.data["verified_shop_products"], 1)
+        self.assertEqual(response.data["category_product_count"], {"stats-phones": 1})
+        self.assertEqual(response.data["shop_product_count"], {"stats-shop": 1})
+
+    def test_response_shape(self):
+        self._product("stats-product")
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(
+            set(response.data),
+            {
+                "verified_shops",
+                "total_products",
+                "verified_shop_products",
+                "category_product_count",
+                "shop_product_count",
+            },
+        )
+        self.assertEqual(response.data["verified_shops"], 1)
+        self.assertEqual(response.data["category_product_count"], {"stats-phones": 1})
+        self.assertEqual(response.data["shop_product_count"], {"stats-shop": 1})
+
+    def test_second_request_within_ttl_is_served_from_cache(self):
+        self._product("initial-stats-product")
+
+        first_response = APIClient().get("/api/v1/catalog/public-stats/")
+        self._product("new-stats-product")
+        second_response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(first_response.data["total_products"], 1)
+        self.assertEqual(second_response.data["total_products"], 1)
