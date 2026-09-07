@@ -10,6 +10,12 @@ class CategoryAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ["name"]}
 
 
+class ProductImageInline(admin.TabularInline):
+    model = ProductImage
+    extra = 1
+    fields = ["image", "is_primary", "display_order"]
+
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
     list_display = [
@@ -34,6 +40,7 @@ class ProductAdmin(admin.ModelAdmin):
     search_fields = ["name", "brand"]
     prepopulated_fields = {"slug": ["name"]}
     autocomplete_fields = ["shop", "category"]
+    inlines = [ProductImageInline]
 
 
 @admin.register(SearchLog)
@@ -48,12 +55,3 @@ class SearchLogAdmin(admin.ModelAdmin):
 
     def has_add_permission(self, request):
         return False
-
-
-class ProductImageInline(admin.TabularInline):
-    model = ProductImage
-    extra = 1
-    fields = ["image", "is_primary", "display_order"]
-
-
-inlines = [ProductImageInline]

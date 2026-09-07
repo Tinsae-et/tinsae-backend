@@ -58,6 +58,12 @@ class ShopModelTest(TestCase):
         self.assertEqual(second.slug, "abebe-grocery-2")
         self.assertEqual(scan.call_count, 2)
 
+    def test_amharic_only_name_slug_fallback(self):
+        first = Shop.objects.create(name="ተስፋ ሞባይል", owner=self.owner)
+        second = Shop.objects.create(name="ተስፋ ሞባይል", owner=self.owner)
+        self.assertEqual(first.slug, "shop")
+        self.assertEqual(second.slug, "shop-2")
+
     def test_an_unrelated_integrity_error_is_not_retried(self):
         """A violation that is not a slug collision surfaces on attempt one.
 
