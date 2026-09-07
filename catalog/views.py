@@ -2,12 +2,17 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import Case, IntegerField, Prefetch, Value, When
 from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404
 from rest_framework import viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
+
+from core.pagination import ProductSuggestionsPagination
 
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
-from .services import apply_search, log_search
+from .services import apply_search, get_product_suggestions, log_search
 
 ORDERING_FIELDS = {
     "name",
@@ -156,6 +161,32 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
         if query := (request.query_params.get("q") or "").strip():
             log_search(query, response.data.get("count", 0), request.user)
         return response
+
+    @action(detail=True, methods=["get"], url_path="suggestions")
+    def suggestions(self, request, slug=None):
+        """Serve tiered product suggestions locked strictly to the same category.
+
+        Evaluated in a single SQL query via PostgreSQL conditional CASE expressions:
+          - Tier 1: Same Brand + Close Price (±30%)
+          - Tier 2: Competitors in Close Price Bracket (±30%)
+          - Tier 3: Same Brand (other prices)
+          - Tier 4: Other category items
+        Ranked internally by stock freshness, shop verification, city proximity, and recency.
+        """
+        product = get_object_or_404(
+            Product.objects.select_related("category", "shop"), slug=slug
+        )
+
+        qs = get_product_suggestions(product)
+
+        paginator = ProductSuggestionsPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
 
 
 # `ProductSearchViewSet` was removed here. It was a second search endpoint at

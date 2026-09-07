@@ -1,6 +1,11 @@
+import io
+import tempfile
+
 from django.core.cache import cache
-from django.test import TestCase
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TestCase, override_settings
 from django.urls import reverse_lazy
+from PIL import Image
 from rest_framework.test import APIClient
 
 from .models import User
@@ -91,3 +96,32 @@ class ProfileTests(TestCase):
     def test_anonymous_patch_is_rejected(self):
         resp = APIClient().patch(self.url, {"full_name": "x"}, format="json")
         self.assertEqual(resp.status_code, 401)
+
+    def test_avatar_dimension_limit_is_enforced(self):
+        """A8: Avatar dimension exceeding 4096px is rejected."""
+        buf = io.BytesIO()
+        Image.new("RGB", (4097, 10)).save(buf, format="PNG")
+        oversized = SimpleUploadedFile(
+            "big.png", buf.getvalue(), content_type="image/png"
+        )
+
+        resp = self.client.patch(self.url, {"avatar": oversized}, format="multipart")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("avatar", resp.data)
+        self.assertIn("4096x4096", str(resp.data["avatar"]))
+
+    def test_avatar_within_dimension_limit_is_accepted(self):
+        buf = io.BytesIO()
+        Image.new("RGB", (100, 100)).save(buf, format="PNG")
+        valid = SimpleUploadedFile(
+            "avatar.png", buf.getvalue(), content_type="image/png"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_media:
+            with override_settings(MEDIA_ROOT=temp_media):
+                resp = self.client.patch(
+                    self.url, {"avatar": valid}, format="multipart"
+                )
+                self.assertEqual(resp.status_code, 200)
+                self.user.refresh_from_db()
+                self.assertTrue(bool(self.user.avatar))

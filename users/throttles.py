@@ -64,3 +64,32 @@ class LoginAccountThrottle(SimpleRateThrottle):
             ident = f"raw{digest[:32]}"
 
         return self.cache_format % {"scope": self.scope, "ident": ident}
+
+
+class OTPDestinationThrottle(SimpleRateThrottle):
+    """Per-destination cap on OTP verification, regardless of source IP.
+
+    The sibling of `LoginAccountThrottle` and for the same reason: a per-IP limit
+    alone leaves an attacker who spreads one destination's guesses across many
+    addresses unlimited, against a 900,000-wide code space.
+
+    Reads the raw body field rather than `normalize_destination()`, which raises
+    on malformed input -- an exception out of `get_cache_key` is a 500, not a
+    throttle. The fallback chain mirrors `OTPVerifySerializer.validate`. Hashed
+    because the value is attacker-controlled and ends up in a cache key.
+    """
+
+    scope = "otp_verify"
+
+    def get_cache_key(self, request, view):
+        data = getattr(request, "data", None)
+        if not hasattr(data, "get"):
+            return None
+        raw = data.get("destination") or data.get("email") or data.get("phone") or ""
+        raw = str(raw).strip().lower()
+        if not raw:
+            # Nothing to attribute the attempt to. LoginIPThrottle still applies
+            # and the request is a 400 regardless.
+            return None
+        digest = hashlib.sha256(raw.encode()).hexdigest()
+        return self.cache_format % {"scope": self.scope, "ident": digest[:32]}
