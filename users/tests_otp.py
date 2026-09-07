@@ -318,3 +318,119 @@ class TestOTPVerifyView(ThrottleResetMixin, APITestCase):
             format="json",
         )
         self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_signup_as_owner_with_phone_populates_user_and_shop_phone(self):
+        """A1: phone is passed to verify_otp and populates both User and Shop."""
+        email = "owner_with_phone@shop.et"
+        code = "123456"
+        OTPVerification.objects.create(
+            destination=email,
+            code_hash=hash_otp_code(code),
+            mode="signup",
+            expires_at=self.now + timedelta(minutes=10),
+            resend_after=self.now + timedelta(seconds=60),
+        )
+
+        response = self.client.post(
+            self.url,
+            {
+                "email": email,
+                "code": code,
+                "mode": "signup",
+                "role": "owner",
+                "shop_name": "Phone Shop",
+                "city": "Addis Ababa",
+                "phone": "0911234567",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        user = User.objects.get(email=email)
+        self.assertEqual(user.phone, "+251911234567")
+        shop = user.shops.first()
+        self.assertIsNotNone(shop)
+        self.assertEqual(shop.phone, "+251911234567")
+
+    def test_wrong_code_attempts_survive_raise_and_rollbacks(self):
+        """B2 regression test: ValidationError outside atomic block ensures attempts persist."""
+        email = "counter_test@shop.et"
+        code = "111222"
+        otp = OTPVerification.objects.create(
+            destination=email,
+            code_hash=hash_otp_code(code),
+            mode="signup",
+            expires_at=self.now + timedelta(minutes=10),
+            resend_after=self.now + timedelta(seconds=60),
+        )
+
+        response = self.client.post(
+            self.url,
+            {"email": email, "code": "000000", "mode": "signup"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        # Re-fetch directly by pk to ensure the DB row committed the attempt increment
+        re_fetched = OTPVerification.objects.get(pk=otp.pk)
+        self.assertEqual(re_fetched.attempts, 1)
+
+    def test_five_wrong_codes_consume_the_code_and_lock_the_destination_out(self):
+        """B2: the fifth failure marks the row used, so a sixth guess finds nothing."""
+        email = "lockout_test@shop.et"
+        code = "111222"
+        otp = OTPVerification.objects.create(
+            destination=email,
+            code_hash=hash_otp_code(code),
+            mode="signup",
+            expires_at=self.now + timedelta(minutes=10),
+            resend_after=self.now + timedelta(seconds=60),
+        )
+
+        for _ in range(5):
+            res = self.client.post(
+                self.url,
+                {"email": email, "code": "000000", "mode": "signup"},
+                format="json",
+            )
+            self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        otp.refresh_from_db()
+        self.assertTrue(otp.is_used)
+        self.assertEqual(otp.attempts, 5)
+
+        sixth = self.client.post(
+            self.url,
+            {"email": email, "code": "000000", "mode": "signup"},
+            format="json",
+        )
+        self.assertEqual(sixth.status_code, status.HTTP_400_BAD_REQUEST)
+        # The row was consumed on the fifth failure, so this request finds no
+        # unused OTP at all and gets the generic message rather than the cap's.
+        # Deliberate: it does not confirm to a guesser that they hit the cap.
+        self.assertIn("invalid or has expired", str(sixth.data.get("code", "")))
+
+    def test_otp_destination_throttle_caps_at_twenty_per_hour(self):
+        """B1: 21 verify calls to one destination in an hour -> the 21st is 429."""
+        email = "throttle_destination@shop.et"
+        code = "123456"
+        OTPVerification.objects.create(
+            destination=email,
+            code_hash=hash_otp_code(code),
+            mode="signup",
+            expires_at=self.now + timedelta(minutes=10),
+            resend_after=self.now + timedelta(seconds=60),
+        )
+
+        for _ in range(20):
+            res = self.client.post(
+                self.url,
+                {"email": email, "code": "000000", "mode": "signup"},
+                format="json",
+            )
+            self.assertNotEqual(res.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+
+        twenty_first = self.client.post(
+            self.url,
+            {"email": email, "code": "000000", "mode": "signup"},
+            format="json",
+        )
+        self.assertEqual(twenty_first.status_code, status.HTTP_429_TOO_MANY_REQUESTS)

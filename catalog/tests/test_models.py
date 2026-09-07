@@ -41,7 +41,21 @@ class CategoryModelTest(TestCase):
 
         call_command("seed_catalog")
         call_command("seed_catalog")
-        self.assertEqual(Category.objects.count(), 2)
+        self.assertEqual(Category.objects.count(), 6)
+
+    def test_seed_shop_data_sample_mode(self):
+        from django.core.management import call_command
+
+        call_command("seed_catalog")
+        call_command("seed_shop_data", sample=True, no_images=True)
+        self.assertEqual(Product.objects.count(), 31)
+
+    def test_seed_shop_data_procedural_mode(self):
+        from django.core.management import call_command
+
+        call_command("seed_catalog")
+        call_command("seed_shop_data", per_category=2, no_images=True)
+        self.assertEqual(Product.objects.count(), 12)
 
 
 class ProductModelTest(TestCase):
@@ -106,6 +120,32 @@ class ProductModelTest(TestCase):
         # The name changed but the slug must not be regenerated/leaked.
         self.assertEqual(first.slug, "test-shop-apple-iphone-15-pro")
         self.assertEqual(second.slug, "test-shop-apple-iphone-15-pro-2")
+
+    def test_amharic_only_name_slug_fallback(self):
+        # When shop slug is ASCII, Amharic product name produces a valid slug with shop slug base
+        first = self._product(brand="ተስፋ", name="ስልክ")
+        self.assertEqual(first.slug, "test-shop")
+
+        # When shop slug is empty (e.g. legacy row), fallback to "product" / "product-2"
+        amharic_shop = Shop.objects.create(name="ተስፋ ሞባይል", owner=self.user)
+        Shop.objects.filter(pk=amharic_shop.pk).update(slug="")
+        amharic_shop.refresh_from_db()
+        prod1 = Product.objects.create(
+            shop=amharic_shop,
+            category=self.category,
+            brand="ተስፋ",
+            name="ሞባይል",
+            price="100.00",
+        )
+        prod2 = Product.objects.create(
+            shop=amharic_shop,
+            category=self.category,
+            brand="ተስፋ",
+            name="ሞባይል",
+            price="100.00",
+        )
+        self.assertEqual(prod1.slug, "product")
+        self.assertEqual(prod2.slug, "product-2")
 
     def test_default_status_stock_views_inquiries(self):
         product = self._product()

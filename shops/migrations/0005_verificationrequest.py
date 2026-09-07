@@ -8,7 +8,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("shops", "0003_shop_latitude_shop_longitude"),
+        ("shops", "0004_backfill_empty_slugs"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

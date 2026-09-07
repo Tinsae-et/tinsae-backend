@@ -54,9 +54,12 @@ class Shop(BaseModel):
     def save(self, *args, **kwargs):
         if self.slug:
             return super().save(*args, **kwargs)
-        return save_with_unique_slug(
-            self, slugify(self.name), super().save, *args, **kwargs
-        )
+        # slugify() strips non-Latin scripts entirely, so an Amharic-only name
+        # slugifies to "" and the series in core.slugs becomes "", "-2", "-3".
+        # A generic ASCII base keeps every shop routable; the slug is an
+        # identifier, not a label.
+        base = slugify(self.name) or "shop"
+        return save_with_unique_slug(self, base, super().save, *args, **kwargs)
 
 
 class VerificationRequest(models.Model):
