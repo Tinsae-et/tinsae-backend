@@ -218,7 +218,7 @@ class Product(BaseModel):
             return super().save(*args, **kwargs)
         # Same shop reposting the same item must not collide on the unique
         # slug: `shop-brand-name`, then `-2`, `-3`, ... like Shop.save().
-        base = slugify(f"{self.shop.slug}-{self.brand}-{self.name}")
+        base = slugify(f"{self.shop.slug}-{self.brand}-{self.name}") or "product"
         return save_with_unique_slug(self, base, super().save, *args, **kwargs)
 
 
