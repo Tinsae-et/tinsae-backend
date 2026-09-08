@@ -15,7 +15,12 @@ from django.utils.text import slugify
 from core.models import BaseModel
 from core.slugs import save_with_unique_slug
 
-from .freshness import FRESH_WINDOW, freshness_case, get_freshness
+from .freshness import (
+    ALMOST_EXPIRED_WINDOW,
+    FRESH_WINDOW,
+    freshness_case,
+    get_freshness,
+)
 from .image_utils import validate_image_file
 
 
@@ -131,6 +136,19 @@ class ProductQuerySet(models.QuerySet):
         """
         now = now or timezone.now()
         return self.filter(last_confirmed_at__gte=now - FRESH_WINDOW)
+
+    def buyer_visible(self, now=None):
+        """Available, unexpired listings visible to buyers.
+
+        Excludes listings that are paused (is_available=False or draft/sold)
+        and listings that have expired past ALMOST_EXPIRED_WINDOW.
+        """
+        now = now or timezone.now()
+        return self.filter(
+            is_available=True,
+            status=ProductStatus.LIVE,
+            last_confirmed_at__gte=now - ALMOST_EXPIRED_WINDOW,
+        )
 
     def with_freshness(self, now=None):
         """Annotate the derived label so it can be filtered and ordered in SQL.
