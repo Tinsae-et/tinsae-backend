@@ -1,17 +1,21 @@
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
+from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
 from rest_framework import generics, views, viewsets
+from rest_framework import generics, permissions, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from core.pagination import ProductSuggestionsPagination
+from shops.models import Shop
+
 from shops.models import Shop
 
 from .freshness import ALMOST_EXPIRED_WINDOW
@@ -212,6 +216,7 @@ class SimilarProductsView(generics.ListAPIView):
         except Product.DoesNotExist:
             raise ValidationError("Product with a given slug does not exist.") from None
         return product
+        return get_object_or_404(Product, slug=slug)
 
     def get_queryset(self):
         product = self.get_product()
@@ -228,6 +233,16 @@ class SimilarProductsView(generics.ListAPIView):
                 | Q(brand=product.brand),
                 is_available=True,
                 last_confirmed_at__gte=timezone.now() - ALMOST_EXPIRED_WINDOW,
+        upper_price_bound = product.price * Decimal("1.2")
+        lower_price_bound = product.price * Decimal("0.8")
+
+        brand_query = Q(brand=product.brand) if product.brand else Q()
+
+        qs = (
+            Product.objects.buyer_visible()
+            .filter(
+                Q(category=product.category)
+                & (Q(price__range=(lower_price_bound, upper_price_bound)) | brand_query)
             )
             .exclude(id=product.id)
             .select_related("category", "shop")
@@ -240,6 +255,11 @@ class SimilarProductsView(generics.ListAPIView):
                 )
             )
             .annotate(
+                same_shop_rank=Case(
+                    When(shop=product.shop, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                ),
                 freshness_rank=Case(
                     When(last_confirmed_at__isnull=True, then=Value(2)),
                     When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
@@ -254,6 +274,11 @@ class SimilarProductsView(generics.ListAPIView):
 
 
 class PublicStatsView(views.APIView):
+        return qs.order_by("same_shop_rank", "freshness_rank", "-last_signal")[:4]
+
+
+class PublicStatsView(views.APIView):
+    permission_classes = [permissions.AllowAny]
     throttle_scope = "public_stats"
 
     @method_decorator(cache_page(PUBLIC_STATS_TTL))
@@ -288,5 +313,32 @@ class PublicStatsView(views.APIView):
             "verified_shop_products": verified_shop_products,
             "category_product_count": category_product_count,
             "shop_product_count": shop_product_count,
+        buyer_visible_qs = Product.objects.buyer_visible()
+
+        total_shops = Shop.objects.count()
+        verified_shops = Shop.objects.filter(is_verified=True).count()
+        total_listings = buyer_visible_qs.count()
+        fresh_listings = buyer_visible_qs.fresh().count()
+        verified_shop_products = buyer_visible_qs.filter(shop__is_verified=True).count()
+
+        category_counts = (
+            buyer_visible_qs.values("category__slug")
+            .annotate(count=Count("id"))
+            .order_by()
+        )
+        category_product_count = {
+            row["category__slug"]: row["count"]
+            for row in category_counts
+            if row["category__slug"]
+        }
+
+        data = {
+            "total_shops": total_shops,
+            "total_listings": total_listings,
+            "fresh_listings": fresh_listings,
+            "total_products": total_listings,
+            "verified_shops": verified_shops,
+            "verified_shop_products": verified_shop_products,
+            "category_product_count": category_product_count,
         }
         return Response(data)
