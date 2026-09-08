@@ -2,6 +2,7 @@ from django.urls import path
 from rest_framework.routers import DefaultRouter
 
 from .views import (
+    PublicShopProductsView,
     ShopProductImageViewSet,
     ShopProductViewSet,
     ShopViewSet,
@@ -64,4 +65,9 @@ urlpatterns = router.urls + [
     path(PRODUCT, products_detail, name="shop-products-detail"),
     path(VERIFICATION, verification_list, name="shop-verification-list"),
     path(VERIFICATION + "state/", verification_detail, name="shop-verification-detail"),
+    path(
+        "shop/<slug:slug>/products/",
+        PublicShopProductsView.as_view(),
+        name="public-shop-products-list",
+    ),
 ]

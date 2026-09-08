@@ -379,6 +379,93 @@ class ShopCoordinatesApiTest(TestCase):
         self.assertIsNone(shop.latitude)
 
 
+class PublicShopProductsApiTest(TestCase):
+    """The anonymous catalogue nested under /api/v1/shop/<slug>/products/."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="merchant", password="pass")
+        self.other_owner = User.objects.create_user(
+            username="other_merchant", password="pass"
+        )
+        self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
+        self.other_shop = Shop.objects.create(name="Other Shop", owner=self.other_owner)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.accessory_category = Category.objects.create(
+            name="Accessories", slug="accessories"
+        )
+        now = timezone.now()
+
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy A15",
+            price="12500.00",
+            last_confirmed_at=now,
+            is_available=True,
+        )
+        Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Nokia",
+            name="Nokia 110",
+            price="1300.00",
+            last_confirmed_at=now,
+            is_available=False,
+        )
+        Product.objects.create(
+            shop=self.shop,
+            category=self.accessory_category,
+            brand="Apple",
+            name="Old iPhone",
+            price="33000.00",
+            last_confirmed_at=now - timedelta(days=3),
+            is_available=True,
+        )
+        Product.objects.create(
+            shop=self.other_shop,
+            category=self.category,
+            brand="Apple",
+            name="iPhone 15",
+            price="45000.00",
+            last_confirmed_at=now,
+            is_available=True,
+        )
+
+    def _url(self, shop_slug=None):
+        return f"/api/v1/shop/{shop_slug or self.shop.slug}/products/"
+
+    def test_anonymous_request_lists_only_this_shop_available_fresh_products(self):
+        response = APIClient().get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], self.product.slug)
+        self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A15")
+
+    def test_unknown_shop_returns_empty_list(self):
+        response = APIClient().get(self._url("missing-shop"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    def test_category_filter_limits_results(self):
+        response = APIClient().get(
+            self._url(), {"category": self.accessory_category.slug}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 0)
+        self.assertEqual(response.data["results"], [])
+
+    def test_invalid_ordering_field_returns_400(self):
+        response = APIClient().get(self._url(), {"ordering": "not_a_field"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ordering", response.data)
+
+
 class ShopProductApiTest(TestCase):
     """The merchant-facing CRUD nested under /api/v1/shops/<slug>/products/."""
 

@@ -1,10 +1,15 @@
+from django.db.models import Case, IntegerField, Prefetch, Value, When
+from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
-from rest_framework import mixins, permissions, serializers, viewsets
+from rest_framework import generics, mixins, permissions, serializers, viewsets
 from rest_framework.decorators import action
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from catalog.models import Product, ProductImage
+from catalog.models import ConfirmationStatus, Product, ProductImage
+from catalog.serializers import ProductSerializer
 from catalog.services import apply_confirmation, pause_listing, resume_listing
+from catalog.views import ORDERING_FIELDS
 
 from .models import Shop, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
@@ -298,3 +303,51 @@ class VerificationViewSet(
                 }
             )
         serializer.save(shop=shop)
+
+
+class PublicShopProductsView(generics.ListAPIView):
+    """ "Public view for shop products."""
+
+    serializer_class = ProductSerializer
+    permission_classes = [permissions.AllowAny]
+
+    def get_queryset(self):
+        shop_slug = self.kwargs.get("slug")
+        qs = (
+            Product.objects.filter(shop__slug=shop_slug, is_available=True)
+            .select_related("category", "shop")
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
+            )
+            .annotate(
+                freshness_rank=Case(
+                    When(last_confirmed_at__isnull=True, then=Value(2)),
+                    When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                ),
+                last_signal=Coalesce("last_confirmed_at", "created_at"),
+            )
+            .fresh()
+        )
+
+        ordering = self.request.query_params.get("ordering")
+        if ordering:
+            field = ordering[1:] if ordering.startswith("-") else ordering
+            if field not in ORDERING_FIELDS:
+                raise ValidationError(
+                    {"ordering": f"Invalid ordering field: {ordering}."}
+                )
+
+        if category := self.request.query_params.get("category"):
+            qs = qs.filter(category__slug=category)
+
+        if ordering:
+            qs = qs.order_by(ordering)
+
+        return qs
