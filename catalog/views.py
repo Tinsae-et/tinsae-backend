@@ -2,19 +2,17 @@ from decimal import Decimal, InvalidOperation
 
 from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
-from django.shortcuts import get_object_or_404
 from rest_framework import generics, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from shops.models import Shop
-from rest_framework.response import Response
-
 from core.pagination import ProductSuggestionsPagination
+from shops.models import Shop
 
 from .freshness import ALMOST_EXPIRED_WINDOW
 from .models import Category, ConfirmationStatus, Product, ProductImage
