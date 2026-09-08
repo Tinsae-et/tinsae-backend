@@ -208,26 +208,21 @@ class SimilarProductsView(generics.ListAPIView):
 
     def get_product(self):
         slug = self.kwargs.get("slug")
-        try:
-            product = Product.objects.get(slug=slug)
-        except Product.DoesNotExist:
-            raise ValidationError("Product with a given slug does not exist.") from None
-        return product
+        return get_object_or_404(Product, slug=slug)
 
     def get_queryset(self):
         product = self.get_product()
         # Price bounds are 20% above and below the product's price.
-        upper_price_bound = product.price * Decimal("0.2") + product.price
-        lower_price_bound = product.price - product.price * Decimal("0.2")
+        upper_price_bound = product.price * Decimal("1.2")
+        lower_price_bound = product.price * Decimal("0.8")
+
+        brand_query = Q(brand=product.brand) if product.brand else Q()
 
         qs = (
             Product.objects.buyer_visible()
             .filter(
-                Q(
-                    category=product.category,
-                    price__range=(lower_price_bound, upper_price_bound),
-                )
-                | Q(brand=product.brand),
+                Q(category=product.category)
+                & (Q(price__range=(lower_price_bound, upper_price_bound)) | brand_query)
             )
             .exclude(id=product.id)
             .select_related("category", "shop")
@@ -240,6 +235,11 @@ class SimilarProductsView(generics.ListAPIView):
                 )
             )
             .annotate(
+                same_shop_rank=Case(
+                    When(shop=product.shop, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                ),
                 freshness_rank=Case(
                     When(last_confirmed_at__isnull=True, then=Value(2)),
                     When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
@@ -250,7 +250,7 @@ class SimilarProductsView(generics.ListAPIView):
             )
         )
 
-        return qs.order_by("freshness_rank", "-last_signal")[:4]
+        return qs.order_by("same_shop_rank", "freshness_rank", "-last_signal")[:4]
 
 
 class PublicStatsView(views.APIView):

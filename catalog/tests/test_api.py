@@ -784,19 +784,37 @@ class SimilarProductsApiTest(TestCase):
         return {item["slug"] for item in response.data["results"]}
 
     def test_matching_rules_include_category_price_brand_and_combination(self):
-        self._product("same-category-price", price="11000.00")
+        # Within same category and within ±20% price band (11,000 is +10%)
+        self._product("same-category-price", brand="Apple", price="11000.00")
+        # Within same category and same brand, but outside price band (50,000)
         self._product(
-            "same-brand",
-            category=self.laptop_category,
+            "same-brand-in-category",
             brand="Samsung",
             price="50000.00",
         )
+        # Within same category, same brand, AND within price band
         self._product("same-category-and-brand", brand="Samsung", price="10500.00")
 
-        self.assertEqual(
-            self._slugs(),
-            {"same-category-price", "same-brand", "same-category-and-brand"},
+        # Products in a DIFFERENT category must NEVER match, even if same brand or price
+        self._product(
+            "diff-category-same-brand",
+            category=self.laptop_category,
+            brand="Samsung",
+            price="10000.00",
         )
+        self._product(
+            "diff-category-same-price",
+            category=self.laptop_category,
+            brand="Apple",
+            price="10000.00",
+        )
+
+        slugs = self._slugs()
+        self.assertIn("same-category-price", slugs)
+        self.assertIn("same-brand-in-category", slugs)
+        self.assertIn("same-category-and-brand", slugs)
+        self.assertNotIn("diff-category-same-brand", slugs)
+        self.assertNotIn("diff-category-same-price", slugs)
 
     def test_source_product_is_excluded(self):
         self._product("another-phone", price="10500.00")
@@ -814,6 +832,31 @@ class SimilarProductsApiTest(TestCase):
 
     def test_empty_case_returns_no_similar_products(self):
         self.assertEqual(self._slugs(), set())
+
+    def test_unknown_slug_returns_404(self):
+        response = APIClient().get("/api/v1/catalog/similar/non-existent-product/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_shop_preference_prioritizes_competitor_shops(self):
+        other_owner = User.objects.create_user(
+            username="other_merchant", password="pass"
+        )
+        competitor_shop = Shop.objects.create(
+            name="Competitor Shop", slug="competitor-shop", owner=other_owner
+        )
+
+        # Same shop product
+        self._product("same-shop-item", shop=self.shop, price="10100.00")
+        # Competitor shop product
+        self._product("competitor-shop-item", shop=competitor_shop, price="10100.00")
+
+        response = APIClient().get(f"/api/v1/catalog/similar/{self.source.slug}/")
+        self.assertEqual(response.status_code, 200)
+        results = response.data["results"]
+        self.assertGreaterEqual(len(results), 2)
+        # Competitor product should be ranked ahead of the same-shop product
+        self.assertEqual(results[0]["slug"], "competitor-shop-item")
+        self.assertEqual(results[1]["slug"], "same-shop-item")
 
 
 class PublicStatsApiTest(TestCase):
