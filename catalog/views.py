@@ -1,20 +1,17 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, IntegerField, Prefetch, Q, Value, When
 from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
-from rest_framework import generics, views, viewsets
 from rest_framework import generics, permissions, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from core.pagination import ProductSuggestionsPagination
-from shops.models import Shop
 
 from shops.models import Shop
 
@@ -211,28 +208,11 @@ class SimilarProductsView(generics.ListAPIView):
 
     def get_product(self):
         slug = self.kwargs.get("slug")
-        try:
-            product = Product.objects.get(slug=slug)
-        except Product.DoesNotExist:
-            raise ValidationError("Product with a given slug does not exist.") from None
-        return product
         return get_object_or_404(Product, slug=slug)
 
     def get_queryset(self):
         product = self.get_product()
         # Price bounds are 20% above and below the product's price.
-        upper_price_bound = product.price * Decimal("0.2") + product.price
-        lower_price_bound = product.price - product.price * Decimal("0.2")
-
-        qs = (
-            Product.objects.filter(
-                Q(
-                    category=product.category,
-                    price__range=(lower_price_bound, upper_price_bound),
-                )
-                | Q(brand=product.brand),
-                is_available=True,
-                last_confirmed_at__gte=timezone.now() - ALMOST_EXPIRED_WINDOW,
         upper_price_bound = product.price * Decimal("1.2")
         lower_price_bound = product.price * Decimal("0.8")
 
@@ -270,10 +250,6 @@ class SimilarProductsView(generics.ListAPIView):
             )
         )
 
-        return qs.order_by("freshness_rank", "-last_signal")[:4]
-
-
-class PublicStatsView(views.APIView):
         return qs.order_by("same_shop_rank", "freshness_rank", "-last_signal")[:4]
 
 
@@ -283,36 +259,6 @@ class PublicStatsView(views.APIView):
 
     @method_decorator(cache_page(PUBLIC_STATS_TTL))
     def get(self, request, *args, **kwargs):
-        product_qs = (
-            Product.objects.select_related("category", "shop")
-            .filter(is_available=True)
-            .fresh()
-        )
-        shop_qs = Shop.objects.prefetch_related("products")
-
-        verified_shops = shop_qs.filter(is_verified=True).count()
-        verified_shop_products = product_qs.filter(shop__is_verified=True).count()
-        total_products = product_qs.count()
-
-        categories = [category.slug for category in Category.objects.all()]
-        shops = [shop.slug for shop in shop_qs.all()]
-
-        shop_product_count = {}
-        category_product_count = {}
-        for category in categories:
-            category_product_count[category] = product_qs.filter(
-                category__slug=category
-            ).count()
-
-        for shop in shops:
-            shop_product_count[shop] = product_qs.filter(shop__slug=shop).count()
-
-        data = {
-            "verified_shops": verified_shops,
-            "total_products": total_products,
-            "verified_shop_products": verified_shop_products,
-            "category_product_count": category_product_count,
-            "shop_product_count": shop_product_count,
         buyer_visible_qs = Product.objects.buyer_visible()
 
         total_shops = Shop.objects.count()
