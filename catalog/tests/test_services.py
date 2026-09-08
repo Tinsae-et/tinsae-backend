@@ -117,3 +117,18 @@ class ConfirmationServiceTests(TestCase):
         request.refresh_from_db()
         self.assertEqual(request.status, "confirmed")
         self.assertEqual(request.responded_at, first)
+
+
+class SearchFilterTests(TestCase):
+    def test_build_search_filter_caps_terms_at_max_search_terms(self):
+        from catalog.services import MAX_SEARCH_TERMS, build_search_filter
+
+        query_words = [f"word{i}" for i in range(15)]
+        long_query = " ".join(query_words)
+        q_filter = build_search_filter(long_query)
+
+        q_str = str(q_filter)
+        for i in range(MAX_SEARCH_TERMS):
+            self.assertIn(f"word{i}", q_str)
+        for i in range(MAX_SEARCH_TERMS, 15):
+            self.assertNotIn(f"word{i}", q_str)

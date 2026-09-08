@@ -190,7 +190,7 @@ class SeedReconciliationTests(TestCase):
     def test_seeded_catalog_before_and_after_a_sweep(self):
         Category.objects.create(name="Phones", slug="phones")
         Category.objects.create(name="Accessories", slug="accessories")
-        call_command("seed_shop_data")
+        call_command("seed_shop_data", sample=True, no_images=True)
 
         # Before the sweep the stored column is untouched: the seeder writes
         # last_confirmed_at but never confirmation_status. A health page that

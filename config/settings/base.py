@@ -63,6 +63,11 @@ TEMPLATES = [
 
 # Postgres required everywhere — no SQLite fallback (dev/prod parity). Fails loud if unset.
 DATABASES = {"default": env.db("DATABASE_URL")}
+# Persistent connections. Django's default of 0 opens and closes a connection per
+# request, which is the single cheapest latency win available here. Set to 0 if a
+# transaction-mode pooler (pgbouncer) is ever put in front of the database —
+# persistent connections and transaction pooling are mutually exclusive.
+DATABASES["default"]["CONN_MAX_AGE"] = env.int("CONN_MAX_AGE", default=60)
 
 AUTH_USER_MODEL = "users.User"
 
@@ -135,6 +140,10 @@ REST_FRAMEWORK = {
         # upload. Loose enough that nobody editing their own page reaches it.
         "profile_update": "20/hour",
         "public_stats": "60/min",
+        # OTP verification. OTP_MAX_ATTEMPTS caps guesses against one *code*;
+        # this caps guesses against one *destination* across successive codes,
+        # which is what an attacker actually grinds.
+        "otp_verify": "20/hour",
     },
 }
 

@@ -193,43 +193,51 @@ def verify_otp(
     dest = normalize_destination(destination)
     now = timezone.now()
 
-    otp = (
-        OTPVerification.objects.filter(destination=dest, mode=mode, is_used=False)
-        .order_by("-created_at")
-        .first()
-    )
+    error = None
+    with transaction.atomic():
+        # select_for_update because the read-modify-write on `attempts` below is
+        # otherwise check-then-act: N concurrent guesses all read the same value
+        # and all write back the same increment, so OTP_MAX_ATTEMPTS counts one
+        # attempt per round rather than per request.
+        otp = (
+            OTPVerification.objects.select_for_update()
+            .filter(destination=dest, mode=mode, is_used=False)
+            .order_by("-created_at")
+            .first()
+        )
 
-    if otp is None or otp.expires_at < now:
-        raise ValidationError(
-            {
+        if otp is None or otp.expires_at < now:
+            error = {
                 "code": "That verification code is invalid or has expired. Please request a new one."
             }
-        )
-
-    if otp.attempts >= OTP_MAX_ATTEMPTS:
-        otp.is_used = True
-        otp.save(update_fields=["is_used"])
-        raise ValidationError(
-            {"code": "Too many failed attempts. Please request a new code."}
-        )
-
-    if hash_otp_code(str(code)) != otp.code_hash:
-        otp.attempts += 1
-        if otp.attempts >= OTP_MAX_ATTEMPTS:
+        elif otp.attempts >= OTP_MAX_ATTEMPTS:
             otp.is_used = True
-            otp.save(update_fields=["attempts", "is_used"])
-            raise ValidationError(
-                {"code": "Too many failed attempts. Please request a new code."}
-            )
-        otp.save(update_fields=["attempts"])
-        remaining = OTP_MAX_ATTEMPTS - otp.attempts
-        raise ValidationError(
-            {"code": f"Invalid verification code. {remaining} attempt(s) remaining."}
-        )
+            otp.save(update_fields=["is_used", "updated_at"])
+            error = {"code": "Too many failed attempts. Please request a new code."}
+        elif hash_otp_code(str(code)) != otp.code_hash:
+            otp.attempts += 1
+            fields = ["attempts", "updated_at"]
+            if otp.attempts >= OTP_MAX_ATTEMPTS:
+                otp.is_used = True
+                fields.append("is_used")
+                error = {"code": "Too many failed attempts. Please request a new code."}
+            else:
+                remaining = OTP_MAX_ATTEMPTS - otp.attempts
+                error = {
+                    "code": f"Invalid verification code. {remaining} attempt(s) remaining."
+                }
+            otp.save(update_fields=fields)
+        else:
+            # Valid code -> consume it inside the same lock, so two concurrent
+            # correct submissions cannot both proceed to create an account.
+            otp.is_used = True
+            otp.save(update_fields=["is_used", "updated_at"])
 
-    # Valid code -> consume it
-    otp.is_used = True
-    otp.save(update_fields=["is_used"])
+    # Raised outside the block on purpose: a ValidationError thrown inside
+    # `atomic()` rolls it back, which would undo the attempts increment above and
+    # make the cap unreachable.
+    if error is not None:
+        raise ValidationError(error)
 
     if mode == "signin":
         is_email = "@" in dest

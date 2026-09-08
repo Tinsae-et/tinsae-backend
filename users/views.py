@@ -22,7 +22,7 @@ from .serializers import (
     UserSerializer,
 )
 from .services import request_otp, revoke_all_refresh_tokens, verify_otp
-from .throttles import LoginAccountThrottle, LoginIPThrottle
+from .throttles import LoginAccountThrottle, LoginIPThrottle, OTPDestinationThrottle
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +255,7 @@ class OTPVerifyView(APIView):
     """
 
     permission_classes = [AllowAny]
+    throttle_classes = [LoginIPThrottle, OTPDestinationThrottle]
 
     def post(self, request):
         serializer = OTPVerifySerializer(data=request.data)
@@ -269,6 +270,7 @@ class OTPVerifyView(APIView):
             city=serializer.validated_data.get("city"),
             username=serializer.validated_data.get("username"),
             full_name=serializer.validated_data.get("full_name"),
+            phone=serializer.validated_data.get("phone"),
             latitude=serializer.validated_data.get("latitude"),
             longitude=serializer.validated_data.get("longitude"),
         )
