@@ -784,19 +784,6 @@ class SimilarProductsApiTest(TestCase):
         return {item["slug"] for item in response.data["results"]}
 
     def test_matching_rules_include_category_price_brand_and_combination(self):
-        self._product("same-category-price", price="11000.00")
-        self._product(
-            "same-brand",
-            category=self.laptop_category,
-            brand="Samsung",
-            price="50000.00",
-        )
-        self._product("same-category-and-brand", brand="Samsung", price="10500.00")
-
-        self.assertEqual(
-            self._slugs(),
-            {"same-category-price", "same-brand", "same-category-and-brand"},
-        )
         # Within same category and within ±20% price band (11,000 is +10%)
         self._product("same-category-price", brand="Apple", price="11000.00")
         # Within same category and same brand, but outside price band (50,000)
@@ -903,11 +890,6 @@ class PublicStatsApiTest(TestCase):
         return Product.objects.create(**fields)
 
     def test_counts_exclude_expired_listings(self):
-        self._product("fresh-stats-product")
-        self._product(
-            "expired-stats-product",
-            last_confirmed_at=timezone.now() - timedelta(days=3),
-        )
         now = timezone.now()
         # Fresh listing (within 48h): counts as both buyer-visible and fresh
         self._product("fresh-product", last_confirmed_at=now - timedelta(hours=1))
@@ -946,12 +928,6 @@ class PublicStatsApiTest(TestCase):
         response = APIClient().get("/api/v1/catalog/public-stats/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["total_products"], 1)
-        self.assertEqual(response.data["verified_shop_products"], 1)
-        self.assertEqual(response.data["category_product_count"], {"stats-phones": 1})
-        self.assertEqual(response.data["shop_product_count"], {"stats-shop": 1})
-
-    def test_response_shape(self):
         self.assertEqual(response.data["total_listings"], 1)
         self.assertEqual(response.data["fresh_listings"], 1)
 
@@ -978,19 +954,6 @@ class PublicStatsApiTest(TestCase):
 
         response = APIClient().get("/api/v1/catalog/public-stats/")
 
-        self.assertEqual(
-            set(response.data),
-            {
-                "verified_shops",
-                "total_products",
-                "verified_shop_products",
-                "category_product_count",
-                "shop_product_count",
-            },
-        )
-        self.assertEqual(response.data["verified_shops"], 1)
-        self.assertEqual(response.data["category_product_count"], {"stats-phones": 1})
-        self.assertEqual(response.data["shop_product_count"], {"stats-shop": 1})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(
             set(response.data),
@@ -1020,7 +983,5 @@ class PublicStatsApiTest(TestCase):
 
         self.assertEqual(first_response.status_code, 200)
         self.assertEqual(second_response.status_code, 200)
-        self.assertEqual(first_response.data["total_products"], 1)
-        self.assertEqual(second_response.data["total_products"], 1)
         self.assertEqual(first_response.data["total_listings"], 1)
         self.assertEqual(second_response.data["total_listings"], 1)
