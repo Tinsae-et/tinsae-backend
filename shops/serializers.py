@@ -2,7 +2,7 @@ from rest_framework import serializers
 
 from catalog.models import Category, Product, ProductImage
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -178,3 +178,43 @@ class ShopProductImageSerializer(serializers.ModelSerializer):
                 "This product already has a primary image."
             )
         return value
+
+
+class VerificationRequestSerializer(serializers.ModelSerializer):
+    is_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
+    submitted_at = serializers.DateTimeField(source="submited_at", read_only=True)
+
+    class Meta:
+        model = VerificationRequest
+        fields = [
+            "id",
+            "shop",
+            "is_verified",
+            "submitted_at",
+            "submited_at",
+            "reviewed_at",
+            "reviewer",
+            "state",
+            "rejection_reason",
+            "supporting_detail",
+        ]
+        read_only_fields = [
+            "shop",
+            "is_verified",
+            "submitted_at",
+            "submited_at",
+            "reviewed_at",
+            "reviewer",
+            "state",
+            "rejection_reason",
+        ]
+        extra_kwargs = {
+            "supporting_detail": {
+                "required": True,
+                "allow_blank": False,
+                "error_messages": {
+                    "blank": "Please provide supporting business details or documents.",
+                    "required": "Please provide supporting business details or documents.",
+                },
+            }
+        }
