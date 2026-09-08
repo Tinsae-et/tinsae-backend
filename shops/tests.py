@@ -825,3 +825,130 @@ class VerificationRequestApiTests(TestCase):
 
         self.assertEqual(response.status_code, 404)
         self.assertFalse(VerificationRequest.objects.filter(shop=self.shop).exists())
+
+    def test_verification_state_not_submitted(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"{self.url}state/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["state"], "not_submitted")
+        self.assertFalse(response.data["is_verified"])
+        self.assertIsNone(response.data["rejection_reason"])
+
+    def test_verification_state_pending(self):
+        VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="License doc"
+        )
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"{self.url}state/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["state"], "pending")
+        self.assertFalse(response.data["is_verified"])
+        self.assertEqual(response.data["supporting_detail"], "License doc")
+
+    def test_verification_state_already_verified_without_request(self):
+        self.shop.is_verified = True
+        self.shop.save(update_fields=["is_verified"])
+
+        self.client.force_authenticate(self.owner)
+        response = self.client.get(f"{self.url}state/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["state"], "approved")
+        self.assertTrue(response.data["is_verified"])
+
+    def test_rejected_request_visible_and_resubmission_works(self):
+        req = VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Old blurry photo"
+        )
+        req.state = "rejected"
+        req.rejection_reason = "Photo is blurry, upload clear license."
+        req.save()
+
+        self.client.force_authenticate(self.owner)
+        state_resp = self.client.get(f"{self.url}state/")
+        self.assertEqual(state_resp.status_code, 200)
+        self.assertEqual(state_resp.data["state"], "rejected")
+        self.assertEqual(
+            state_resp.data["rejection_reason"],
+            "Photo is blurry, upload clear license.",
+        )
+
+        # Resubmit with clear photo
+        resubmit_resp = self.client.post(
+            self.url,
+            {"supporting_detail": "High resolution scan of business license."},
+            format="json",
+        )
+        self.assertEqual(resubmit_resp.status_code, 201)
+
+        # Now state is pending again with the new submission
+        new_state_resp = self.client.get(f"{self.url}state/")
+        self.assertEqual(new_state_resp.status_code, 200)
+        self.assertEqual(new_state_resp.data["state"], "pending")
+        self.assertEqual(
+            new_state_resp.data["supporting_detail"],
+            "High resolution scan of business license.",
+        )
+
+    def test_other_user_cannot_view_verification_state(self):
+        VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Private doc"
+        )
+        # Another merchant gets 404
+        self.client.force_authenticate(self.other_owner)
+        resp = self.client.get(f"{self.url}state/")
+        self.assertEqual(resp.status_code, 404)
+
+        # Anonymous user gets 401
+        self.client.logout()
+        resp_anon = self.client.get(f"{self.url}state/")
+        self.assertEqual(resp_anon.status_code, 401)
+
+    def test_empty_supporting_detail_fails_validation(self):
+        self.client.force_authenticate(self.owner)
+        response = self.client.post(self.url, {"supporting_detail": ""}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("supporting_detail", response.data)
+
+    def test_shop_admin_is_verified_is_readonly(self):
+        from django.contrib.admin.sites import site
+
+        from shops.admin import ShopAdmin
+
+        shop_admin = ShopAdmin(Shop, site)
+        self.assertIn("is_verified", shop_admin.readonly_fields)
+
+    def test_verification_request_submitted_at_property_and_serializer_alias(self):
+        req = VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Doc"
+        )
+        self.assertEqual(req.submitted_at, req.submited_at)
+
+        self.client.force_authenticate(self.owner)
+        res = self.client.get(f"{self.url}state/")
+        self.assertIn("submitted_at", res.data)
+        self.assertIn("submited_at", res.data)
+        self.assertEqual(res.data["submitted_at"], res.data["submited_at"])
+
+    def test_admin_save_model_auto_assigns_reviewer(self):
+        from django.contrib.admin.sites import site
+
+        from shops.admin import VerificationRequestAdmin
+
+        admin_user = User.objects.create_superuser(
+            username="admin-user", password="pw", email="admin@example.com"
+        )
+        req = VerificationRequest.objects.create(
+            shop=self.shop, supporting_detail="Audit doc"
+        )
+        req.state = "approved"
+
+        vr_admin = VerificationRequestAdmin(VerificationRequest, site)
+        request = type("Request", (), {"user": admin_user})()
+        vr_admin.save_model(request, req, form=None, change=True)
+
+        self.assertEqual(req.reviewer, admin_user)
+        self.shop.refresh_from_db()
+        self.assertTrue(self.shop.is_verified)

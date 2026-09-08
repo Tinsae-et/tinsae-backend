@@ -181,11 +181,16 @@ class ShopProductImageSerializer(serializers.ModelSerializer):
 
 
 class VerificationRequestSerializer(serializers.ModelSerializer):
+    is_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
+    submitted_at = serializers.DateTimeField(source="submited_at", read_only=True)
+
     class Meta:
         model = VerificationRequest
         fields = [
             "id",
             "shop",
+            "is_verified",
+            "submitted_at",
             "submited_at",
             "reviewed_at",
             "reviewer",
@@ -195,9 +200,21 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "shop",
+            "is_verified",
+            "submitted_at",
             "submited_at",
             "reviewed_at",
             "reviewer",
             "state",
             "rejection_reason",
         ]
+        extra_kwargs = {
+            "supporting_detail": {
+                "required": True,
+                "allow_blank": False,
+                "error_messages": {
+                    "blank": "Please provide supporting business details or documents.",
+                    "required": "Please provide supporting business details or documents.",
+                },
+            }
+        }

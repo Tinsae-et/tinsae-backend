@@ -1,5 +1,5 @@
 from django.shortcuts import get_object_or_404
-from rest_framework import permissions, serializers, viewsets
+from rest_framework import mixins, permissions, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
@@ -209,30 +209,92 @@ class ShopProductImageViewSet(viewsets.ModelViewSet):
         serializer.save(product=self.get_product())
 
 
-class VerificationViewSet(viewsets.ModelViewSet):
+class VerificationViewSet(
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
+    """The shop owner's verification request and status viewset.
+
+    Enforces ownership at the shop level: any non-owner gets 404, preventing
+    cross-shop leakage of private business documents and rejection history.
+    """
+
     serializer_class = VerificationRequestSerializer
-    permission_classes = [IsOwnerOrReadOnly, permissions.IsAuthenticated]
-
-    def get_queryset(self):
-        return VerificationRequest.objects.filter(shop__slug=self.kwargs["shop_slug"])
-
-    def get_object(self):
-        return self.get_queryset().last()
+    permission_classes = [permissions.IsAuthenticated]
 
     def get_shop(self):
         return get_object_or_404(
             Shop, slug=self.kwargs["shop_slug"], owner=self.request.user
         )
 
+    def get_queryset(self):
+        return VerificationRequest.objects.filter(shop=self.get_shop()).order_by(
+            "-submited_at", "-id"
+        )
+
+    def get_object(self):
+        obj = self.get_queryset().first()
+        if not obj:
+            from django.http import Http404
+
+            raise Http404("No verification request found.")
+        return obj
+
+    def retrieve(self, request, *args, **kwargs):
+        """Current verification state: not_submitted, pending, approved, or rejected."""
+        shop = self.get_shop()
+        latest = self.get_queryset().first()
+
+        if shop.is_verified:
+            if latest:
+                data = self.get_serializer(latest).data
+            else:
+                data = {
+                    "id": None,
+                    "shop": shop.id,
+                    "is_verified": True,
+                    "submitted_at": None,
+                    "submited_at": None,
+                    "reviewed_at": None,
+                    "reviewer": None,
+                    "rejection_reason": None,
+                    "supporting_detail": "",
+                }
+            data["state"] = "approved"
+            data["is_verified"] = True
+            return Response(data)
+
+        if not latest:
+            return Response(
+                {
+                    "id": None,
+                    "shop": shop.id,
+                    "is_verified": False,
+                    "submitted_at": None,
+                    "submited_at": None,
+                    "reviewed_at": None,
+                    "reviewer": None,
+                    "state": "not_submitted",
+                    "rejection_reason": None,
+                    "supporting_detail": "",
+                }
+            )
+
+        data = self.get_serializer(latest).data
+        data["is_verified"] = False
+        return Response(data)
+
     def perform_create(self, serializer):
+        shop = self.get_shop()
+        if shop.is_verified:
+            raise serializers.ValidationError(
+                {"detail": "This shop is already verified."}
+            )
         if self.get_queryset().filter(state="pending").exists():
             raise serializers.ValidationError(
                 {
                     "detail": "A pending verification request already exists for this shop."
                 }
             )
-        elif self.get_shop().is_verified:
-            raise serializers.ValidationError(
-                {"detail": "This shop is already verified."}
-            )
-        serializer.save(shop=self.get_shop())
+        serializer.save(shop=shop)

@@ -10,11 +10,6 @@ from .views import (
 
 router = DefaultRouter()
 router.register("shops", ShopViewSet)
-router.register(
-    "shops/<slug:shop_slug>/verification/",
-    VerificationViewSet,
-    basename="shop-verification",
-)
 
 # Wired by hand rather than with a nested-router dependency. The cost of that
 # choice is here: @action does not self-route, so every action needs a line
