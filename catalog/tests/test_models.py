@@ -381,7 +381,9 @@ class FreshnessQuerySetTests(TestCase):
         self._seed_every_band()
         self.assertEqual(
             sorted(
-                Product.objects.buyer_visible(now=self.now).values_list("name", flat=True)
+                Product.objects.buyer_visible(now=self.now).values_list(
+                    "name", flat=True
+                )
             ),
             ["at-48h", "at-7d", "one-hour", "past-48h"],
         )
@@ -402,4 +404,3 @@ class FreshnessQuerySetTests(TestCase):
             "paused",
             Product.objects.buyer_visible(now=self.now).values_list("name", flat=True),
         )
-
