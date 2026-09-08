@@ -9,7 +9,7 @@ from django.utils.timezone import localtime
 from bot.services import issue_link_code
 from catalog.models import Product
 
-from .models import Shop
+from .models import Shop, VerificationRequest
 
 
 class ProductInline(admin.TabularInline):
@@ -18,6 +18,46 @@ class ProductInline(admin.TabularInline):
     fields = ["brand", "name", "price", "last_confirmed_at", "category"]
     autocomplete_fields = ["category"]
     show_change_link = True
+
+
+@admin.register(VerificationRequest)
+class VerificationRequestAdmin(admin.ModelAdmin):
+    list_display = (
+        "shop",
+        "submited_at",
+        "reviewed_at",
+        "reviewer",
+        "state",
+    )
+    list_filter = ("state",)
+    search_fields = ("shop__name",)
+    readonly_fields = ("submited_at", "reviewed_at")
+    actions = ["approve_requests", "reject_requests"]
+
+    @admin.action(description="Approve selected verification requests")
+    def approve_requests(self, request, queryset):
+        for req in queryset:
+            req.state = "approved"
+            req.reviewer = request.user
+            req.save()
+        self.message_user(request, "Selected requests approved.", messages.SUCCESS)
+
+    @admin.action(description="Reject selected verification requests")
+    def reject_requests(self, request, queryset):
+        for req in queryset:
+            req.state = "rejected"
+            req.reviewer = request.user
+            if not req.rejection_reason:
+                req.rejection_reason = (
+                    "Application does not meet verification criteria."
+                )
+            req.save()
+        self.message_user(request, "Selected requests rejected.", messages.WARNING)
+
+    def save_model(self, request, obj, form, change):
+        if obj.state in ("approved", "rejected") and not obj.reviewer:
+            obj.reviewer = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(Shop)
@@ -39,7 +79,7 @@ class ShopAdmin(admin.ModelAdmin):
     )
     search_fields = ("name", "city")
     prepopulated_fields = {"slug": ("name",)}
-    readonly_fields = ("created_at", "updated_at")
+    readonly_fields = ("is_verified", "created_at", "updated_at")
     inlines = [ProductInline]
     actions = ["generate_telegram_link_code"]
 

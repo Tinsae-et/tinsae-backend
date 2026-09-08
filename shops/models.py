@@ -3,6 +3,8 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models.signals import post_save, pre_save
+from django.dispatch import receiver
 from django.utils.text import slugify
 
 from core.models import BaseModel
@@ -52,6 +54,49 @@ class Shop(BaseModel):
     def save(self, *args, **kwargs):
         if self.slug:
             return super().save(*args, **kwargs)
-        return save_with_unique_slug(
-            self, slugify(self.name), super().save, *args, **kwargs
-        )
+        # slugify() strips non-Latin scripts entirely, so an Amharic-only name
+        # slugifies to "" and the series in core.slugs becomes "", "-2", "-3".
+        # A generic ASCII base keeps every shop routable; the slug is an
+        # identifier, not a label.
+        base = slugify(self.name) or "shop"
+        return save_with_unique_slug(self, base, super().save, *args, **kwargs)
+
+
+class VerificationRequest(models.Model):
+    STATES = [
+        ("pending", "Pending"),
+        ("approved", "Approved"),
+        ("rejected", "Rejected"),
+    ]
+
+    shop = models.ForeignKey(Shop, on_delete=models.CASCADE)
+    submited_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(auto_now=True)
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
+    )
+    state = models.CharField(max_length=10, choices=STATES, default="pending")
+    rejection_reason = models.TextField(blank=True, null=True)
+    supporting_detail = models.TextField(null=True, blank=True)
+
+    @property
+    def submitted_at(self):
+        return self.submited_at
+
+
+@receiver(post_save, sender=VerificationRequest)
+def post_update_shop_verification_status(sender, instance, **kwargs):
+    if instance.state == "approved":
+        if not instance.shop.is_verified:
+            instance.shop.is_verified = True
+            instance.shop.save(update_fields=["is_verified"])
+    elif instance.state in ("rejected", "pending"):
+        if instance.shop.is_verified:
+            instance.shop.is_verified = False
+            instance.shop.save(update_fields=["is_verified"])
+
+
+@receiver(pre_save, sender=VerificationRequest)
+def pre_update_shop_verification_status(sender, instance, **kwargs):
+    if instance.state == "rejected" and not (instance.rejection_reason or "").strip():
+        instance.rejection_reason = "No reason provided."

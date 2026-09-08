@@ -1,14 +1,25 @@
 import logging
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, IntegerField, Prefetch, Value, When
+from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
-from rest_framework import viewsets
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from rest_framework import generics, permissions, views, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 
+from core.pagination import ProductSuggestionsPagination
+
+from shops.models import Shop
+
+from .freshness import ALMOST_EXPIRED_WINDOW
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
-from .services import apply_search, log_search
+from .services import apply_search, get_product_suggestions, log_search
 
 ORDERING_FIELDS = {
     "name",
@@ -21,7 +32,7 @@ ORDERING_FIELDS = {
 }
 
 TRUTHY = {"1", "true", "yes", "on"}
-
+PUBLIC_STATS_TTL = 60 * 60 * 24
 logger = logging.getLogger(__name__)
 
 
@@ -160,6 +171,32 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             log_search(query, response.data.get("count", 0), request.user)
         return response
 
+    @action(detail=True, methods=["get"], url_path="suggestions")
+    def suggestions(self, request, slug=None):
+        """Serve tiered product suggestions locked strictly to the same category.
+
+        Evaluated in a single SQL query via PostgreSQL conditional CASE expressions:
+          - Tier 1: Same Brand + Close Price (±30%)
+          - Tier 2: Competitors in Close Price Bracket (±30%)
+          - Tier 3: Same Brand (other prices)
+          - Tier 4: Other category items
+        Ranked internally by stock freshness, shop verification, city proximity, and recency.
+        """
+        product = get_object_or_404(
+            Product.objects.select_related("category", "shop"), slug=slug
+        )
+
+        qs = get_product_suggestions(product)
+
+        paginator = ProductSuggestionsPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return paginator.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(qs, many=True)
+        return Response(serializer.data)
+
 
 # `ProductSearchViewSet` was removed here. It was a second search endpoint at
 # /catalog/productsearch/ with its own ranking, no price/category/freshness
@@ -167,3 +204,90 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
 # It was also a plain `ModelViewSet`, which under the project default of
 # `IsAuthenticatedOrReadOnly` exposed PUT, PATCH and DELETE on products to every
 # account that could log in. Its ranking now lives in `ProductViewSet` above.
+
+
+class SimilarProductsView(generics.ListAPIView):
+    serializer_class = ProductSerializer
+
+    def get_product(self):
+        slug = self.kwargs.get("slug")
+        return get_object_or_404(Product, slug=slug)
+
+    def get_queryset(self):
+        product = self.get_product()
+        # Price bounds are 20% above and below the product's price.
+        upper_price_bound = product.price * Decimal("1.2")
+        lower_price_bound = product.price * Decimal("0.8")
+
+        brand_query = Q(brand=product.brand) if product.brand else Q()
+
+        qs = (
+            Product.objects.buyer_visible()
+            .filter(
+                Q(category=product.category)
+                & (Q(price__range=(lower_price_bound, upper_price_bound)) | brand_query)
+            )
+            .exclude(id=product.id)
+            .select_related("category", "shop")
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
+            )
+            .annotate(
+                same_shop_rank=Case(
+                    When(shop=product.shop, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                ),
+                freshness_rank=Case(
+                    When(last_confirmed_at__isnull=True, then=Value(2)),
+                    When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                ),
+                last_signal=Coalesce("last_confirmed_at", "created_at"),
+            )
+        )
+
+        return qs.order_by("same_shop_rank", "freshness_rank", "-last_signal")[:4]
+
+
+class PublicStatsView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_scope = "public_stats"
+
+    @method_decorator(cache_page(PUBLIC_STATS_TTL))
+    def get(self, request, *args, **kwargs):
+        buyer_visible_qs = Product.objects.buyer_visible()
+
+        total_shops = Shop.objects.count()
+        verified_shops = Shop.objects.filter(is_verified=True).count()
+        total_listings = buyer_visible_qs.count()
+        fresh_listings = buyer_visible_qs.fresh().count()
+        verified_shop_products = buyer_visible_qs.filter(shop__is_verified=True).count()
+
+        category_counts = (
+            buyer_visible_qs.values("category__slug")
+            .annotate(count=Count("id"))
+            .order_by()
+        )
+        category_product_count = {
+            row["category__slug"]: row["count"]
+            for row in category_counts
+            if row["category__slug"]
+        }
+
+        data = {
+            "total_shops": total_shops,
+            "total_listings": total_listings,
+            "fresh_listings": fresh_listings,
+            "total_products": total_listings,
+            "verified_shops": verified_shops,
+            "verified_shop_products": verified_shop_products,
+            "category_product_count": category_product_count,
+        }
+        return Response(data)

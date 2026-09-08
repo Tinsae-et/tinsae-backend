@@ -1,7 +1,12 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import ShopProductImageViewSet, ShopProductViewSet, ShopViewSet
+from .views import (
+    ShopProductImageViewSet,
+    ShopProductViewSet,
+    ShopViewSet,
+    VerificationViewSet,
+)
 
 router = DefaultRouter()
 router.register("shops", ShopViewSet)
@@ -15,7 +20,11 @@ router.register("shops", ShopViewSet)
 PRODUCTS = "shops/<slug:shop_slug>/products/"
 PRODUCT = "shops/<slug:shop_slug>/products/<slug:slug>/"
 IMAGES = "shops/<slug:shop_slug>/products/<slug:product_slug>/images/"
+VERIFICATION = "shops/<slug:shop_slug>/verification/"
 
+
+verification_list = VerificationViewSet.as_view({"get": "list", "post": "create"})
+verification_detail = VerificationViewSet.as_view({"get": "retrieve"})
 products_list = ShopProductViewSet.as_view({"get": "list", "post": "create"})
 products_detail = ShopProductViewSet.as_view(
     {
@@ -53,4 +62,6 @@ urlpatterns = router.urls + [
     path(IMAGES, images_list, name="shop-product-images-list"),
     path(IMAGES + "<int:pk>/", images_detail, name="shop-product-images-detail"),
     path(PRODUCT, products_detail, name="shop-products-detail"),
+    path(VERIFICATION, verification_list, name="shop-verification-list"),
+    path(VERIFICATION + "state/", verification_detail, name="shop-verification-detail"),
 ]

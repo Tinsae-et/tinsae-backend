@@ -12,6 +12,7 @@ keys as strings.
 """
 
 import logging
+from decimal import Decimal
 
 from django.contrib.postgres.search import TrigramSimilarity
 from django.db import transaction
@@ -20,15 +21,18 @@ from django.db.models import (
     ExpressionWrapper,
     F,
     FloatField,
+    IntegerField,
+    Prefetch,
     Q,
     Value,
     When,
 )
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from bot.models import ConfirmationRequest
 
-from .models import ConfirmationStatus, Product, SearchLog
+from .models import ConfirmationStatus, Product, ProductImage, SearchLog
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +162,11 @@ SYNONYMS = {
 
 SEARCH_FIELDS = ("name", "brand", "category__name", "description")
 
+# A buyer's real query is a handful of words. Past that the clause count grows
+# linearly while the result set can only shrink, so the extra terms buy nothing
+# and cost a wider query plan on the busiest read path.
+MAX_SEARCH_TERMS = 8
+
 # Ranking weights, baked into the tier values rather than applied as multipliers
 # so the whole formula reads in one place. Untuned: they are ordered correctly
 # relative to each other, but the magnitudes are a first guess pending logs.
@@ -184,7 +193,7 @@ def build_search_filter(query: str) -> Q:
     constraint expressed two ways, not two constraints.
     """
     combined = Q()
-    for word in query.lower().split():
+    for word in query.lower().split()[:MAX_SEARCH_TERMS]:
         per_word = Q()
         for variant in expand_term(word):
             for field in SEARCH_FIELDS:
@@ -269,3 +278,99 @@ def log_search(raw_query: str, result_count: int, user=None) -> None:
         )
     except Exception:
         logger.exception("Could not log search query %r.", raw_query)
+
+
+def get_product_suggestions(product: Product):
+    """Serve tiered product suggestions locked strictly to the target product's category.
+
+    Evaluated in a single SQL query via PostgreSQL conditional CASE expressions:
+      - Tier 1: Same Brand + Price in Window (±30%)
+      - Tier 2: Competitors in Price Window (±30%)
+      - Tier 3: Same Brand (outside price window)
+      - Tier 4: Other category items
+    Sub-sorted within each tier by multi-signal quality:
+      - Stock freshness: +20 points for confirmed fresh, +10 points for stale-confirmed
+      - Shop verification: +10 points for verified merchant
+      - Location proximity: +10 points if merchant shop is located in the same city
+      - Recency: -last_signal (Coalesce("last_confirmed_at", "created_at"))
+      - Deterministic tie-breaker: -id
+    """
+    category_id = product.category_id
+    if not category_id:
+        return Product.objects.none()
+
+    brand = (product.brand or "").strip()
+    price = product.price or Decimal("0")
+    min_price = price * Decimal("0.70")
+    max_price = price * Decimal("1.30")
+
+    # Base QuerySet: strictly same category, available, excluding target product
+    qs = (
+        Product.objects.filter(is_available=True, category_id=category_id)
+        .exclude(id=product.id)
+        .select_related("category", "shop")
+        .prefetch_related(
+            Prefetch(
+                "product_image",
+                queryset=ProductImage.objects.order_by("-is_primary", "display_order"),
+            )
+        )
+    )
+
+    # Build conditional tier annotations
+    tier_conditions = []
+    if brand and price > 0:
+        tier_conditions.append(
+            When(
+                brand__iexact=brand,
+                price__gte=min_price,
+                price__lte=max_price,
+                then=Value(1),
+            )
+        )
+    if price > 0:
+        tier_conditions.append(
+            When(price__gte=min_price, price__lte=max_price, then=Value(2))
+        )
+    if brand:
+        tier_conditions.append(When(brand__iexact=brand, then=Value(3)))
+
+    relevance_tier = (
+        Case(*tier_conditions, default=Value(4), output_field=IntegerField())
+        if tier_conditions
+        else Value(4, output_field=IntegerField())
+    )
+
+    # Quality and trust signals
+    freshness_score = Case(
+        When(confirmation_status=ConfirmationStatus.FRESH, then=Value(20)),
+        When(last_confirmed_at__isnull=False, then=Value(10)),
+        default=Value(0),
+        output_field=IntegerField(),
+    )
+
+    verified_score = Case(
+        When(shop__is_verified=True, then=Value(10)),
+        default=Value(0),
+        output_field=IntegerField(),
+    )
+
+    target_city = ""
+    if product.shop_id and hasattr(product, "shop") and product.shop:
+        target_city = (product.shop.city or "").strip()
+
+    if target_city:
+        city_score = Case(
+            When(shop__city__iexact=target_city, then=Value(10)),
+            default=Value(0),
+            output_field=IntegerField(),
+        )
+        quality_score = freshness_score + verified_score + city_score
+    else:
+        quality_score = freshness_score + verified_score
+
+    return qs.annotate(
+        relevance_tier=relevance_tier,
+        quality_score=quality_score,
+        last_signal=Coalesce("last_confirmed_at", "created_at"),
+    ).order_by("relevance_tier", "-quality_score", "-last_signal", "-id")

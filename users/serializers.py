@@ -248,6 +248,7 @@ ShopOwnerRegistrationSerializer = RegistrationSerializer
 
 
 AVATAR_MAX_BYTES = 2 * 1024 * 1024
+AVATAR_MAX_DIMENSION = 4096
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -321,6 +322,11 @@ class UserSerializer(serializers.ModelSerializer):
         image_format = getattr(getattr(value, "image", None), "format", "") or ""
         if image_format.upper() not in {"JPEG", "PNG"}:
             raise serializers.ValidationError("Upload a JPG or PNG image.")
+        width, height = getattr(getattr(value, "image", None), "size", (0, 0))
+        if width > AVATAR_MAX_DIMENSION or height > AVATAR_MAX_DIMENSION:
+            raise serializers.ValidationError(
+                f"Image must be at most {AVATAR_MAX_DIMENSION}x{AVATAR_MAX_DIMENSION} pixels."
+            )
         return value
 
     def update(self, instance, validated_data):
