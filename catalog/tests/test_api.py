@@ -1,13 +1,20 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.core.management import call_command
 from django.db import DatabaseError
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from catalog.models import Category, ConfirmationStatus, Product, SearchLog
+from catalog.models import (
+    Category,
+    ConfirmationStatus,
+    Product,
+    ProductStatus,
+    SearchLog,
+)
 from shops.models import Shop
 from users.models import User
 
@@ -741,3 +748,197 @@ class SearchLogRetentionTest(TestCase):
         call_command("sweep_search_logs", "--retention-days", "1", verbosity=0)
 
         self.assertEqual(SearchLog.objects.count(), 0)
+
+
+class SimilarProductsApiTest(TestCase):
+    def setUp(self):
+        owner = User.objects.create_user(username="similar_merchant", password="pass")
+        self.shop = Shop.objects.create(
+            name="Similar Shop", slug="similar-shop", owner=owner
+        )
+        self.phone_category = Category.objects.create(
+            name="Phones", slug="similar-phones"
+        )
+        self.laptop_category = Category.objects.create(
+            name="Laptops", slug="similar-laptops"
+        )
+        self.source = self._product("source-phone", brand="Samsung", price="10000.00")
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.phone_category,
+            "shop": self.shop,
+            "brand": "Apple",
+            "name": "Test Product",
+            "slug": slug,
+            "price": "10000.00",
+            "last_confirmed_at": timezone.now(),
+            "is_available": True,
+        }
+        fields.update(overrides)
+        return Product.objects.create(**fields)
+
+    def _slugs(self):
+        response = APIClient().get(f"/api/v1/catalog/similar/{self.source.slug}/")
+        self.assertEqual(response.status_code, 200)
+        return {item["slug"] for item in response.data["results"]}
+
+    def test_matching_rules_include_category_price_brand_and_combination(self):
+        self._product("same-category-price", price="11000.00")
+        self._product(
+            "same-brand",
+            category=self.laptop_category,
+            brand="Samsung",
+            price="50000.00",
+        )
+        self._product("same-category-and-brand", brand="Samsung", price="10500.00")
+
+        self.assertEqual(
+            self._slugs(),
+            {"same-category-price", "same-brand", "same-category-and-brand"},
+        )
+
+    def test_source_product_is_excluded(self):
+        self._product("another-phone", price="10500.00")
+
+        self.assertNotIn(self.source.slug, self._slugs())
+
+    def test_expired_products_are_excluded(self):
+        self._product(
+            "expired-phone",
+            price="10500.00",
+            last_confirmed_at=timezone.now() - timedelta(days=8),
+        )
+
+        self.assertNotIn("expired-phone", self._slugs())
+
+    def test_empty_case_returns_no_similar_products(self):
+        self.assertEqual(self._slugs(), set())
+
+
+class PublicStatsApiTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        owner = User.objects.create_user(username="stats_merchant", password="pass")
+        self.shop = Shop.objects.create(
+            name="Stats Shop", slug="stats-shop", owner=owner, is_verified=True
+        )
+        self.category = Category.objects.create(
+            name="Stats Phones", slug="stats-phones"
+        )
+
+    def tearDown(self):
+        cache.clear()
+        super().tearDown()
+
+    def _product(self, slug, **overrides):
+        fields = {
+            "category": self.category,
+            "shop": self.shop,
+            "brand": "Samsung",
+            "name": "Stats Product",
+            "slug": slug,
+            "price": "12500.00",
+            "is_available": True,
+            "status": ProductStatus.LIVE,
+            "last_confirmed_at": timezone.now(),
+        }
+        fields.update(overrides)
+        return Product.objects.create(**fields)
+
+    def test_counts_exclude_expired_listings(self):
+        now = timezone.now()
+        # Fresh listing (within 48h): counts as both buyer-visible and fresh
+        self._product("fresh-product", last_confirmed_at=now - timedelta(hours=1))
+        # Almost expired listing (3 days ago, within 7d): counts as buyer-visible, but NOT fresh
+        self._product(
+            "almost-expired-product",
+            last_confirmed_at=now - timedelta(days=3),
+        )
+        # Expired listing (8 days ago, past 7d): excluded from buyer-visible and fresh
+        self._product(
+            "expired-product",
+            last_confirmed_at=now - timedelta(days=8),
+        )
+        # Never confirmed listing (None): excluded
+        self._product("never-confirmed-product", last_confirmed_at=None)
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_listings"], 2)
+        self.assertEqual(response.data["fresh_listings"], 1)
+        self.assertEqual(response.data["total_products"], 2)
+        self.assertEqual(response.data["verified_shop_products"], 2)
+        self.assertEqual(response.data["category_product_count"], {"stats-phones": 2})
+
+    def test_counts_exclude_paused_and_draft_listings(self):
+        # Live available product
+        self._product("live-product", is_available=True, status=ProductStatus.LIVE)
+        # Paused / unavailable
+        self._product("paused-product", is_available=False, status=ProductStatus.LIVE)
+        # Draft status
+        self._product("draft-product", is_available=False, status=ProductStatus.DRAFT)
+        # Sold status
+        self._product("sold-product", is_available=False, status=ProductStatus.SOLD)
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_listings"], 1)
+        self.assertEqual(response.data["fresh_listings"], 1)
+
+    def test_total_shops_and_verified_shops_counts(self):
+        # 1 verified shop from setUp, add 1 unverified shop
+        unverified_owner = User.objects.create_user(
+            username="unverified_merchant", password="pass"
+        )
+        Shop.objects.create(
+            name="Unverified Shop",
+            slug="unverified-shop",
+            owner=unverified_owner,
+            is_verified=False,
+        )
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["total_shops"], 2)
+        self.assertEqual(response.data["verified_shops"], 1)
+
+    def test_response_shape_and_no_identifying_data_exposed(self):
+        self._product("stats-product")
+
+        response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            set(response.data),
+            {
+                "total_shops",
+                "total_listings",
+                "fresh_listings",
+                "total_products",
+                "verified_shops",
+                "verified_shop_products",
+                "category_product_count",
+            },
+        )
+        # AC requirement: No shop-identifying or owner data is exposed
+        self.assertNotIn("shop_product_count", response.data)
+        serialized_str = str(response.data)
+        self.assertNotIn(self.shop.name, serialized_str)
+        self.assertNotIn(self.shop.slug, serialized_str)
+        self.assertNotIn(self.shop.owner.username, serialized_str)
+
+    def test_second_request_within_ttl_is_served_from_cache(self):
+        self._product("initial-stats-product")
+
+        first_response = APIClient().get("/api/v1/catalog/public-stats/")
+        self._product("new-stats-product")
+        second_response = APIClient().get("/api/v1/catalog/public-stats/")
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(first_response.data["total_listings"], 1)
+        self.assertEqual(second_response.data["total_listings"], 1)

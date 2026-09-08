@@ -1,15 +1,21 @@
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, IntegerField, Prefetch, Value, When
+from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
-from rest_framework import viewsets
+from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from rest_framework import generics, permissions, views, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
 from core.pagination import ProductSuggestionsPagination
 
+from shops.models import Shop
+
+from .freshness import ALMOST_EXPIRED_WINDOW
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
 from .services import apply_search, get_product_suggestions, log_search
@@ -25,7 +31,7 @@ ORDERING_FIELDS = {
 }
 
 TRUTHY = {"1", "true", "yes", "on"}
-
+PUBLIC_STATS_TTL = 60 * 60 * 24
 
 # `Product.price` is max_digits=10, decimal_places=2, so nothing at or above
 # this can be stored -- and a filter bound that large is a number Postgres has
@@ -195,3 +201,90 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
 # It was also a plain `ModelViewSet`, which under the project default of
 # `IsAuthenticatedOrReadOnly` exposed PUT, PATCH and DELETE on products to every
 # account that could log in. Its ranking now lives in `ProductViewSet` above.
+
+
+class SimilarProductsView(generics.ListAPIView):
+    serializer_class = ProductSerializer
+
+    def get_product(self):
+        slug = self.kwargs.get("slug")
+        try:
+            product = Product.objects.get(slug=slug)
+        except Product.DoesNotExist:
+            raise ValidationError("Product with a given slug does not exist.") from None
+        return product
+
+    def get_queryset(self):
+        product = self.get_product()
+        # Price bounds are 20% above and below the product's price.
+        upper_price_bound = product.price * Decimal("0.2") + product.price
+        lower_price_bound = product.price - product.price * Decimal("0.2")
+
+        qs = (
+            Product.objects.buyer_visible()
+            .filter(
+                Q(
+                    category=product.category,
+                    price__range=(lower_price_bound, upper_price_bound),
+                )
+                | Q(brand=product.brand),
+            )
+            .exclude(id=product.id)
+            .select_related("category", "shop")
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
+            )
+            .annotate(
+                freshness_rank=Case(
+                    When(last_confirmed_at__isnull=True, then=Value(2)),
+                    When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                ),
+                last_signal=Coalesce("last_confirmed_at", "created_at"),
+            )
+        )
+
+        return qs.order_by("freshness_rank", "-last_signal")[:4]
+
+
+class PublicStatsView(views.APIView):
+    permission_classes = [permissions.AllowAny]
+    throttle_scope = "public_stats"
+
+    @method_decorator(cache_page(PUBLIC_STATS_TTL))
+    def get(self, request, *args, **kwargs):
+        buyer_visible_qs = Product.objects.buyer_visible()
+
+        total_shops = Shop.objects.count()
+        verified_shops = Shop.objects.filter(is_verified=True).count()
+        total_listings = buyer_visible_qs.count()
+        fresh_listings = buyer_visible_qs.fresh().count()
+        verified_shop_products = buyer_visible_qs.filter(shop__is_verified=True).count()
+
+        category_counts = (
+            buyer_visible_qs.values("category__slug")
+            .annotate(count=Count("id"))
+            .order_by()
+        )
+        category_product_count = {
+            row["category__slug"]: row["count"]
+            for row in category_counts
+            if row["category__slug"]
+        }
+
+        data = {
+            "total_shops": total_shops,
+            "total_listings": total_listings,
+            "fresh_listings": fresh_listings,
+            "total_products": total_listings,
+            "verified_shops": verified_shops,
+            "verified_shop_products": verified_shop_products,
+            "category_product_count": category_product_count,
+        }
+        return Response(data)

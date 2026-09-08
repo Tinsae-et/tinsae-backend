@@ -139,6 +139,7 @@ REST_FRAMEWORK = {
         # Profile writes: identity-adjacent and each one may carry a 2 MB
         # upload. Loose enough that nobody editing their own page reaches it.
         "profile_update": "20/hour",
+        "public_stats": "60/min",
         # OTP verification. OTP_MAX_ATTEMPTS caps guesses against one *code*;
         # this caps guesses against one *destination* across successive codes,
         # which is what an attacker actually grinds.

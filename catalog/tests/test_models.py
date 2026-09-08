@@ -376,3 +376,30 @@ class FreshnessQuerySetTests(TestCase):
         self.assertEqual(
             self._product("ancient", timedelta(days=90)).freshness, "expired"
         )
+
+    def test_buyer_visible_helper_excludes_expired_and_paused(self):
+        self._seed_every_band()
+        self.assertEqual(
+            sorted(
+                Product.objects.buyer_visible(now=self.now).values_list("name", flat=True)
+            ),
+            ["at-48h", "at-7d", "one-hour", "past-48h"],
+        )
+        # Verify fresh() on buyer_visible works cleanly
+        self.assertEqual(
+            sorted(
+                Product.objects.buyer_visible(now=self.now)
+                .fresh(now=self.now)
+                .values_list("name", flat=True)
+            ),
+            ["at-48h", "one-hour"],
+        )
+        # Paused / unavailable product is excluded
+        p = self._product("paused", timedelta(hours=1))
+        p.is_available = False
+        p.save()
+        self.assertNotIn(
+            "paused",
+            Product.objects.buyer_visible(now=self.now).values_list("name", flat=True),
+        )
+
