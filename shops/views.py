@@ -282,7 +282,7 @@ class VerificationViewSet(
 
     def get_queryset(self):
         return VerificationRequest.objects.filter(shop=self.get_shop()).order_by(
-            "-submited_at", "-id"
+            "-submitted_at", "-id"
         )
 
     def get_object(self):
@@ -307,7 +307,6 @@ class VerificationViewSet(
                     "shop": shop.id,
                     "is_verified": True,
                     "submitted_at": None,
-                    "submited_at": None,
                     "reviewed_at": None,
                     "reviewer": None,
                     "rejection_reason": None,
@@ -324,7 +323,6 @@ class VerificationViewSet(
                     "shop": shop.id,
                     "is_verified": False,
                     "submitted_at": None,
-                    "submited_at": None,
                     "reviewed_at": None,
                     "reviewer": None,
                     "state": "not_submitted",

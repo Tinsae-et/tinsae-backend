@@ -187,7 +187,6 @@ class ShopProductImageSerializer(serializers.ModelSerializer):
 
 class VerificationRequestSerializer(serializers.ModelSerializer):
     is_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
-    submitted_at = serializers.DateTimeField(source="submited_at", read_only=True)
 
     class Meta:
         model = VerificationRequest
@@ -196,7 +195,6 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
             "shop",
             "is_verified",
             "submitted_at",
-            "submited_at",
             "reviewed_at",
             "reviewer",
             "state",
@@ -207,7 +205,6 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
             "shop",
             "is_verified",
             "submitted_at",
-            "submited_at",
             "reviewed_at",
             "reviewer",
             "state",

@@ -1044,17 +1044,16 @@ class VerificationRequestApiTests(TestCase):
         shop_admin = ShopAdmin(Shop, site)
         self.assertIn("is_verified", shop_admin.readonly_fields)
 
-    def test_verification_request_submitted_at_property_and_serializer_alias(self):
+    def test_verification_request_submitted_at(self):
         req = VerificationRequest.objects.create(
             shop=self.shop, supporting_detail="Doc"
         )
-        self.assertEqual(req.submitted_at, req.submited_at)
+        self.assertIsNotNone(req.submitted_at)
 
         self.client.force_authenticate(self.owner)
         res = self.client.get(f"{self.url}state/")
         self.assertIn("submitted_at", res.data)
-        self.assertIn("submited_at", res.data)
-        self.assertEqual(res.data["submitted_at"], res.data["submited_at"])
+        self.assertNotIn("submited_at", res.data)
 
     def test_admin_save_model_auto_assigns_reviewer(self):
         from django.contrib.admin.sites import site
@@ -1123,7 +1122,9 @@ class ShopDirectoryApiTest(TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["count"], 2)
 
-        alpha = next(s for s in res.data["results"] if s["slug"] == self.verified_shop.slug)
+        alpha = next(
+            s for s in res.data["results"] if s["slug"] == self.verified_shop.slug
+        )
         self.assertEqual(alpha["active_listings_count"], 1)
         self.assertEqual(alpha["phone"], "+251911111111")
         self.assertIn("created_at", alpha)
@@ -1144,4 +1145,3 @@ class ShopDirectoryApiTest(TestCase):
         res = self.client.get(f"/api/v1/catalog/products/{self.p1.slug}/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["shop_slug"], self.verified_shop.slug)
-
