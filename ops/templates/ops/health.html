@@ -33,7 +33,7 @@
   <p class="errornote"><strong>sweep_freshness is behind.</strong>
     {{ health.catalog.sweep_drift }} product(s) are past the
     {{ health.config.staleness_days }}-day window but still stored as fresh.
-    The catalog looks healthier here and in <code>?freshness=</code> than it
+    The catalog looks healthier here than it
     really is. Run the sweep.</p>
 {% endif %}
 {% if health.requests.pending_overdue %}
