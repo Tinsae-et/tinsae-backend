@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
@@ -29,6 +30,8 @@ ORDERING_FIELDS = {
 
 TRUTHY = {"1", "true", "yes", "on"}
 PUBLIC_STATS_TTL = 60 * 60 * 24
+logger = logging.getLogger(__name__)
+
 
 # `Product.price` is max_digits=10, decimal_places=2, so nothing at or above
 # this can be stored -- and a filter bound that large is a number Postgres has
@@ -128,11 +131,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.filter(price__lte=max_price)
         if self.request.query_params.get("verified_only"):
             qs = qs.filter(shop__is_verified=True)
-        if self.request.query_params.get("freshness"):
-            # Read the column the sweep maintains rather than recomputing the
-            # cutoff here — otherwise the API and `sweep_freshness` can disagree,
-            # and a never-confirmed new listing gets wrongly excluded.
-            qs = qs.filter(confirmation_status=ConfirmationStatus.FRESH)
+        if "freshness" in self.request.query_params:
+            logger.warning(
+                "Deprecated query parameter ?freshness= used on the public "
+                "product list; use ?fresh= instead. Remove after 2026-12-31."
+            )
         # Strict about its value, unlike the two flags above: those accept any
         # non-empty string and their tests pin that down, but `fresh=false` has
         # an obvious intended meaning and must not switch the filter on.

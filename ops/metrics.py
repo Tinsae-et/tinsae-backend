@@ -57,7 +57,7 @@ def _catalog_health(staleness_cutoff) -> dict:
         never_confirmed=Count("pk", filter=Q(last_confirmed_at__isnull=True)),
     )
 
-    # The stored column is what buyers actually get through ?freshness=, so it is
+    # The stored column is what buyers actually receive as a status, so it is
     # the number to report. Recomputing the same predicate against the live clock
     # says what the column *would* be after a sweep. The gap between them is the
     # one metric that catches "nobody ever scheduled the cron" -- without it, a

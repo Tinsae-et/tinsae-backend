@@ -218,7 +218,7 @@ ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=Fa
 # Days without a confirmation signal before a product is considered stale.
 # This lives in settings rather than a CLI flag because Product.confirmation_status
 # is a materialised column: two sweeps run with different thresholds would leave
-# the column disagreeing with itself and with the API's freshness filter.
+# the column disagreeing with itself and with the buyer-facing freshness status.
 PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
 
 # Hours a ConfirmationRequest may sit unanswered before the sweep expires it and

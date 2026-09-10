@@ -131,7 +131,7 @@ class ProductApiTest(TestCase):
         self.assertEqual(respose.status_code, 200)
         self.assertEqual(respose.data["results"][0]["title"], "Samsung Galaxy A55")
 
-    def test_freshness_filter(self):
+    def test_fresh_is_the_buyer_facing_freshness_filter(self):
         owner1 = User.objects.create_user(username="test_merchant1", password="pass")
 
         shop1 = Shop.objects.create(
@@ -164,11 +164,49 @@ class ProductApiTest(TestCase):
             confirmation_status="stale",
         )
 
-        response = APIClient().get("/api/v1/catalog/products/?freshness=ok")
+        response = APIClient().get("/api/v1/catalog/products/?fresh=true")
         self.assertEqual(response.status_code, 200)
         titles = [r["title"] for r in response.data["results"]]
         self.assertNotIn("Nokia Stale Phone", titles)
         self.assertEqual(len(response.data["results"]), 2)
+
+    @patch("catalog.views.logger.warning")
+    def test_freshness_is_deprecated_and_not_interchangeable_with_fresh(self, warning):
+        Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Nokia",
+            name="Stale Phone",
+            slug="stale-phone",
+            price="5000.00",
+            specs={},
+            last_confirmed_at=timezone.now() - timedelta(days=60),
+            confirmation_status="stale",
+        )
+
+        fresh_response = APIClient().get("/api/v1/catalog/products/?fresh=true")
+        deprecated_response = APIClient().get(
+            "/api/v1/catalog/products/?freshness=true"
+        )
+
+        self.assertEqual(fresh_response.status_code, 200)
+        self.assertEqual(deprecated_response.status_code, 200)
+        self.assertNotEqual(
+            {item["slug"] for item in fresh_response.data["results"]},
+            {item["slug"] for item in deprecated_response.data["results"]},
+        )
+        self.assertEqual(deprecated_response.data["count"], 2)
+        warning.assert_called_once()
+        self.assertIn(
+            "Deprecated query parameter ?freshness=", warning.call_args.args[0]
+        )
+
+    @patch("catalog.views.logger.warning")
+    def test_empty_deprecated_freshness_parameter_is_logged(self, warning):
+        response = APIClient().get("/api/v1/catalog/products/?freshness=")
+
+        self.assertEqual(response.status_code, 200)
+        warning.assert_called_once()
 
     def test_combined_filtering(self):
         owner1 = User.objects.create_user(username="test_merchant1", password="pass")
@@ -199,7 +237,7 @@ class ProductApiTest(TestCase):
         )
 
         response = APIClient().get(
-            "/api/v1/catalog/products/?q=gala&min_price=20000&max_price=35000&freshness=fresh&verified_only=ok&category=phones1"
+            "/api/v1/catalog/products/?q=gala&min_price=20000&max_price=35000&fresh=true&verified_only=ok&category=phones1"
         )
         self.assertEqual(response.status_code, 200)
 
@@ -325,7 +363,7 @@ class ProductRankingTest(TestCase):
             last_confirmed_at=timezone.now() - timedelta(days=40),
         )
         self.assertIn("stale-one", self._slugs())
-        self.assertNotIn("stale-one", self._slugs("?freshness=1"))
+        self.assertNotIn("stale-one", self._slugs("?fresh=true"))
 
     def test_fresh_filter_uses_confirmation_timestamp(self):
         self._product(
