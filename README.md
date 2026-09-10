@@ -261,7 +261,7 @@ Prompts sent: 2 | Expired requests: 1 | Skipped: 10
 
 Thresholds are settings, not flags, because `confirmation_status` is a stored
 column — two runs at different thresholds would leave it disagreeing with itself
-and with the API's `?freshness=` filter.
+and with the buyer-facing freshness status.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
@@ -339,11 +339,11 @@ inbound, nothing writes `last_confirmed_at` — the Telegram callbacks are the o
 code paths that do, apart from `seed_shop_data` and manual admin edits. Because a
 NULL `last_confirmed_at` counts as stale, a scheduled sweep would walk the whole
 catalog to `stale` within `PRODUCT_STALENESS_DAYS` of the last seed, and anything
-added through the admin would be stale on creation. `?freshness=` would then
-return an empty list.
+added through the admin would be stale on creation. A confirmation-status-based filter
+would then return an empty list.
 
 Leave it unscheduled and `confirmation_status` stays at its `fresh` default,
-`?freshness=` returns everything, and product ranking degrades to plain recency.
+and product ranking degrades to plain recency.
 Two things follow:
 
 - The frontend should not ship a default-on "fresh only" filter in this state —
@@ -499,9 +499,8 @@ entire marketplace on day one.
 ### Sweep drift — the "is anything running?" check
 
 `confirmation_status` is a stored column written **only** by `sweep_freshness`.
-The page reports that column, because it is exactly what buyers get through the
-API's `?freshness=` filter. It also recomputes the same predicate against the
-live clock and shows the gap:
+The page reports that column, because it is what buyers receive as the confirmation
+status. It also recomputes the same predicate against the live clock and shows the gap:
 
 - `stale` — what the database says today.
 - `stale_by_clock` — what a sweep right now would produce.

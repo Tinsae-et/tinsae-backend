@@ -363,7 +363,7 @@ class ProductRankingTest(TestCase):
             last_confirmed_at=timezone.now() - timedelta(days=40),
         )
         self.assertIn("stale-one", self._slugs())
-        self.assertIn("stale-one", self._slugs("?freshness=1"))
+        self.assertNotIn("stale-one", self._slugs("?fresh=true"))
 
     def test_fresh_filter_uses_confirmation_timestamp(self):
         self._product(
