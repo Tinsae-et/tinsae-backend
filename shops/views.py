@@ -1,14 +1,18 @@
-from django.db.models import Case, IntegerField, Prefetch, Value, When
-from django.db.models.functions import Coalesce
+from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, mixins, permissions, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from catalog.models import ConfirmationStatus, Product, ProductImage
+from catalog.models import Product, ProductImage, ProductStatus
 from catalog.serializers import ProductSerializer
-from catalog.services import apply_confirmation, pause_listing, resume_listing
+from catalog.services import (
+    apply_confirmation,
+    apply_search,
+    pause_listing,
+    resume_listing,
+)
 from catalog.views import ORDERING_FIELDS
 
 from .models import Shop, VerificationRequest
@@ -32,6 +36,49 @@ class ShopViewSet(viewsets.ModelViewSet):
     queryset = Shop.objects.all()
     lookup_field = "slug"
     permission_classes = [permissions.IsAuthenticatedOrReadOnly, IsOwnerOrReadOnly]
+
+    def get_queryset(self):
+        qs = Shop.objects.all()
+        if self.action == "list":
+            qs = qs.annotate(
+                active_listings_count=Count(
+                    "products",
+                    filter=Q(products__is_available=True),
+                    distinct=True,
+                )
+            )
+            # Filter by verified status
+            verified_param = self.request.query_params.get(
+                "verified_only"
+            ) or self.request.query_params.get("is_verified")
+            if verified_param in ("1", "true", "True"):
+                qs = qs.filter(is_verified=True)
+            elif verified_param in ("0", "false", "False"):
+                qs = qs.filter(is_verified=False)
+
+            # Filter by city
+            if city := self.request.query_params.get("city"):
+                qs = qs.filter(city__iexact=city)
+
+            # Search by name or description
+            if q := self.request.query_params.get("q"):
+                qs = qs.filter(Q(name__icontains=q) | Q(description__icontains=q))
+
+            # Ordering
+            ordering = self.request.query_params.get("ordering")
+            if ordering in (
+                "name",
+                "-name",
+                "created_at",
+                "-created_at",
+                "active_listings_count",
+                "-active_listings_count",
+            ):
+                qs = qs.order_by(ordering)
+            else:
+                qs = qs.order_by("-is_verified", "name")
+
+        return qs
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -306,15 +353,26 @@ class VerificationViewSet(
 
 
 class PublicShopProductsView(generics.ListAPIView):
-    """ "Public view for shop products."""
+    """Public view for a single shop's products.
+
+    Lists all active products for a shop in post order (newest first).
+    Unconfirmed and older listings are included so buyers can browse the shop's
+    entire catalogue. Paused and draft/sold listings remain excluded.
+    """
 
     serializer_class = ProductSerializer
     permission_classes = [permissions.AllowAny]
 
     def get_queryset(self):
         shop_slug = self.kwargs.get("slug")
+        shop = get_object_or_404(Shop, slug=shop_slug)
+
         qs = (
-            Product.objects.filter(shop__slug=shop_slug, is_available=True)
+            Product.objects.filter(
+                shop=shop,
+                is_available=True,
+                status=ProductStatus.LIVE,
+            )
             .select_related("category", "shop")
             .prefetch_related(
                 Prefetch(
@@ -324,17 +382,10 @@ class PublicShopProductsView(generics.ListAPIView):
                     ),
                 )
             )
-            .annotate(
-                freshness_rank=Case(
-                    When(last_confirmed_at__isnull=True, then=Value(2)),
-                    When(confirmation_status=ConfirmationStatus.FRESH, then=Value(0)),
-                    default=Value(1),
-                    output_field=IntegerField(),
-                ),
-                last_signal=Coalesce("last_confirmed_at", "created_at"),
-            )
-            .fresh()
         )
+
+        if query := (self.request.query_params.get("q") or "").strip():
+            qs = apply_search(qs, query)
 
         ordering = self.request.query_params.get("ordering")
         if ordering:
@@ -348,6 +399,7 @@ class PublicShopProductsView(generics.ListAPIView):
             qs = qs.filter(category__slug=category)
 
         if ordering:
-            qs = qs.order_by(ordering)
-
-        return qs
+            return qs.order_by(ordering)
+        if query:
+            return qs
+        return qs.order_by("-created_at")

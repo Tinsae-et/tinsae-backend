@@ -26,6 +26,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
 class ProductSerializer(serializers.ModelSerializer):
     title = serializers.SerializerMethodField()
     shop_name = serializers.CharField(source="shop.name", read_only=True)
+    shop_slug = serializers.CharField(source="shop.slug", read_only=True)
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
@@ -66,6 +67,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "currency",
             "condition",
             "shop_name",
+            "shop_slug",
             "shop_verified",
             "category",
             "images",

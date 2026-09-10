@@ -71,6 +71,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
 
 
 class ShopListSerializer(serializers.ModelSerializer):
+    active_listings_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Shop
         fields = [
@@ -78,10 +80,13 @@ class ShopListSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "description",
+            "phone",
             "city",
             "latitude",
             "longitude",
             "is_verified",
+            "active_listings_count",
+            "created_at",
         ]
 
 
