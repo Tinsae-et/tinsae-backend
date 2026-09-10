@@ -70,7 +70,7 @@ class VerificationRequest(models.Model):
     ]
 
     shop = models.ForeignKey(Shop, on_delete=models.CASCADE)
-    submited_at = models.DateTimeField(auto_now_add=True)
+    submitted_at = models.DateTimeField(auto_now_add=True)
     reviewed_at = models.DateTimeField(auto_now=True)
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
@@ -78,10 +78,6 @@ class VerificationRequest(models.Model):
     state = models.CharField(max_length=10, choices=STATES, default="pending")
     rejection_reason = models.TextField(blank=True, null=True)
     supporting_detail = models.TextField(null=True, blank=True)
-
-    @property
-    def submitted_at(self):
-        return self.submited_at
 
 
 @receiver(post_save, sender=VerificationRequest)

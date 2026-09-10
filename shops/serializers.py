@@ -71,6 +71,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
 
 
 class ShopListSerializer(serializers.ModelSerializer):
+    active_listings_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = Shop
         fields = [
@@ -78,10 +80,13 @@ class ShopListSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "description",
+            "phone",
             "city",
             "latitude",
             "longitude",
             "is_verified",
+            "active_listings_count",
+            "created_at",
         ]
 
 
@@ -182,7 +187,6 @@ class ShopProductImageSerializer(serializers.ModelSerializer):
 
 class VerificationRequestSerializer(serializers.ModelSerializer):
     is_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
-    submitted_at = serializers.DateTimeField(source="submited_at", read_only=True)
 
     class Meta:
         model = VerificationRequest
@@ -191,7 +195,6 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
             "shop",
             "is_verified",
             "submitted_at",
-            "submited_at",
             "reviewed_at",
             "reviewer",
             "state",
@@ -202,7 +205,6 @@ class VerificationRequestSerializer(serializers.ModelSerializer):
             "shop",
             "is_verified",
             "submitted_at",
-            "submited_at",
             "reviewed_at",
             "reviewer",
             "state",

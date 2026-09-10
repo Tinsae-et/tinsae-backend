@@ -379,6 +379,130 @@ class ShopCoordinatesApiTest(TestCase):
         self.assertIsNone(shop.latitude)
 
 
+class PublicShopProductsApiTest(TestCase):
+    """The anonymous catalogue nested under /api/v1/shop/<slug>/products/."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="merchant", password="pass")
+        self.other_owner = User.objects.create_user(
+            username="other_merchant", password="pass"
+        )
+        self.shop = Shop.objects.create(name="Owner Shop", owner=self.owner)
+        self.other_shop = Shop.objects.create(name="Other Shop", owner=self.other_owner)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.accessory_category = Category.objects.create(
+            name="Accessories", slug="accessories"
+        )
+        now = timezone.now()
+
+        # Product 1: fresh (confirmed now)
+        self.fresh_product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy A15",
+            price="12500.00",
+            last_confirmed_at=now,
+            is_available=True,
+        )
+        # Product 2: unavailable (paused/sold out) -> should be excluded
+        self.unavailable_product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Nokia",
+            name="Nokia 110",
+            price="1300.00",
+            last_confirmed_at=now,
+            is_available=False,
+        )
+        # Product 3: confirmed 3 days ago (aging/almost expired) -> should be included
+        self.aging_product = Product.objects.create(
+            shop=self.shop,
+            category=self.accessory_category,
+            brand="Apple",
+            name="AirPods Pro",
+            price="33000.00",
+            last_confirmed_at=now - timedelta(days=3),
+            is_available=True,
+        )
+        # Product 4: unconfirmed (last_confirmed_at is NULL) -> should be included
+        self.unconfirmed_product = Product.objects.create(
+            shop=self.shop,
+            category=self.accessory_category,
+            brand="Anker",
+            name="Fast Charger",
+            price="1500.00",
+            last_confirmed_at=None,
+            is_available=True,
+        )
+        # Product on another shop -> should be excluded
+        self.other_shop_product = Product.objects.create(
+            shop=self.other_shop,
+            category=self.category,
+            brand="Apple",
+            name="iPhone 15",
+            price="45000.00",
+            last_confirmed_at=now,
+            is_available=True,
+        )
+
+    def _url(self, shop_slug=None):
+        return f"/api/v1/shop/{shop_slug or self.shop.slug}/products/"
+
+    def test_anonymous_request_lists_all_available_products_including_unconfirmed_in_post_order(
+        self,
+    ):
+        response = APIClient().get(self._url())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 3)
+        # Default order is post order (-created_at): newest first
+        expected_slugs = [
+            self.unconfirmed_product.slug,
+            self.aging_product.slug,
+            self.fresh_product.slug,
+        ]
+        returned_slugs = [r["slug"] for r in response.data["results"]]
+        self.assertEqual(returned_slugs, expected_slugs)
+
+    def test_unknown_shop_returns_404(self):
+        response = APIClient().get(self._url("missing-shop"))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_category_filter_limits_results(self):
+        response = APIClient().get(
+            self._url(), {"category": self.accessory_category.slug}
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+        returned_slugs = {r["slug"] for r in response.data["results"]}
+        self.assertEqual(
+            returned_slugs, {self.aging_product.slug, self.unconfirmed_product.slug}
+        )
+
+    def test_ordering_query_param_sorts_results(self):
+        response = APIClient().get(self._url(), {"ordering": "price"})
+
+        self.assertEqual(response.status_code, 200)
+        prices = [r["price"] for r in response.data["results"]]
+        self.assertEqual(prices, ["1500.00", "12500.00", "33000.00"])
+
+    def test_search_query_filters_results(self):
+        response = APIClient().get(self._url(), {"q": "Galaxy"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["slug"], self.fresh_product.slug)
+
+    def test_invalid_ordering_field_returns_400(self):
+        response = APIClient().get(self._url(), {"ordering": "not_a_field"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("ordering", response.data)
+
+
 class ShopProductApiTest(TestCase):
     """The merchant-facing CRUD nested under /api/v1/shops/<slug>/products/."""
 
@@ -920,17 +1044,16 @@ class VerificationRequestApiTests(TestCase):
         shop_admin = ShopAdmin(Shop, site)
         self.assertIn("is_verified", shop_admin.readonly_fields)
 
-    def test_verification_request_submitted_at_property_and_serializer_alias(self):
+    def test_verification_request_submitted_at(self):
         req = VerificationRequest.objects.create(
             shop=self.shop, supporting_detail="Doc"
         )
-        self.assertEqual(req.submitted_at, req.submited_at)
+        self.assertIsNotNone(req.submitted_at)
 
         self.client.force_authenticate(self.owner)
         res = self.client.get(f"{self.url}state/")
         self.assertIn("submitted_at", res.data)
-        self.assertIn("submited_at", res.data)
-        self.assertEqual(res.data["submitted_at"], res.data["submited_at"])
+        self.assertNotIn("submited_at", res.data)
 
     def test_admin_save_model_auto_assigns_reviewer(self):
         from django.contrib.admin.sites import site
@@ -952,3 +1075,73 @@ class VerificationRequestApiTests(TestCase):
         self.assertEqual(req.reviewer, admin_user)
         self.shop.refresh_from_db()
         self.assertTrue(self.shop.is_verified)
+
+
+class ShopDirectoryApiTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.owner1 = User.objects.create_user(username="owner1", password="pw")
+        self.owner2 = User.objects.create_user(username="owner2", password="pw")
+
+        self.verified_shop = Shop.objects.create(
+            name="Alpha Store",
+            city="Bole",
+            phone="+251911111111",
+            is_verified=True,
+            owner=self.owner1,
+        )
+        self.unverified_shop = Shop.objects.create(
+            name="Beta Store",
+            city="Piassa",
+            phone="+251922222222",
+            is_verified=False,
+            owner=self.owner2,
+        )
+
+        category = Category.objects.create(name="Phones", slug="phones")
+        self.p1 = Product.objects.create(
+            shop=self.verified_shop,
+            category=category,
+            brand="Samsung",
+            name="Galaxy S24",
+            price="50000.00",
+            is_available=True,
+            last_confirmed_at=timezone.now(),
+        )
+        Product.objects.create(
+            shop=self.verified_shop,
+            category=category,
+            brand="Apple",
+            name="iPhone 15",
+            price="60000.00",
+            is_available=False,
+        )
+
+    def test_list_shops_returns_active_listings_count_and_phone(self):
+        res = self.client.get("/api/v1/shops/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 2)
+
+        alpha = next(
+            s for s in res.data["results"] if s["slug"] == self.verified_shop.slug
+        )
+        self.assertEqual(alpha["active_listings_count"], 1)
+        self.assertEqual(alpha["phone"], "+251911111111")
+        self.assertIn("created_at", alpha)
+
+    def test_filter_by_verified_only(self):
+        res = self.client.get("/api/v1/shops/?verified_only=1")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(res.data["results"][0]["slug"], self.verified_shop.slug)
+
+    def test_filter_by_city(self):
+        res = self.client.get("/api/v1/shops/?city=Bole")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["count"], 1)
+        self.assertEqual(res.data["results"][0]["slug"], self.verified_shop.slug)
+
+    def test_product_serializer_includes_shop_slug(self):
+        res = self.client.get(f"/api/v1/catalog/products/{self.p1.slug}/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["shop_slug"], self.verified_shop.slug)

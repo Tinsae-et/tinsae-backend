@@ -24,14 +24,14 @@ class ProductInline(admin.TabularInline):
 class VerificationRequestAdmin(admin.ModelAdmin):
     list_display = (
         "shop",
-        "submited_at",
+        "submitted_at",
         "reviewed_at",
         "reviewer",
         "state",
     )
     list_filter = ("state",)
     search_fields = ("shop__name",)
-    readonly_fields = ("submited_at", "reviewed_at")
+    readonly_fields = ("submitted_at", "reviewed_at")
     actions = ["approve_requests", "reject_requests"]
 
     @admin.action(description="Approve selected verification requests")
