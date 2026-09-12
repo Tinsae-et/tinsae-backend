@@ -33,6 +33,12 @@ class MetricsTests(TestCase):
             last_confirmed_at=timezone.now() - timedelta(days=days_ago),
         )
 
+    def _answer(self, shop, product, *, confirmed):
+        request = ConfirmationRequest.objects.create(
+            product=product, shop=shop, status="pending"
+        )
+        apply_confirmation(product, confirmed=confirmed, request=request)
+
     def test_fresh_percentage_covers_available_products_only(self):
         shop = self._shop("S", telegram_chat_id="1")
         self._product(shop, "a", status=ConfirmationStatus.FRESH)
@@ -98,9 +104,12 @@ class MetricsTests(TestCase):
             (silent, p2, ["expired", "expired"]),
         ]:
             for status in statuses:
-                ConfirmationRequest.objects.create(
-                    product=product, shop=shop, status=status
-                )
+                if status in {"confirmed", "sold_out"}:
+                    self._answer(shop, product, confirmed=status == "confirmed")
+                else:
+                    ConfirmationRequest.objects.create(
+                        product=product, shop=shop, status=status
+                    )
         # Pending must not drag the rate down -- it is not yet a failure.
         ConfirmationRequest.objects.create(product=p1, shop=answering, status="pending")
 
@@ -154,8 +163,14 @@ class MetricsTests(TestCase):
         shop = self._shop("S", telegram_chat_id="1")
         p1 = self._product(shop, "p1")
         self._product(shop, "p2")
+        self._product(shop, "p3")
         for status in ["confirmed", "expired", "sold_out"]:
-            ConfirmationRequest.objects.create(product=p1, shop=shop, status=status)
+            if status in {"confirmed", "sold_out"}:
+                self._answer(shop, p1, confirmed=status == "confirmed")
+            else:
+                ConfirmationRequest.objects.create(
+                    product=p1, shop=shop, status=status
+                )
 
         row = collect_health()["shops"][0]
         self.assertEqual(row["available_products"], 2)  # not 2 x 3
