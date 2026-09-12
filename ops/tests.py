@@ -168,9 +168,7 @@ class MetricsTests(TestCase):
             if status in {"confirmed", "sold_out"}:
                 self._answer(shop, p1, confirmed=status == "confirmed")
             else:
-                ConfirmationRequest.objects.create(
-                    product=p1, shop=shop, status=status
-                )
+                ConfirmationRequest.objects.create(product=p1, shop=shop, status=status)
 
         row = collect_health()["shops"][0]
         self.assertEqual(row["available_products"], 2)  # not 2 x 3
