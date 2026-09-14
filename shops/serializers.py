@@ -109,6 +109,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
     # serializer and the SQL annotation both go through. Nothing recomputes the
     # window here, and nothing should recompute it in the client either.
     freshness = serializers.ReadOnlyField()
+    shop_slug = serializers.CharField(source="shop.slug", read_only=True)
 
     class Meta:
         model = Product
@@ -125,6 +126,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "views",
             "inquiries",
             "shop",
+            "shop_slug",
             "category",
             "is_available",
             "last_confirmed_at",
