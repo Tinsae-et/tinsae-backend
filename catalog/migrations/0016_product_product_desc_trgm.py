@@ -7,13 +7,17 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0015_backfill_empty_slugs'),
-        ('shops', '0006_rename_submited_at_verificationrequest_submitted_at'),
+        ("catalog", "0015_backfill_empty_slugs"),
+        ("shops", "0006_rename_submited_at_verificationrequest_submitted_at"),
     ]
 
     operations = [
         migrations.AddIndex(
-            model_name='product',
-            index=django.contrib.postgres.indexes.GinIndex(fields=['description'], name='product_desc_trgm', opclasses=['gin_trgm_ops']),
+            model_name="product",
+            index=django.contrib.postgres.indexes.GinIndex(
+                fields=["description"],
+                name="product_desc_trgm",
+                opclasses=["gin_trgm_ops"],
+            ),
         ),
     ]

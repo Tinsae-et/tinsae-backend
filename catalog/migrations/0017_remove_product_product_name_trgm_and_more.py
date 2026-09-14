@@ -8,33 +8,49 @@ from django.db import migrations
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0016_product_product_desc_trgm'),
-        ('shops', '0006_rename_submited_at_verificationrequest_submitted_at'),
+        ("catalog", "0016_product_product_desc_trgm"),
+        ("shops", "0006_rename_submited_at_verificationrequest_submitted_at"),
     ]
 
     operations = [
         migrations.RemoveIndex(
-            model_name='product',
-            name='product_name_trgm',
+            model_name="product",
+            name="product_name_trgm",
         ),
         migrations.RemoveIndex(
-            model_name='product',
-            name='product_brand_trgm',
+            model_name="product",
+            name="product_brand_trgm",
         ),
         migrations.RemoveIndex(
-            model_name='product',
-            name='product_desc_trgm',
+            model_name="product",
+            name="product_desc_trgm",
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=django.contrib.postgres.indexes.GinIndex(django.contrib.postgres.indexes.OpClass(django.db.models.functions.text.Upper('name'), name='gin_trgm_ops'), name='product_name_upper_trgm'),
+            model_name="product",
+            index=django.contrib.postgres.indexes.GinIndex(
+                django.contrib.postgres.indexes.OpClass(
+                    django.db.models.functions.text.Upper("name"), name="gin_trgm_ops"
+                ),
+                name="product_name_upper_trgm",
+            ),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=django.contrib.postgres.indexes.GinIndex(django.contrib.postgres.indexes.OpClass(django.db.models.functions.text.Upper('brand'), name='gin_trgm_ops'), name='product_brand_upper_trgm'),
+            model_name="product",
+            index=django.contrib.postgres.indexes.GinIndex(
+                django.contrib.postgres.indexes.OpClass(
+                    django.db.models.functions.text.Upper("brand"), name="gin_trgm_ops"
+                ),
+                name="product_brand_upper_trgm",
+            ),
         ),
         migrations.AddIndex(
-            model_name='product',
-            index=django.contrib.postgres.indexes.GinIndex(django.contrib.postgres.indexes.OpClass(django.db.models.functions.text.Upper('description'), name='gin_trgm_ops'), name='product_desc_upper_trgm'),
+            model_name="product",
+            index=django.contrib.postgres.indexes.GinIndex(
+                django.contrib.postgres.indexes.OpClass(
+                    django.db.models.functions.text.Upper("description"),
+                    name="gin_trgm_ops",
+                ),
+                name="product_desc_upper_trgm",
+            ),
         ),
     ]

@@ -16,7 +16,13 @@ from django.db import transaction
 from django.utils import timezone
 from django.utils.text import slugify
 
-from catalog.models import Category, ConfirmationStatus, Product, ProductCondition, ProductStatus
+from catalog.models import (
+    Category,
+    ConfirmationStatus,
+    Product,
+    ProductCondition,
+    ProductStatus,
+)
 from shops.models import Shop
 
 User = get_user_model()
@@ -62,7 +68,6 @@ PRODUCT_TEMPLATES = [
     ("Xiaomi", "Redmi Note 13 Pro+ 5G 256GB", "phones", 42000, 51000),
     ("Google", "Pixel 8 Pro 128GB Bay Blue", "phones", 95000, 120000),
     ("Google", "Pixel 7a 128GB Charcoal", "phones", 54000, 65000),
-
     # Laptops
     ("Apple", "MacBook Pro 14 M3 16GB 512GB Space Black", "laptops", 210000, 260000),
     ("Apple", "MacBook Air 13 M2 8GB 256GB Midnight", "laptops", 115000, 140000),
@@ -76,7 +81,6 @@ PRODUCT_TEMPLATES = [
     ("Lenovo", "ThinkPad T14 Gen 3 Core i7 16GB", "laptops", 78000, 96000),
     ("Lenovo", "Legion 5 Pro RTX 3070 16GB 1TB", "laptops", 120000, 148000),
     ("Asus", "ZenBook 14 OLED Core i7 16GB 1TB", "laptops", 95000, 118000),
-
     # Audio & Accessories
     ("Apple", "AirPods Pro 2nd Gen USB-C MagSafe", "audio", 26000, 32000),
     ("Apple", "AirPods Max Space Gray with Smart Case", "audio", 62000, 75000),
@@ -86,14 +90,12 @@ PRODUCT_TEMPLATES = [
     ("JBL", "Flip 6 Portable Waterproof Speaker", "audio", 14000, 18000),
     ("Anker", "Soundcore Motion+ 30W Hi-Res Bluetooth", "audio", 11000, 15000),
     ("Anker", "PowerCore 26800mAh Fast Charging Bank", "accessories", 6500, 9000),
-
     # Tablets & Cameras
     ("Apple", "iPad Pro 12.9 M2 128GB Wi-Fi Space Gray", "tablets", 130000, 165000),
     ("Apple", "iPad Air 5th Gen M1 64GB Starlight", "tablets", 72000, 88000),
     ("Samsung", "Galaxy Tab S9 128GB with S Pen", "tablets", 82000, 98000),
     ("Sony", "Alpha A7 IV Mirrorless Camera Body", "cameras", 220000, 270000),
     ("Canon", "EOS R6 Mark II Mirrorless with 24-105mm", "cameras", 245000, 310000),
-
     # Vehicles & Auto
     ("Toyota", "Vitz 2018 Compact Automatic Low Mileage", "vehicles", 1850000, 2200000),
     ("Toyota", "Yaris 2020 Sedan Excellent Condition", "vehicles", 2200000, 2600000),
@@ -131,13 +133,19 @@ class Command(BaseCommand):
         shop_count = options["shops"]
         clean = options["clean"]
 
-        self.stdout.write(f"Starting performance data generation (Target: {target_count:,} products)...")
+        self.stdout.write(
+            f"Starting performance data generation (Target: {target_count:,} products)..."
+        )
 
         if clean:
             self.stdout.write("Cleaning existing performance test data...")
-            deleted_products, _ = Product.objects.filter(slug__contains="-perf-").delete()
+            deleted_products, _ = Product.objects.filter(
+                slug__contains="-perf-"
+            ).delete()
             deleted_shops, _ = Shop.objects.filter(slug__contains="-perf-").delete()
-            self.stdout.write(f"Removed {deleted_products} products and {deleted_shops} shops.")
+            self.stdout.write(
+                f"Removed {deleted_products} products and {deleted_shops} shops."
+            )
 
         # 1. Ensure Categories exist
         category_map = {}
@@ -195,7 +203,9 @@ class Command(BaseCommand):
         total_created = 0
         batch = []
 
-        self.stdout.write(f"Generating {target_count:,} products in batches of {batch_size}...")
+        self.stdout.write(
+            f"Generating {target_count:,} products in batches of {batch_size}..."
+        )
 
         for i in range(1, target_count + 1):
             tpl = random.choice(PRODUCT_TEMPLATES)
@@ -224,13 +234,25 @@ class Command(BaseCommand):
                 conf_status = ConfirmationStatus.UNCONFIRMED
 
             # Slight variations in names to test fuzzy matching & ranking
-            variants = ["", " - New Edition", " (Original)", " - Brand New in Box", " Limited Stock"]
+            variants = [
+                "",
+                " - New Edition",
+                " (Original)",
+                " - Brand New in Box",
+                " Limited Stock",
+            ]
             suffix = random.choice(variants)
             name = f"{base_name}{suffix}"
-            slug = f"{slugify(brand)}-{slugify(base_name)[:30]}-perf-{i}-{uuid4().hex[:6]}"
+            slug = (
+                f"{slugify(brand)}-{slugify(base_name)[:30]}-perf-{i}-{uuid4().hex[:6]}"
+            )
 
             condition = random.choices(
-                [ProductCondition.NEW, ProductCondition.USED, ProductCondition.REFURBISHED],
+                [
+                    ProductCondition.NEW,
+                    ProductCondition.USED,
+                    ProductCondition.REFURBISHED,
+                ],
                 weights=[60, 30, 10],
             )[0]
 
@@ -259,7 +281,9 @@ class Command(BaseCommand):
                 Product.objects.bulk_create(batch)
                 total_created += len(batch)
                 batch = []
-                self.stdout.write(f"Inserted {total_created:,} / {target_count:,} products...")
+                self.stdout.write(
+                    f"Inserted {total_created:,} / {target_count:,} products..."
+                )
 
         if batch:
             Product.objects.bulk_create(batch)
