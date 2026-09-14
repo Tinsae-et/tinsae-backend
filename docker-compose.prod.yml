@@ -1,0 +1,104 @@
+# Production Stack for Tinsae Marketplace
+# Sized specifically for Hetzner CPX31 (4 vCPU, 8 GB RAM)
+# Employs Predictable Two-Tier Resource Budgeting (Guaranteed Minimums + Safety Ceilings)
+
+services:
+  # Internal Database — Isolated to internal network (No public host port!)
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-tinsae}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tinsae}
+      POSTGRES_DB: ${POSTGRES_DB:-tinsae}
+    command: >
+      postgres
+        -c shared_buffers=2GB
+        -c effective_cache_size=4GB
+        -c work_mem=16MB
+        -c maintenance_work_mem=256MB
+        -c max_connections=200
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        reservations:
+          memory: 2048M   # Guaranteed minimum RAM
+        limits:
+          memory: 3500M   # Safety ceiling (protects against OOM)
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tinsae} -d ${POSTGRES_DB:-tinsae}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Backend App Server (Gunicorn Multi-Worker)
+  backend:
+    build:
+      context: .
+      target: prod       # Immutable production image (code baked in, no volume mount)
+    command: >
+      sh -c "python manage.py collectstatic --noinput &&
+             python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application
+               --bind 0.0.0.0:8000
+               --workers 5
+               --threads 2
+               --worker-class gthread
+               --max-requests 1000
+               --max-requests-jitter 100
+               --timeout 30
+               --access-logfile -
+               --error-logfile -"
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.prod
+      - CONN_MAX_AGE=60
+    volumes:
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+    deploy:
+      resources:
+        reservations:
+          memory: 1024M   # Guaranteed minimum RAM
+        limits:
+          memory: 3000M   # Safety ceiling
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Nginx Reverse Proxy — Only service with exposed public ports
+  web:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./ops/nginx/prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - staticfiles:/var/www/static:ro
+      - media:/var/www/media:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  staticfiles:
+  media:
