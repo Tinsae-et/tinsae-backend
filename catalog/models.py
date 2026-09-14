@@ -3,11 +3,11 @@ from uuid import uuid4
 
 from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex, OpClass
-from django.db.models.functions import Upper
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import FileExtensionValidator
 from django.db import models
+from django.db.models.functions import Upper
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 from django.utils import timezone
