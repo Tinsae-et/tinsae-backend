@@ -2,7 +2,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from django.conf import settings
-from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.indexes import GinIndex, OpClass
+from django.db.models.functions import Upper
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import UploadedFile
 from django.core.validators import FileExtensionValidator
@@ -209,10 +210,16 @@ class Product(BaseModel):
             # both, which is the main argument for keeping search on trigram
             # rather than moving to tsvector -- see docs/decisions.md, D8.
             GinIndex(
-                fields=["name"], name="product_name_trgm", opclasses=["gin_trgm_ops"]
+                OpClass(Upper("name"), name="gin_trgm_ops"),
+                name="product_name_upper_trgm",
             ),
             GinIndex(
-                fields=["brand"], name="product_brand_trgm", opclasses=["gin_trgm_ops"]
+                OpClass(Upper("brand"), name="gin_trgm_ops"),
+                name="product_brand_upper_trgm",
+            ),
+            GinIndex(
+                OpClass(Upper("description"), name="gin_trgm_ops"),
+                name="product_desc_upper_trgm",
             ),
         ]
 
