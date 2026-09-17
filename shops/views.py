@@ -124,14 +124,16 @@ class ShopProductViewSet(viewsets.ModelViewSet):
         )
 
     def get_queryset(self):
-        return Product.objects.filter(shop=self.get_shop()).select_related(
-            "category", "shop"
-        ).prefetch_related(
-            Prefetch(
-                "product_image",
-                queryset=ProductImage.objects.order_by(
-                    "-is_primary", "display_order"
-                ),
+        return (
+            Product.objects.filter(shop=self.get_shop())
+            .select_related("category", "shop")
+            .prefetch_related(
+                Prefetch(
+                    "product_image",
+                    queryset=ProductImage.objects.order_by(
+                        "-is_primary", "display_order"
+                    ),
+                )
             )
         )
 

@@ -113,7 +113,6 @@ class ShopProductSerializer(serializers.ModelSerializer):
     shop_slug = serializers.CharField(source="shop.slug", read_only=True)
     images = serializers.SerializerMethodField()
 
-
     class Meta:
         model = Product
         fields = [
@@ -156,8 +155,9 @@ class ShopProductSerializer(serializers.ModelSerializer):
 
     def get_images(self, obj):
         return ProductImageSerializer(
-                obj.product_image.all(), many=True, context=self.context
-            ).data
+            obj.product_image.all(), many=True, context=self.context
+        ).data
+
 
 class ShopProductImageSerializer(serializers.ModelSerializer):
     """Images for one of the merchant's own products.
