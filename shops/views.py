@@ -1,10 +1,14 @@
+import logging
+
 from django.db.models import Count, Prefetch, Q
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import generics, mixins, permissions, serializers, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
+from catalog.freshness import FRESH_WINDOW
 from catalog.models import Product, ProductImage, ProductStatus
 from catalog.serializers import ProductSerializer
 from catalog.services import (
@@ -13,7 +17,10 @@ from catalog.services import (
     pause_listing,
     resume_listing,
 )
-from catalog.views import ORDERING_FIELDS
+from catalog.views import ORDERING_FIELDS, TRUTHY
+
+logger = logging.getLogger(__name__)
+FALSY = {"0", "false", "no", "off"}
 
 from .models import Shop, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
@@ -124,7 +131,7 @@ class ShopProductViewSet(viewsets.ModelViewSet):
         )
 
     def get_queryset(self):
-        return (
+        qs = (
             Product.objects.filter(shop=self.get_shop())
             .select_related("category", "shop")
             .prefetch_related(
@@ -136,6 +143,60 @@ class ShopProductViewSet(viewsets.ModelViewSet):
                 )
             )
         )
+
+        if query := (self.request.query_params.get("q") or "").strip():
+            qs = apply_search(qs, query)
+
+        if category := self.request.query_params.get("category"):
+            qs = qs.filter(category__slug=category)
+
+        status_param = (self.request.query_params.get("status") or "").strip().lower()
+        if status_param == "live":
+            qs = qs.filter(status=ProductStatus.LIVE, is_available=True)
+        elif status_param == "sold":
+            qs = qs.filter(
+                Q(status=ProductStatus.SOLD)
+                | (Q(is_available=False) & ~Q(status=ProductStatus.DRAFT))
+            )
+        elif status_param == "draft":
+            qs = qs.filter(status=ProductStatus.DRAFT)
+        elif status_param == "paused":
+            qs = qs.filter(status=ProductStatus.LIVE, is_available=False)
+        elif status_param:
+            qs = qs.filter(status=status_param)
+
+        if "freshness" in self.request.query_params:
+            logger.warning(
+                "Deprecated query parameter ?freshness= used on shop product list; "
+                "use ?fresh= instead. Remove after 2026-12-31."
+            )
+
+        fresh_param = (self.request.query_params.get("fresh") or "").strip().lower()
+        if fresh_param:
+            if fresh_param in TRUTHY or fresh_param == "fresh":
+                qs = qs.fresh()
+            elif fresh_param in FALSY or fresh_param in (
+                "false",
+                "needs_confirming",
+                "needs-attention",
+                "stale",
+                "expired",
+            ):
+                cutoff = timezone.now() - FRESH_WINDOW
+                qs = qs.needing_confirmation(cutoff)
+
+        ordering = self.request.query_params.get("ordering")
+        if ordering:
+            field = ordering[1:] if ordering.startswith("-") else ordering
+            if field not in ORDERING_FIELDS:
+                raise ValidationError(
+                    {"ordering": f"Invalid ordering field: {ordering}."}
+                )
+            return qs.order_by(ordering)
+
+        if query:
+            return qs
+        return qs.order_by("-created_at")
 
     def perform_create(self, serializer):
         product = serializer.save(shop=self.get_shop())

@@ -14,7 +14,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.freshness import Freshness
-from catalog.models import Category, ConfirmationStatus, Product
+from catalog.models import Category, ConfirmationStatus, Product, ProductStatus
 from catalog.services import apply_confirmation
 from users.models import User
 
@@ -220,3 +220,96 @@ class ShopProductTransitionTests(TestCase):
         product = self._product("one")
         response = self._confirm_all([product.slug, product.slug])
         self.assertEqual(response.data["confirmed"], [product.slug])
+
+    # --- query filters & sorting ------------------------------------------
+
+    def test_filter_fresh_true(self):
+        self._product("fresh-one", last_confirmed_at=timezone.now())
+        self._product("stale-one", last_confirmed_at=timezone.now() - STALE_AGE)
+
+        response = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?fresh=true"
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [p["name"] for p in response.data["results"]]
+        self.assertIn("fresh-one", names)
+        self.assertNotIn("stale-one", names)
+
+    def test_filter_fresh_false_needs_confirming(self):
+        self._product("fresh-one", last_confirmed_at=timezone.now())
+        self._product("stale-one", last_confirmed_at=timezone.now() - STALE_AGE)
+        self._product("never-confirmed", last_confirmed_at=None)
+
+        for param in ("false", "needs_confirming", "needs-attention"):
+            with self.subTest(param=param):
+                response = self.client.get(
+                    f"/api/v1/shops/{self.shop.slug}/products/?fresh={param}"
+                )
+                self.assertEqual(response.status_code, 200)
+                names = [p["name"] for p in response.data["results"]]
+                self.assertNotIn("fresh-one", names)
+                self.assertIn("stale-one", names)
+                self.assertIn("never-confirmed", names)
+
+    def test_sort_by_last_confirmed_at(self):
+        p1 = self._product("older", last_confirmed_at=timezone.now() - timedelta(days=5))
+        p2 = self._product("newer", last_confirmed_at=timezone.now() - timedelta(days=1))
+
+        response = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?ordering=last_confirmed_at"
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [p["name"] for p in response.data["results"]]
+        self.assertEqual(names, ["older", "newer"])
+
+        response_desc = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?ordering=-last_confirmed_at"
+        )
+        self.assertEqual(response_desc.status_code, 200)
+        names_desc = [p["name"] for p in response_desc.data["results"]]
+        self.assertEqual(names_desc, ["newer", "older"])
+
+    def test_filter_by_category(self):
+        other_cat = Category.objects.create(name="Laptops", slug="laptops")
+        self._product("phone-item", category=self.category)
+        self._product("laptop-item", category=other_cat)
+
+        response = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?category=laptops"
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [p["name"] for p in response.data["results"]]
+        self.assertEqual(names, ["laptop-item"])
+
+    def test_filter_by_status(self):
+        self._product("live-item", status=ProductStatus.LIVE, is_available=True)
+        self._product("sold-item", status=ProductStatus.SOLD, is_available=False)
+        self._product("draft-item", status=ProductStatus.DRAFT, is_available=True)
+
+        res_live = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?status=live"
+        )
+        self.assertEqual([p["name"] for p in res_live.data["results"]], ["live-item"])
+
+        res_sold = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?status=sold"
+        )
+        self.assertEqual([p["name"] for p in res_sold.data["results"]], ["sold-item"])
+
+        res_draft = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?status=draft"
+        )
+        self.assertEqual([p["name"] for p in res_draft.data["results"]], ["draft-item"])
+
+    def test_search_by_query(self):
+        self._product("iPhone 14 Pro", description="Great phone")
+        self._product("Samsung Galaxy", description="Android flagship")
+
+        response = self.client.get(
+            f"/api/v1/shops/{self.shop.slug}/products/?q=iPhone"
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [p["name"] for p in response.data["results"]]
+        self.assertIn("iPhone 14 Pro", names)
+        self.assertNotIn("Samsung Galaxy", names)
+
