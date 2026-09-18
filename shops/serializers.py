@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from catalog.models import Category, Product, ProductImage
+from catalog.serializers import ProductImageSerializer
 
 from .models import Shop, VerificationRequest
 
@@ -109,6 +110,8 @@ class ShopProductSerializer(serializers.ModelSerializer):
     # serializer and the SQL annotation both go through. Nothing recomputes the
     # window here, and nothing should recompute it in the client either.
     freshness = serializers.ReadOnlyField()
+    shop_slug = serializers.CharField(source="shop.slug", read_only=True)
+    images = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
@@ -125,6 +128,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "views",
             "inquiries",
             "shop",
+            "shop_slug",
             "category",
             "is_available",
             "last_confirmed_at",
@@ -132,6 +136,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "freshness",
             "slug",
             "specs",
+            "images",
         ]
         # `last_confirmed_at` and `confirmation_status` are readable but never
         # writable. `catalog.services.apply_confirmation` is the single writer of
@@ -147,6 +152,11 @@ class ShopProductSerializer(serializers.ModelSerializer):
             "views",
             "inquiries",
         ]
+
+    def get_images(self, obj):
+        return ProductImageSerializer(
+            obj.product_image.all(), many=True, context=self.context
+        ).data
 
 
 class ShopProductImageSerializer(serializers.ModelSerializer):
