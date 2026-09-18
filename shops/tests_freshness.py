@@ -252,8 +252,8 @@ class ShopProductTransitionTests(TestCase):
                 self.assertIn("never-confirmed", names)
 
     def test_sort_by_last_confirmed_at(self):
-        p1 = self._product("older", last_confirmed_at=timezone.now() - timedelta(days=5))
-        p2 = self._product("newer", last_confirmed_at=timezone.now() - timedelta(days=1))
+        self._product("older", last_confirmed_at=timezone.now() - timedelta(days=5))
+        self._product("newer", last_confirmed_at=timezone.now() - timedelta(days=1))
 
         response = self.client.get(
             f"/api/v1/shops/{self.shop.slug}/products/?ordering=last_confirmed_at"
@@ -305,11 +305,8 @@ class ShopProductTransitionTests(TestCase):
         self._product("iPhone 14 Pro", description="Great phone")
         self._product("Samsung Galaxy", description="Android flagship")
 
-        response = self.client.get(
-            f"/api/v1/shops/{self.shop.slug}/products/?q=iPhone"
-        )
+        response = self.client.get(f"/api/v1/shops/{self.shop.slug}/products/?q=iPhone")
         self.assertEqual(response.status_code, 200)
         names = [p["name"] for p in response.data["results"]]
         self.assertIn("iPhone 14 Pro", names)
         self.assertNotIn("Samsung Galaxy", names)
-

@@ -19,9 +19,6 @@ from catalog.services import (
 )
 from catalog.views import ORDERING_FIELDS, TRUTHY
 
-logger = logging.getLogger(__name__)
-FALSY = {"0", "false", "no", "off"}
-
 from .models import Shop, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
 from .serializers import (
@@ -32,6 +29,10 @@ from .serializers import (
     ShopSerializer,
     VerificationRequestSerializer,
 )
+
+logger = logging.getLogger(__name__)
+FALSY = {"0", "false", "no", "off"}
+
 
 # A ceiling on "confirm all". Not a performance limit -- it is what keeps one
 # request from being a whole-catalogue rubber stamp. See CONFIRM_ALL_NOTE in the
