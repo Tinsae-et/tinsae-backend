@@ -1,0 +1,47 @@
+# Full 8-Core Unconstrained Performance Benchmark Compose Stack
+# Unleashes the host machine's full 8 cores (Intel i7 11th Gen)
+# Runs Gunicorn with 9 worker processes (1 per core + 1) to saturate all 8 CPU cores.
+
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tinsae
+      POSTGRES_PASSWORD: tinsae
+      POSTGRES_DB: tinsae
+    ports: ["5434:5432"]
+    command: "postgres -c max_connections=400 -c shared_buffers=2GB -c max_parallel_workers=8 -c max_parallel_workers_per_gather=4"
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    deploy:
+      resources:
+        limits:
+          cpus: '8.0'
+          memory: 8192M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tinsae"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      target: dev
+    command: sh -c "python manage.py migrate && gunicorn config.wsgi:application --bind 0.0.0.0:8000 --workers 9 --threads 2 --worker-class gthread --max-requests 10000 --max-requests-jitter 500 --timeout 30"
+    volumes: [".:/app"]
+    ports: ["8000:8000"]
+    env_file: [.env]
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.perf
+      - CONN_MAX_AGE=60
+    deploy:
+      resources:
+        limits:
+          cpus: '8.0'
+          memory: 8192M
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

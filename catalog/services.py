@@ -32,7 +32,7 @@ from django.utils import timezone
 
 from bot.models import ConfirmationRequest
 
-from .models import ConfirmationStatus, Product, ProductImage, SearchLog
+from .models import Category, ConfirmationStatus, Product, ProductImage, SearchLog
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +160,7 @@ SYNONYMS = {
     "computer": ["laptop", "notebook"],
 }
 
-SEARCH_FIELDS = ("name", "brand", "category__name", "description")
+SEARCH_FIELDS = ("name", "brand", "description")
 
 # A buyer's real query is a handful of words. Past that the clause count grows
 # linearly while the result set can only shrink, so the extra terms buy nothing
@@ -183,19 +183,21 @@ def expand_term(word: str) -> set[str]:
 def build_search_filter(query: str) -> Q:
     """AND across the words typed, OR within one word's synonyms and fields.
 
-    The direction matters and the previous version had it backwards: it ORed
-    every term together, so each extra word a buyer typed *widened* the result
-    set. "samsung laptop" returned every Samsung phone and every laptop of any
-    brand, and the more specific the buyer was the worse the results got.
-
-    ANDing the words makes each one a constraint, which is what a buyer means by
-    typing it. Synonyms still OR, because "phone" and "mobile" are one
-    constraint expressed two ways, not two constraints.
+    Matches product title, brand, and description directly on `Product`. If a term
+    matches a category name, products in that category are included via `category_id`
+    without requiring a slow cross-table join filter.
     """
     combined = Q()
     for word in query.lower().split()[:MAX_SEARCH_TERMS]:
         per_word = Q()
         for variant in expand_term(word):
+            cat_ids = list(
+                Category.objects.filter(name__icontains=variant).values_list(
+                    "id", flat=True
+                )
+            )
+            if cat_ids:
+                per_word |= Q(category_id__in=cat_ids)
             for field in SEARCH_FIELDS:
                 per_word |= Q(**{f"{field}__icontains": variant})
         combined &= per_word
