@@ -17,6 +17,7 @@ from shops.models import Shop
 from .models import Category, ConfirmationStatus, Product, ProductImage
 from .serializers import CategorySerializer, ProductSerializer
 from .services import apply_search, get_product_suggestions, log_search
+from .specs import category_schema
 
 ORDERING_FIELDS = {
     "name",
@@ -70,6 +71,28 @@ def price_param(params, name):
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+
+
+class CategorySchemaView(views.APIView):
+    """The spec schema a category's listings follow -- the listing form's source.
+
+    404 when the category is unknown or has no product type yet; the form then
+    shows no spec fields rather than guessing. Public: the schema is the same
+    for every merchant, and buyer pages will read labels from it too.
+    """
+
+    permission_classes = [permissions.AllowAny]
+
+    def get(self, request, slug):
+        category = get_object_or_404(
+            Category.objects.select_related("product_type"), slug=slug
+        )
+        schema = category_schema(category)
+        if schema is None:
+            return Response(
+                {"detail": "This category has no spec schema yet."}, status=404
+            )
+        return Response(schema)
 
 
 class ProductViewSet(viewsets.ReadOnlyModelViewSet):

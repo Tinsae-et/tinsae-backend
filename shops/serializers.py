@@ -1,7 +1,14 @@
 from rest_framework import serializers
 
-from catalog.models import Category, Product, ProductImage
+from catalog.models import (
+    Category,
+    Product,
+    ProductCondition,
+    ProductImage,
+    ProductStatus,
+)
 from catalog.serializers import ProductImageSerializer
+from catalog.specs import category_schema, validate_specs
 
 from .models import Shop, VerificationRequest
 
@@ -157,6 +164,46 @@ class ShopProductSerializer(serializers.ModelSerializer):
         return ProductImageSerializer(
             obj.product_image.all(), many=True, context=self.context
         ).data
+
+    def validate(self, attrs):
+        """Hold `specs` to the category's schema.
+
+        Runs whenever a write touches specs, category or condition -- the three
+        inputs the rules read -- so a PATCH of the price alone is not blocked by
+        an older listing's incomplete specs. Categories without a product type
+        keep accepting free-form specs. Drafts are checked for valid values but
+        not for completeness, so a half-finished listing can still be saved.
+        """
+        attrs = super().validate(attrs)
+        if not {"specs", "category", "condition"} & attrs.keys():
+            return attrs
+
+        instance = self.instance
+        category = attrs.get("category") or (instance.category if instance else None)
+        schema = category_schema(category)
+        if schema is None:
+            return attrs
+
+        specs = attrs.get("specs", instance.specs if instance else {})
+        condition = attrs.get(
+            "condition", instance.condition if instance else ProductCondition.NEW
+        )
+        status = attrs.get("status", instance.status if instance else None)
+        # Legacy leniency only applies within the listing's own category; a
+        # move to another category starts from that category's rules.
+        existing = (
+            instance.specs if instance and instance.category_id == category.id else {}
+        )
+        errors = validate_specs(
+            schema,
+            specs if specs is not None else {},
+            condition=condition,
+            enforce_required=status != ProductStatus.DRAFT,
+            existing=existing or {},
+        )
+        if errors:
+            raise serializers.ValidationError({"specs": errors})
+        return attrs
 
 
 class ShopProductImageSerializer(serializers.ModelSerializer):

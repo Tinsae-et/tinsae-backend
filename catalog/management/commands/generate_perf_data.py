@@ -22,6 +22,7 @@ from catalog.models import (
     ProductCondition,
     ProductStatus,
 )
+from catalog.seed_specs import ensure_taxonomy, seed_specs
 from shops.models import Shop
 
 User = get_user_model()
@@ -33,8 +34,6 @@ CATEGORIES = [
     {"slug": "tablets", "name": "Tablets", "display_order": 3},
     {"slug": "cameras", "name": "Cameras", "display_order": 4},
     {"slug": "accessories", "name": "Accessories", "display_order": 5},
-    {"slug": "vehicles", "name": "Vehicles & Auto", "display_order": 6},
-    {"slug": "electronics", "name": "Consumer Electronics", "display_order": 7},
 ]
 
 CITIES = [
@@ -95,13 +94,6 @@ PRODUCT_TEMPLATES = [
     ("Samsung", "Galaxy Tab S9 128GB with S Pen", "tablets", 82000, 98000),
     ("Sony", "Alpha A7 IV Mirrorless Camera Body", "cameras", 220000, 270000),
     ("Canon", "EOS R6 Mark II Mirrorless with 24-105mm", "cameras", 245000, 310000),
-    # Vehicles & Auto
-    ("Toyota", "Vitz 2018 Compact Automatic Low Mileage", "vehicles", 1850000, 2200000),
-    ("Toyota", "Yaris 2020 Sedan Excellent Condition", "vehicles", 2200000, 2600000),
-    ("Toyota", "Corolla Executive 2021 Automatic", "vehicles", 3200000, 3700000),
-    ("Toyota", "RAV4 Hybrid 2022 Full Option Bole", "vehicles", 5500000, 6400000),
-    ("Hyundai", "Elantra 2019 Clean Title Addis", "vehicles", 2400000, 2900000),
-    ("Suzuki", "Swift 2022 DualJet Fuel Efficient", "vehicles", 1750000, 2100000),
 ]
 
 
@@ -158,6 +150,11 @@ class Command(BaseCommand):
             )
             category_map[cat["slug"]] = obj
 
+        # Specs follow the category schemas, like a merchant's would.
+        ensure_taxonomy()
+        for obj in category_map.values():
+            obj.refresh_from_db(fields=["product_type"])
+
         # 2. Ensure Shops exist
         self.stdout.write(f"Ensuring {shop_count} benchmark shops...")
         existing_shops = list(Shop.objects.filter(slug__contains="-perf-"))
@@ -181,9 +178,9 @@ class Command(BaseCommand):
                 city = random.choice(CITIES)
                 new_shops.append(
                     Shop(
-                        name=f"{city} Electronics & Motors #{i}",
+                        name=f"{city} Electronics #{i}",
                         slug=f"shop-perf-{i}-{uuid4().hex[:6]}",
-                        description=f"Authorized electronics and automotive dealer in {city}.",
+                        description=f"Authorized electronics dealer in {city}.",
                         phone=f"+251911{i:06d}"[:13],
                         city=city,
                         is_verified=(random.random() < 0.35),
@@ -273,6 +270,13 @@ class Command(BaseCommand):
                     views=random.randint(0, 500),
                     inquiries=random.randint(0, 50),
                     is_available=True,
+                    specs=seed_specs(
+                        category,
+                        {},
+                        text=f"{brand} {name}",
+                        condition=condition,
+                        seed=slug,
+                    ),
                 )
             )
 

@@ -83,6 +83,121 @@ class ProductStatus(models.TextChoices):
     SOLD = "sold", "Sold"
 
 
+class AttributeType(models.TextChoices):
+    ENUM = "enum", "Enum"
+    TEXT = "text", "Text"
+    NUMBER = "number", "Number"
+
+
+class Attribute(BaseModel):
+    """One spec, defined once and reused by every product type that needs it.
+
+    `color` is the same attribute on a phone and on a speaker, so a buyer filter
+    or a compare row means the same thing everywhere. `key` is what is stored in
+    `Product.specs`; it is never renamed, because every listing already holding
+    it would silently lose the value. Definitions live in `catalog/taxonomy/`
+    and reach the database through `manage.py sync_taxonomy`.
+    """
+
+    key = models.SlugField(max_length=50, unique=True)
+    label = models.CharField(max_length=80)
+    type = models.CharField(max_length=10, choices=AttributeType.choices)
+    unit = models.CharField(max_length=10, blank=True)
+    min_value = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+    max_value = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+
+    class Meta(BaseModel.Meta):
+        ordering = ["key"]
+
+    def __str__(self) -> str:
+        return self.key
+
+
+class AttributeOption(BaseModel):
+    """An allowed value of an enum attribute: stored as `value`, shown as `label`.
+
+    Retired options are deactivated rather than deleted -- older listings may
+    still hold them, and deleting would turn a valid listing invalid.
+    """
+
+    attribute = models.ForeignKey(
+        Attribute, related_name="options", on_delete=models.CASCADE
+    )
+    value = models.SlugField(max_length=50)
+    label = models.CharField(max_length=80)
+    display_order = models.PositiveIntegerField(default=0)
+    is_active = models.BooleanField(default=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["attribute", "display_order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["attribute", "value"], name="unique_option_per_attribute"
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.attribute.key}={self.value}"
+
+
+class ProductType(BaseModel):
+    """The spec set a category's listings must carry (smartphone, laptop...)."""
+
+    key = models.SlugField(max_length=50, unique=True)
+    label = models.CharField(max_length=80)
+    # The brands the listing form offers. A list for now; a Brand model can
+    # replace it once brands need their own pages or aliases.
+    brands = models.JSONField(default=list, blank=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["key"]
+
+    def __str__(self) -> str:
+        return self.label
+
+
+class ProductTypeAttribute(BaseModel):
+    """How one product type uses one attribute: rules, order and overrides.
+
+    `options` narrows the attribute's values for this type (a phone offers
+    64GB-1TB storage, a laptop 256GB-2TB); empty means every active option.
+    `required_if` / `show_if` map other keys -- specs, or `condition` -- to the
+    values that trigger them, e.g. {"condition": ["used"]}.
+    """
+
+    product_type = models.ForeignKey(
+        ProductType, related_name="fields", on_delete=models.CASCADE
+    )
+    attribute = models.ForeignKey(
+        Attribute, related_name="product_types", on_delete=models.PROTECT
+    )
+    label = models.CharField(max_length=80, blank=True)
+    required = models.BooleanField(default=False)
+    required_if = models.JSONField(null=True, blank=True)
+    show_if = models.JSONField(null=True, blank=True)
+    options = models.JSONField(default=list, blank=True)
+    control = models.CharField(max_length=10, blank=True)
+    placeholder = models.CharField(max_length=80, blank=True)
+    hint = models.CharField(max_length=160, blank=True)
+    display_order = models.PositiveIntegerField(default=0)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["product_type", "display_order"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product_type", "attribute"],
+                name="unique_attribute_per_product_type",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.product_type.key}.{self.attribute.key}"
+
+
 class Category(BaseModel):
     name = models.CharField(max_length=100)
     slug = models.SlugField(unique=True)
@@ -90,6 +205,15 @@ class Category(BaseModel):
         "self", null=True, blank=True, related_name="children", on_delete=models.PROTECT
     )
     display_order = models.PositiveIntegerField(default=0)
+    # Decides the listing form and the spec validation for this category. A
+    # category without one takes listings with free-form specs, as before.
+    product_type = models.ForeignKey(
+        ProductType,
+        null=True,
+        blank=True,
+        related_name="categories",
+        on_delete=models.PROTECT,
+    )
 
     class Meta(BaseModel.Meta):
         ordering = ["display_order", "name"]
@@ -283,8 +407,14 @@ class ProductImage(BaseModel):
 
 @receiver(post_delete, sender=ProductImage)
 def delete_image_file(sender, instance, **kwargs):
-    if instance.image:
-        instance.image.delete(save=False)
+    # Seeding reuses one file across many rows, so a file is removed only when
+    # no remaining image still points at it -- otherwise deleting one listing
+    # would break the photos of every other listing sharing that file.
+    if not instance.image:
+        return
+    if ProductImage.objects.filter(image=instance.image.name).exists():
+        return
+    instance.image.delete(save=False)
 
 
 class SearchLog(BaseModel):

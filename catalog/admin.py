@@ -1,13 +1,96 @@
 from django.contrib import admin
 
-from .models import Category, Product, ProductImage, SearchLog
+from .models import (
+    Attribute,
+    AttributeOption,
+    Category,
+    Product,
+    ProductImage,
+    ProductType,
+    ProductTypeAttribute,
+    SearchLog,
+)
 
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ["name", "parent", "display_order", "slug"]
+    list_display = ["name", "parent", "product_type", "display_order", "slug"]
+    list_filter = ["product_type"]
     search_fields = ["name"]
     prepopulated_fields = {"slug": ["name"]}
+    # Linked by `manage.py sync_taxonomy`, like the rest of the taxonomy.
+    readonly_fields = ["product_type"]
+
+
+class TaxonomyReadOnlyAdmin(admin.ModelAdmin):
+    """Managed in code: catalog/taxonomy/, applied by `manage.py sync_taxonomy`.
+
+    Editing here would be undone by the next sync and would skip review, so the
+    admin is for looking, not changing.
+    """
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+class AttributeOptionInline(admin.TabularInline):
+    model = AttributeOption
+    fields = ["value", "label", "display_order", "is_active"]
+    extra = 0
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(Attribute)
+class AttributeAdmin(TaxonomyReadOnlyAdmin):
+    list_display = ["key", "label", "type", "unit", "min_value", "max_value"]
+    list_filter = ["type"]
+    search_fields = ["key", "label"]
+    inlines = [AttributeOptionInline]
+
+
+class ProductTypeAttributeInline(admin.TabularInline):
+    model = ProductTypeAttribute
+    fields = [
+        "display_order",
+        "attribute",
+        "label",
+        "required",
+        "required_if",
+        "show_if",
+        "options",
+        "control",
+    ]
+    extra = 0
+
+    def has_add_permission(self, request, obj=None):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(ProductType)
+class ProductTypeAdmin(TaxonomyReadOnlyAdmin):
+    list_display = ["key", "label"]
+    search_fields = ["key", "label"]
+    inlines = [ProductTypeAttributeInline]
 
 
 class ProductImageInline(admin.TabularInline):

@@ -18,6 +18,7 @@ from catalog.models import (
     ProductImage,
     ProductStatus,
 )
+from catalog.seed_specs import ensure_taxonomy, seed_specs
 from shops.models import Shop
 from users.models import User
 
@@ -2837,6 +2838,10 @@ class Command(BaseCommand):
             )
             category_cache[cslug] = cat
 
+        ensure_taxonomy()
+        for cat in category_cache.values():
+            cat.refresh_from_db(fields=["product_type"])
+
         total_created = 0
         total_updated = 0
         total_images = 0
@@ -2966,7 +2971,13 @@ class Command(BaseCommand):
                         "stock": (idx % 8) + 1,
                         "views": 20 + ((idx * 37) % 450),
                         "inquiries": (idx * 5) % 28,
-                        "specs": full_specs,
+                        "specs": seed_specs(
+                            category,
+                            full_specs,
+                            text=f"{brand} {item_name} {color}",
+                            condition=condition,
+                            seed=product_slug,
+                        ),
                         "last_confirmed_at": last_confirmed_at,
                         # Deliberately not writing confirmation_status. It is
                         # the sweep's output, and `last_confirmed_at` above is
@@ -3062,11 +3073,19 @@ class Command(BaseCommand):
         updated = 0
         img_count = 0
 
+        ensure_taxonomy()
         for data in SAMPLE_PRODUCTS:
             shop = shop_objs[data["shop"]]
             category = Category.objects.get(slug=data["category_slug"])
             slug = f"{shop.slug}-{data['brand']}-{data['name']}".lower().replace(
                 " ", "-"
+            )
+            specs = seed_specs(
+                category,
+                data["specs"],
+                text=f"{data['brand']} {data['name']} {data.get('description', '')}",
+                condition=ProductCondition.NEW,
+                seed=slug,
             )
 
             product, created = Product.objects.update_or_create(
@@ -3078,7 +3097,7 @@ class Command(BaseCommand):
                     "name": data["name"],
                     "description": data.get("description", ""),
                     "price": data["price"],
-                    "specs": data["specs"],
+                    "specs": specs,
                     "last_confirmed_at": timezone.now()
                     - SEED_CONFIRMATION_AGE[data.get("freshness", "fresh")],
                 },

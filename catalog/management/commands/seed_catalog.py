@@ -1,6 +1,7 @@
 from django.core.management.base import BaseCommand
 
 from catalog.models import Category
+from catalog.seed_specs import ensure_taxonomy
 
 STARTER_CATEGORIES = [
     {"slug": "phones", "name": "Phones", "display_order": 0},
@@ -29,3 +30,7 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"{'Created' if created else 'Updated'}: {category.name} ({category.slug})"
             )
+        # Categories without their product types would take free-form specs;
+        # link them now so a fresh database is complete after this command.
+        ensure_taxonomy()
+        self.stdout.write("Taxonomy synced.")
