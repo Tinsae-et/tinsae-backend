@@ -181,6 +181,17 @@ class ProductTypeAttribute(BaseModel):
     show_if = models.JSONField(null=True, blank=True)
     options = models.JSONField(default=list, blank=True)
     control = models.CharField(max_length=10, blank=True)
+    # Where the field sits: key specs (what buyers filter on), details (the
+    # spec sheet, collapsible) or item (facts about this unit: warranty,
+    # battery health, lock). `recommended` fields do not block publishing;
+    # they count toward the form's completeness meter and lead the product
+    # page's key-spec card.
+    section = models.CharField(
+        max_length=10,
+        choices=[("key", "Key"), ("details", "Details"), ("item", "This item")],
+        default="key",
+    )
+    recommended = models.BooleanField(default=False)
     placeholder = models.CharField(max_length=80, blank=True)
     hint = models.CharField(max_length=160, blank=True)
     display_order = models.PositiveIntegerField(default=0)

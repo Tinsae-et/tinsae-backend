@@ -140,6 +140,25 @@ class SeedSpecsTest(TestCase):
         self.assertIn("output_power", specs)
         self.assertEqual(specs["capacity"], "10000mAh")
 
+    def test_old_one_line_specs_are_replaced_not_duplicated(self):
+        specs = seed_specs(
+            self._cat("phones"),
+            {"display": "6.2″ Dynamic AMOLED 2X 120Hz", "n5g": "Yes", "year": "2024"},
+            text="Samsung Galaxy S24 128GB 8GB Cobalt Violet",
+            condition="new",
+            seed="s24",
+        )
+        self.assertEqual(specs["screen_size"], 6.2)
+        self.assertEqual(specs["network"], "5g")
+        self.assertEqual(specs["release_year"], 2024)
+        # The old keys are gone once their new fields hold the value.
+        for old in ("display", "n5g", "year"):
+            self.assertNotIn(old, specs)
+        # Required unit facts get the mainstream defaults.
+        self.assertEqual(specs["phone_type"], "smartphone")
+        self.assertEqual(specs["carrier_lock"], "unlocked")
+        self.assertEqual(specs["region_version"], "Global")
+
     def test_the_same_seed_gives_the_same_specs(self):
         args = {"text": "Tecno Spark 10 Pro", "condition": "new", "seed": "same"}
         first = seed_specs(self._cat("phones"), {}, **args)

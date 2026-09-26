@@ -26,6 +26,9 @@ class TaxonomyError(Exception):
 # Keys a `show_if` / `required_if` may read besides the type's own attributes.
 PRODUCT_FIELDS = {"condition"}
 
+# Where a field sits in the form and on the product page.
+SECTIONS = {"key", "details", "item"}
+
 # The only type changes allowed: ones that keep every stored value valid. Any
 # enum value is also valid text, so a closed list may open up (processor went
 # this way); nothing may narrow, and nothing becomes a number.
@@ -95,6 +98,15 @@ def check_definitions(attributes: dict, product_types: dict) -> None:
                 raise TaxonomyError(
                     f"{type_key}.{attr_key}: options not defined on the attribute: "
                     f"{sorted(unknown)}."
+                )
+            if field.get("section", "key") not in SECTIONS:
+                raise TaxonomyError(
+                    f"{type_key}.{attr_key}: section must be one of {sorted(SECTIONS)}."
+                )
+            if field.get("recommended") and field.get("required"):
+                raise TaxonomyError(
+                    f"{type_key}.{attr_key}: a field is required or recommended, "
+                    "not both."
                 )
             for rule in ("show_if", "required_if"):
                 for dep in (field.get(rule) or {}).keys():
@@ -225,6 +237,8 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
                 "show_if": field.get("show_if"),
                 "options": field.get("options", []),
                 "control": field.get("control", ""),
+                "section": field.get("section", "key"),
+                "recommended": field.get("recommended", False),
                 "placeholder": field.get("placeholder", ""),
                 "hint": field.get("hint", ""),
                 "display_order": order,

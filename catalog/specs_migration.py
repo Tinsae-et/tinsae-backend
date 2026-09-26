@@ -74,9 +74,66 @@ LENS_MOUNTS = [
 ]
 
 
+def _raw(specs, key):
+    value = specs.get(key)
+    return str(value).strip() if value not in (None, "") else ""
+
+
+def display_parts(raw):
+    """'6.2″ Dynamic AMOLED 2X 120Hz' -> (6.2, 'Dynamic AMOLED 2X', 120)."""
+    size = re.search(r"(\d+(?:\.\d+)?)\s*(?:″|\"|”|-?inch\b|in\b)", raw, re.I)
+    refresh = re.search(r"(\d{2,3})\s*hz\b", raw, re.I)
+    panel = raw
+    for match in (size, refresh):
+        if match:
+            panel = panel.replace(match.group(0), " ")
+    panel = re.sub(r"\s+", " ", panel).strip(" ·,-")
+    return (
+        _number(size.group(1)) if size else None,
+        panel or None,
+        int(refresh.group(1)) if refresh else None,
+    )
+
+
+def camera_parts(text):
+    """'50MP Triple OIS' / '48MP Main + 12MP + 12MP' -> (50, 'triple')."""
+    megapixels = re.findall(r"(\d+(?:\.\d+)?)\s*mp", text)
+    setup = first_match(
+        text, [(r"quad", "quad"), (r"triple", "triple"), (r"dual", "dual")]
+    ) or {1: "single", 2: "dual", 3: "triple", 4: "quad"}.get(len(megapixels))
+    return (_number(megapixels[0]) if megapixels else None), setup
+
+
+def weight_grams(text):
+    """'221 g' -> 221; '1.55 kg' -> 1550."""
+    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|g)\b", text.replace(",", ""))
+    if not match:
+        return None
+    grams = float(match.group(1)) * (1000 if match.group(2) == "kg" else 1)
+    return int(grams) if grams.is_integer() else round(grams, 1)
+
+
 def _phones(specs):
     sim = _text(specs, "sim")
+    size, panel, refresh = display_parts(_raw(specs, "display"))
+    main_camera, camera_setup = camera_parts(_text(specs, "camera"))
+    battery = _text(specs, "battery")
+    capacity = re.search(r"(\d[\d,]*)\s*mah", battery)
+    watts = re.search(r"(\d+(?:\.\d+)?)\s*w\b", battery)
+    year = re.search(r"\b(19|20)\d{2}\b", _text(specs, "year"))
     return {
+        "screen_size": size,
+        "display_panel": panel,
+        "refresh_rate": refresh,
+        "chipset": _raw(specs, "chip") or None,
+        "main_camera": main_camera,
+        "camera_setup": camera_setup,
+        "battery_capacity": (
+            int(capacity.group(1).replace(",", "")) if capacity else None
+        ),
+        "fast_charging": _number(watts.group(1)) if watts else None,
+        "release_year": int(year.group(0)) if year else None,
+        "weight": weight_grams(_text(specs, "weight")),
         "storage": _size(_text(specs, "storage")),
         "ram": _size(_text(specs, "ram")),
         "sim": (
@@ -107,10 +164,41 @@ def storage_type_from_text(text):
     return "ssd" if has_ssd else "hdd" if has_hdd else None
 
 
+INTEGRATED_GPU = r"iris|uhd|integrated|radeon graphics|radeon \d{3}m|apple|arc graphics"
+
+
 def _laptops(specs):
-    size = _number(_text(specs, "display"))
+    size, panel, refresh = display_parts(_raw(specs, "display"))
     os_text = _text(specs, "os")
+    gpu = _text(specs, "gpu")
+    gpu_type = (
+        ("integrated" if re.search(INTEGRATED_GPU, gpu) else "dedicated")
+        if gpu
+        else None
+    )
+    vram = _size(gpu) if gpu_type == "dedicated" else None
+    hours = re.search(
+        r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours)\b", _text(specs, "battery")
+    )
     return {
+        "display_panel": panel,
+        "refresh_rate": refresh,
+        "ram_type": first_match(
+            _text(specs, "ram"),
+            [
+                (r"lpddr5x", "lpddr5x"),
+                (r"lpddr5", "lpddr5"),
+                (r"lpddr4x", "lpddr4x"),
+                (r"ddr5", "ddr5"),
+                (r"ddr4", "ddr4"),
+                (r"ddr3", "ddr3"),
+                (r"unified", "unified"),
+            ],
+        ),
+        "gpu_type": gpu_type,
+        "vram": vram,
+        "battery_life": _number(hours.group(1)) if hours else None,
+        "weight": weight_grams(_text(specs, "weight")),
         "storage_type": storage_type_from_text(_text(specs, "storage")),
         "storage": _size(_text(specs, "storage")),
         "ram": _size(_text(specs, "ram")),

@@ -101,14 +101,38 @@ NAME_RULES = {
     "noise_cancellation": [(r"noise cancel|anc\b", "yes")],
     "sim": [(r"dual sim", "dual")],
     "network": [(r"\b5g\b", "5g")],
+    "phone_type": [
+        (r"rugged|armor|blackview|ulefone", "rugged"),
+        (r"nokia 1\d\d\b|itel it", "feature_phone"),
+    ],
 }
 
-# Optional fields left empty rather than guessed: a random lens mount would put
-# a Sony mount on a Canon, a random network would sell an iPhone 15 as 3G.
-NEVER_RANDOM = {"lens_mount", "network", "os", "gpu"}
+# The only optional fields a seed fills at random, because any value is
+# plausible for them. Everything else stays empty unless the name or old specs
+# say so: a random pick would give an iPhone a headphone jack, a Canon a Sony
+# mount, a MacBook "Windows".
+MAY_GUESS = {"touchscreen", "water_resistance", "compatible_with", "connector"}
 
 # What a seed assumes when the name is silent, instead of a random pick.
-INVENT_DEFAULTS = {"storage_type": "ssd", "laptop_type": "everyday"}
+INVENT_DEFAULTS = {
+    "storage_type": "ssd",
+    "laptop_type": "everyday",
+    "phone_type": "smartphone",
+    "network": "4g",
+    "carrier_lock": "unlocked",
+    "region_version": "global",
+}
+
+# Old seed keys each new field replaces; the old key is dropped once the new
+# one holds a value, so the product page does not show the same fact twice.
+SUPERSEDED = {
+    "display": ("screen_size", "display_panel"),
+    "chip": ("chipset",),
+    "camera": ("main_camera",),
+    "battery": ("battery_capacity", "battery_life"),
+    "year": ("release_year",),
+    "n5g": ("network",),
+}
 
 # Keyed by the plain value: enum members hash by name, so a
 # `ProductCondition.USED` key would never match the string "used".
@@ -282,16 +306,18 @@ def seed_specs(
             field["required_if"] is not None
             and matches_condition(field["required_if"], values)
         )
-        # Optional fields with a list or suggestions get filled some of the
-        # time, so seeded listings vary the way real ones do.
-        optional_pick = (
-            bool(field["options"])
-            and key not in NEVER_RANDOM
-            and rng.random() < optional_rate
-        )
+        # A few harmless optional fields get filled some of the time, so
+        # seeded listings vary the way real ones do.
+        optional_pick = key in MAY_GUESS and rng.random() < optional_rate
         if required or optional_pick:
             invented = _invent(field, condition, rng, schema["product_type"])
             result[key] = as_text(field, invented)
+
+    for old, replacements in SUPERSEDED.items():
+        if old in result and any(
+            result.get(new) not in (None, "") for new in replacements
+        ):
+            del result[old]
 
     # Stored exactly as a merchant's save would store it.
     result = normalize_specs(schema, result)

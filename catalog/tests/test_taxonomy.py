@@ -15,7 +15,7 @@ from catalog.models import (
     ProductImage,
     ProductType,
 )
-from catalog.specs import category_schema, size_to_gb
+from catalog.specs import category_schema, size_to_gb, validate_specs
 from catalog.specs_migration import migrate_product_specs
 from catalog.taxonomy import ATTRIBUTES, PRODUCT_TYPES
 from catalog.taxonomy.sync import TaxonomyError, sync_taxonomy
@@ -23,10 +23,14 @@ from shops.models import Shop
 from users.models import User
 
 COMPLETE_PHONE = {
+    "phone_type": "smartphone",
     "storage": 256,
     "ram": 8,
     "color": "black",
     "sim": "dual",
+    "network": "5g",
+    "carrier_lock": "unlocked",
+    "region_version": "Global",
     "warranty": "brand_1y",
 }
 
@@ -98,8 +102,8 @@ class CategorySchemaApiTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["product_type"], "smartphone")
         keys = [f["key"] for f in response.data["fields"]]
-        self.assertEqual(keys[:3], ["storage", "ram", "color"])
-        storage = response.data["fields"][0]
+        self.assertEqual(keys[:3], ["phone_type", "storage", "ram"])
+        storage = next(f for f in response.data["fields"] if f["key"] == "storage")
         # A typed quantity in GB with a GB/TB switch, not a list of sizes.
         self.assertEqual(
             (storage["type"], storage["unit"], storage["control"]),
@@ -113,6 +117,41 @@ class CategorySchemaApiTest(TestCase):
         )
         self.assertEqual(battery["show_if"], {"condition": ["used"]})
         self.assertEqual(battery["max"], 100)
+
+    def test_fields_carry_their_section_and_level(self):
+        response = APIClient().get("/api/v1/catalog/categories/phones/schema/")
+        fields = {f["key"]: f for f in response.data["fields"]}
+        # Key specs are required; the spec sheet is recommended, never required;
+        # facts about the unit sit in their own section.
+        self.assertEqual(
+            (fields["storage"]["section"], fields["storage"]["required"]), ("key", True)
+        )
+        self.assertEqual(
+            (fields["chipset"]["section"], fields["chipset"]["recommended"]),
+            ("details", True),
+        )
+        self.assertFalse(fields["chipset"]["required"])
+        self.assertEqual(
+            (fields["carrier_lock"]["section"], fields["carrier_lock"]["required"]),
+            ("item", True),
+        )
+
+    def test_recommended_fields_do_not_block_publishing(self):
+        # COMPLETE_PHONE has no chipset, camera or battery: still publishable.
+        category = Category.objects.get(slug="phones")
+        errors = validate_specs(
+            category_schema(category), COMPLETE_PHONE, condition="new"
+        )
+        self.assertEqual(errors, {})
+
+    def test_a_field_is_not_both_required_and_recommended(self):
+        types = copy.deepcopy(PRODUCT_TYPES)
+        types["smartphone"]["fields"][1] = {
+            **types["smartphone"]["fields"][1],
+            "recommended": True,
+        }
+        with self.assertRaises(TaxonomyError):
+            sync_taxonomy(ATTRIBUTES, types)
 
     def test_category_without_a_type_has_no_schema(self):
         response = APIClient().get("/api/v1/catalog/categories/misc/schema/")
@@ -306,6 +345,57 @@ class SpecsMigrationTest(TestCase):
         before = {"storage": 128, "sim": "Dual Nano-SIM"}
         after = migrate_product_specs("phones", self._schema("phones"), before, "new")
         self.assertEqual(after["storage"], 128)
+
+
+class SpecSheetConversionTest(TestCase):
+    """Old one-line specs split into the structured spec-sheet fields."""
+
+    def setUp(self):
+        for slug in ("phones", "laptops"):
+            Category.objects.create(name=slug.title(), slug=slug)
+        sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)
+
+    def _schema(self, slug):
+        return category_schema(Category.objects.get(slug=slug))
+
+    def test_a_phone_spec_sheet_is_split_into_fields(self):
+        before = {
+            "display": "6.2″ Dynamic AMOLED 2X 120Hz",
+            "chip": "Exynos 2400 Deca-Core",
+            "camera": "50MP Triple OIS",
+            "battery": "4,000 mAh 25W",
+            "year": "2024",
+            "weight": "167 g",
+        }
+        after = migrate_product_specs("phones", self._schema("phones"), before, "new")
+        self.assertEqual(after["screen_size"], 6.2)
+        self.assertEqual(after["display_panel"], "Dynamic AMOLED 2X")
+        self.assertEqual(after["refresh_rate"], 120)
+        self.assertEqual(after["chipset"], "Exynos 2400 Deca-Core")
+        self.assertEqual((after["main_camera"], after["camera_setup"]), (50, "triple"))
+        self.assertEqual(
+            (after["battery_capacity"], after["fast_charging"]), (4000, 25)
+        )
+        self.assertEqual((after["release_year"], after["weight"]), (2024, 167))
+
+    def test_a_laptop_spec_sheet_is_split_into_fields(self):
+        before = {
+            "ram": "16GB LPDDR5x",
+            "gpu": "NVIDIA GeForce RTX 4060 8GB",
+            "display": "16″ IPS 165Hz",
+            "weight": "2.3 kg",
+        }
+        after = migrate_product_specs("laptops", self._schema("laptops"), before, "new")
+        self.assertEqual(after["ram_type"], "LPDDR5X")
+        self.assertEqual((after["gpu_type"], after["vram"]), ("dedicated", 8))
+        self.assertEqual((after["display_panel"], after["refresh_rate"]), ("IPS", 165))
+        self.assertEqual(after["weight"], 2300)
+
+        integrated = migrate_product_specs(
+            "laptops", self._schema("laptops"), {"gpu": "Intel Iris Xe"}, "new"
+        )
+        self.assertEqual(integrated["gpu_type"], "integrated")
+        self.assertNotIn("vram", integrated)
 
 
 class SizeConversionTest(TestCase):

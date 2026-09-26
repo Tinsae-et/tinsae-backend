@@ -21,6 +21,9 @@ def _opts(*pairs):
     return [{"value": value, "label": label} for value, label in pairs]
 
 
+_YES_NO = _opts(("yes", "Yes"), ("no", "No"))
+
+
 # Storage and RAM were enums of sizes ("256gb"). `convert_from` tells the sync
 # to convert stored values to numbers in GB once, in the same transaction; see
 # catalog/taxonomy/sync.py `CONVERTERS`.
@@ -144,6 +147,7 @@ ATTRIBUTES = {
         "options": _opts(
             ("single", "Single"),
             ("dual", "Dual"),
+            ("triple", "Triple"),
             ("esim", "eSIM only"),
             ("sim_esim", "SIM + eSIM"),
         ),
@@ -364,13 +368,257 @@ ATTRIBUTES = {
         "min": 0.1,
         "max": 20,
     },
+    # --- spec sheet: display, performance, camera, battery, body ---
+    "resolution": {
+        "label": "Resolution",
+        "type": "text",
+        "options": _opts(
+            ("hd", "HD (1366×768)"),
+            ("hd_plus", "HD+ (1600×900)"),
+            ("fhd", "FHD (1920×1080)"),
+            ("fhd_plus", "FHD+ (1920×1200)"),
+            ("qhd", "QHD (2560×1440)"),
+            ("qhd_plus", "QHD+ (2560×1600)"),
+            ("3k", "3K (2880×1800)"),
+            ("4k", "4K UHD (3840×2160)"),
+        ),
+    },
+    "display_panel": {
+        "label": "Display type",
+        "type": "text",
+        "options": _opts(
+            ("ips_lcd", "IPS LCD"),
+            ("lcd", "LCD"),
+            ("tn", "TN"),
+            ("oled", "OLED"),
+            ("amoled", "AMOLED"),
+            ("super_amoled", "Super AMOLED"),
+            ("dynamic_amoled_2x", "Dynamic AMOLED 2X"),
+            ("ltpo_oled", "LTPO OLED"),
+            ("mini_led", "Mini-LED"),
+            ("liquid_retina", "Liquid Retina"),
+        ),
+    },
+    "refresh_rate": {
+        "label": "Refresh rate",
+        "type": "number",
+        "unit": "Hz",
+        "min": 30,
+        "max": 540,
+    },
+    "chipset": {
+        "label": "Chipset",
+        "type": "text",
+        "options": _opts(
+            ("apple_a15", "Apple A15 Bionic"),
+            ("apple_a16", "Apple A16 Bionic"),
+            ("apple_a17_pro", "Apple A17 Pro"),
+            ("apple_a18", "Apple A18"),
+            ("snapdragon_8_gen_3", "Snapdragon 8 Gen 3"),
+            ("snapdragon_8_gen_2", "Snapdragon 8 Gen 2"),
+            ("snapdragon_7", "Snapdragon 7 series"),
+            ("snapdragon_6", "Snapdragon 6 series"),
+            ("exynos_2400", "Exynos 2400"),
+            ("exynos_1380", "Exynos 1380"),
+            ("dimensity_9300", "MediaTek Dimensity 9300"),
+            ("dimensity_7200", "MediaTek Dimensity 7200"),
+            ("helio_g99", "MediaTek Helio G99"),
+            ("helio_g85", "MediaTek Helio G85"),
+            ("tensor_g3", "Google Tensor G3"),
+            ("unisoc_t606", "Unisoc T606"),
+        ),
+    },
+    "main_camera": {
+        "label": "Main camera",
+        "type": "number",
+        "unit": "MP",
+        "min": 0.3,
+        "max": 400,
+    },
+    "camera_setup": {
+        "label": "Camera setup",
+        "type": "enum",
+        "options": _opts(
+            ("single", "Single"),
+            ("dual", "Dual"),
+            ("triple", "Triple"),
+            ("quad", "Quad"),
+        ),
+    },
+    "selfie_camera": {
+        "label": "Selfie camera",
+        "type": "number",
+        "unit": "MP",
+        "min": 0.3,
+        "max": 200,
+    },
+    "fast_charging": {
+        "label": "Charging speed",
+        "type": "number",
+        "unit": "W",
+        "min": 1,
+        "max": 300,
+    },
+    "wireless_charging": {
+        "label": "Wireless charging",
+        "type": "enum",
+        "options": _YES_NO,
+    },
+    "nfc": {"label": "NFC", "type": "enum", "options": _YES_NO},
+    "card_slot": {"label": "Memory card slot", "type": "enum", "options": _YES_NO},
+    "headphone_jack": {"label": "3.5 mm jack", "type": "enum", "options": _YES_NO},
+    "weight": {
+        "label": "Weight",
+        "type": "number",
+        "unit": "g",
+        "min": 1,
+        "max": 20000,
+    },
+    "release_year": {
+        "label": "Release year",
+        "type": "number",
+        "min": 1990,
+        "max": 2100,
+    },
+    "phone_type": {
+        "label": "Phone type",
+        "type": "enum",
+        "options": _opts(
+            ("smartphone", "Smartphone"),
+            ("feature_phone", "Feature phone"),
+            ("rugged", "Rugged"),
+        ),
+    },
+    # --- this unit: imported phones are asked about these first ---
+    "carrier_lock": {
+        "label": "Network lock",
+        "type": "enum",
+        "options": _opts(("unlocked", "Unlocked"), ("locked", "Carrier-locked")),
+    },
+    "region_version": {
+        "label": "Version",
+        "type": "text",
+        "options": _opts(
+            ("global", "Global"),
+            ("us", "US"),
+            ("uae", "UAE"),
+            ("europe", "Europe"),
+            ("china", "China"),
+            ("india", "India"),
+            ("japan", "Japan"),
+            ("korea", "Korea"),
+            ("hong_kong", "Hong Kong"),
+        ),
+    },
+    "box_contents": {
+        "label": "In the box",
+        "type": "text",
+        "options": _opts(
+            ("full_box", "Full box (all accessories)"),
+            ("box_charger", "Box + charger"),
+            ("box_cable", "Box + cable"),
+            ("device_only", "Device only"),
+        ),
+    },
+    "charger_included": {
+        "label": "Charger included",
+        "type": "enum",
+        "options": _YES_NO,
+    },
+    # --- laptops ---
+    "ram_type": {
+        "label": "RAM type",
+        "type": "text",
+        "options": _opts(
+            ("ddr3", "DDR3"),
+            ("ddr4", "DDR4"),
+            ("ddr5", "DDR5"),
+            ("lpddr4x", "LPDDR4X"),
+            ("lpddr5", "LPDDR5"),
+            ("lpddr5x", "LPDDR5X"),
+            ("unified", "Unified memory"),
+        ),
+    },
+    "ram_upgradeable": {
+        "label": "RAM upgrade",
+        "type": "enum",
+        "options": _opts(("upgradeable", "Upgradeable"), ("soldered", "Soldered")),
+    },
+    "storage_interface": {
+        "label": "SSD interface",
+        "type": "enum",
+        "options": _opts(("nvme", "NVMe"), ("sata", "SATA")),
+    },
+    "gpu_type": {
+        "label": "Graphics type",
+        "type": "enum",
+        "options": _opts(("integrated", "Integrated"), ("dedicated", "Dedicated")),
+    },
+    "vram": {
+        "label": "Graphics memory",
+        "type": "number",
+        "unit": "GB",
+        "min": 0.5,
+        "max": 128,
+    },
+    "keyboard_layout": {
+        "label": "Keyboard",
+        "type": "text",
+        "options": _opts(
+            ("us", "US English"),
+            ("uk", "UK English"),
+            ("arabic", "Arabic / English"),
+            ("french", "French"),
+            ("german", "German"),
+        ),
+    },
+    "backlit_keyboard": {
+        "label": "Backlit keyboard",
+        "type": "enum",
+        "options": _YES_NO,
+    },
+    "fingerprint": {"label": "Fingerprint reader", "type": "enum", "options": _YES_NO},
+    "wifi_version": {
+        "label": "Wi-Fi",
+        "type": "text",
+        "options": _opts(
+            ("wifi_5", "Wi-Fi 5"),
+            ("wifi_6", "Wi-Fi 6"),
+            ("wifi_6e", "Wi-Fi 6E"),
+            ("wifi_7", "Wi-Fi 7"),
+        ),
+    },
+    "bluetooth_version": {
+        "label": "Bluetooth",
+        "type": "text",
+        "options": _opts(
+            ("bt_4_2", "4.2"),
+            ("bt_5_0", "5.0"),
+            ("bt_5_1", "5.1"),
+            ("bt_5_2", "5.2"),
+            ("bt_5_3", "5.3"),
+            ("bt_5_4", "5.4"),
+        ),
+    },
+    "battery_life": {
+        "label": "Battery life",
+        "type": "number",
+        "unit": "h",
+        "min": 0.5,
+        "max": 100,
+    },
 }
 
 # Compact on purpose: one field per line reads as a table. Black would explode
 # every dict onto several lines.
 # fmt: off
 USED = {"condition": ["used"]}
-WARRANTY = {"attribute": "warranty", "required": True,
+# Sections: key (default) = what buyers filter on; details = the spec sheet,
+# collapsible in the form; item = facts about this unit. See the model's
+# ProductTypeAttribute.section.
+DETAIL = {"section": "details"}
+ITEM = {"section": "item"}
+WARRANTY = {"attribute": "warranty", "required": True, "section": "item",
             "placeholder": "e.g. Brand · 1 year"}
 # `control: size` = a number with a GB / TB switch, stored in GB.
 STORAGE = {"attribute": "storage", "required": True, "control": "size",
@@ -392,15 +640,53 @@ PRODUCT_TYPES = {
             "Vivo", "Realme", "Huawei", "Honor", "Google", "Nokia", "Motorola", "OnePlus",
         ],
         "fields": [
+            # Key specs: what buyers filter on.
+            {"attribute": "phone_type", "required": True},
             STORAGE,
             RAM,
             _color(),
             {"attribute": "sim", "required": True},
-            {"attribute": "network"},
-            {"attribute": "screen_size", "placeholder": "e.g. 6.1"},
+            {"attribute": "network", "required": True},
+            # Spec sheet: recommended leads the product page's key-spec card.
+            {**DETAIL, "attribute": "screen_size", "recommended": True,
+             "placeholder": "e.g. 6.1"},
+            {**DETAIL, "attribute": "display_panel", "recommended": True,
+             "placeholder": "e.g. AMOLED"},
+            {**DETAIL, "attribute": "refresh_rate", "recommended": True,
+             "placeholder": "e.g. 120"},
+            {**DETAIL, "attribute": "resolution"},
+            {**DETAIL, "attribute": "chipset", "recommended": True,
+             "placeholder": "e.g. Snapdragon 8 Gen 3"},
+            {**DETAIL, "attribute": "main_camera", "recommended": True,
+             "placeholder": "e.g. 50"},
+            {**DETAIL, "attribute": "camera_setup", "recommended": True},
+            {**DETAIL, "attribute": "selfie_camera", "placeholder": "e.g. 12"},
+            {**DETAIL, "attribute": "battery_capacity", "label": "Battery",
+             "recommended": True, "placeholder": "e.g. 5000"},
+            {**DETAIL, "attribute": "fast_charging", "recommended": True,
+             "placeholder": "e.g. 25"},
+            {**DETAIL, "attribute": "wireless_charging"},
+            {**DETAIL, "attribute": "os", "recommended": True,
+             "placeholder": "e.g. Android 14"},
+            {**DETAIL, "attribute": "release_year", "recommended": True,
+             "placeholder": "e.g. 2024"},
+            {**DETAIL, "attribute": "weight", "control": "weight", "recommended": True,
+             "placeholder": "e.g. 187"},
+            {**DETAIL, "attribute": "nfc"},
+            {**DETAIL, "attribute": "card_slot"},
+            {**DETAIL, "attribute": "headphone_jack"},
+            {**DETAIL, "attribute": "water_resistance", "label": "IP rating",
+             "placeholder": "e.g. IP68"},
+            # This item: facts about the unit in the shop.
+            {**ITEM, "attribute": "carrier_lock", "required": True},
+            {**ITEM, "attribute": "region_version", "required": True,
+             "placeholder": "e.g. Global",
+             "hint": "Imported phones: the market it was made for."},
             WARRANTY,
-            {"attribute": "battery_health", "show_if": USED, "required_if": USED,
-             "placeholder": "e.g. 92", "hint": "Settings › Battery on most phones."},
+            {**ITEM, "attribute": "battery_health", "show_if": USED,
+             "required_if": USED, "placeholder": "e.g. 92",
+             "hint": "Settings › Battery on most phones."},
+            {**ITEM, "attribute": "box_contents", "placeholder": "e.g. Full box"},
         ],
     },
     "laptop": {
@@ -411,6 +697,7 @@ PRODUCT_TYPES = {
             "MSI", "Microsoft", "Samsung", "Toshiba", "Huawei",
         ],
         "fields": [
+            # Key specs.
             {"attribute": "laptop_type", "required": True, "placeholder": "e.g. Gaming"},
             {"attribute": "processor", "required": True,
              "placeholder": "e.g. Intel Core i5-1135G7",
@@ -423,13 +710,42 @@ PRODUCT_TYPES = {
              "placeholder": "e.g. 1", "show_if": {"storage_type": ["ssd_hdd"]}},
             {"attribute": "screen_size", "required": True, "placeholder": "e.g. 15.6"},
             _color(),
-            {"attribute": "touchscreen"},
-            {"attribute": "os", "placeholder": "e.g. Windows 11"},
-            {"attribute": "gpu", "placeholder": "e.g. NVIDIA GeForce RTX 4060 8GB",
+            # Spec sheet.
+            {**DETAIL, "attribute": "ram_type", "recommended": True,
+             "placeholder": "e.g. DDR4"},
+            {**DETAIL, "attribute": "ram_upgradeable"},
+            {**DETAIL, "attribute": "storage_interface",
+             "show_if": {"storage_type": ["ssd", "ssd_hdd"]}},
+            {**DETAIL, "attribute": "resolution", "recommended": True,
+             "placeholder": "e.g. FHD (1920×1080)"},
+            {**DETAIL, "attribute": "display_panel", "recommended": True,
+             "placeholder": "e.g. IPS LCD"},
+            {**DETAIL, "attribute": "refresh_rate", "placeholder": "e.g. 144"},
+            {**DETAIL, "attribute": "gpu", "recommended": True,
+             "placeholder": "e.g. NVIDIA GeForce RTX 4060",
              "hint": "Any brand or model; the suggestions are only a start."},
+            {**DETAIL, "attribute": "gpu_type", "recommended": True},
+            {**DETAIL, "attribute": "vram", "placeholder": "e.g. 8",
+             "show_if": {"gpu_type": ["dedicated"]}},
+            {**DETAIL, "attribute": "os", "recommended": True,
+             "placeholder": "e.g. Windows 11"},
+            {**DETAIL, "attribute": "keyboard_layout", "recommended": True,
+             "placeholder": "e.g. US English"},
+            {**DETAIL, "attribute": "backlit_keyboard"},
+            {**DETAIL, "attribute": "battery_life", "recommended": True,
+             "placeholder": "e.g. 8"},
+            {**DETAIL, "attribute": "weight", "control": "weight", "recommended": True,
+             "placeholder": "e.g. 1.4", "hint": "Switch to kg for laptops."},
+            {**DETAIL, "attribute": "touchscreen"},
+            {**DETAIL, "attribute": "fingerprint"},
+            {**DETAIL, "attribute": "wifi_version", "placeholder": "e.g. Wi-Fi 6"},
+            {**DETAIL, "attribute": "bluetooth_version", "placeholder": "e.g. 5.2"},
+            {**DETAIL, "attribute": "release_year", "placeholder": "e.g. 2023"},
+            # This item.
             WARRANTY,
-            {"attribute": "battery_cycles", "show_if": USED, "required_if": USED,
-             "placeholder": "e.g. 180"},
+            {**ITEM, "attribute": "battery_cycles", "show_if": USED,
+             "required_if": USED, "placeholder": "e.g. 180"},
+            {**ITEM, "attribute": "charger_included"},
         ],
     },
     "tablet": {

@@ -74,6 +74,8 @@ def category_schema(category: Category | None) -> dict | None:
             "required_if": link.required_if or None,
             "show_if": link.show_if or None,
             "control": link.control or None,
+            "section": link.section,
+            "recommended": link.recommended,
             "options": None,
         }
         # Enum: the closed list. Text: suggestions to type from (processor).
