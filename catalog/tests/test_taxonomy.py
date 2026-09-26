@@ -172,6 +172,28 @@ class ListingSpecValidationTest(TestCase):
         self.assertIn("storage", response.data["specs"])
         self.assertIn("sim", response.data["specs"])
 
+    def test_pick_or_type_values_are_tidied_to_the_suggestion(self):
+        # Typed "  black " is the suggestion "Black"; a colour the list does
+        # not have is kept as typed; free text elsewhere is trimmed too.
+        specs = {**COMPLETE_PHONE, "color": "  black ", "warranty": "Shop · 18 months"}
+        response = self.client.post(self.url, self._payload(specs=specs), format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["specs"]["color"], "Black")
+        self.assertEqual(response.data["specs"]["warranty"], "Shop · 18 months")
+
+        specs = {**COMPLETE_PHONE, "color": "Titanium   Blue"}
+        response = self.client.post(
+            self.url, self._payload(name="Blue one", specs=specs), format="json"
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["specs"]["color"], "Titanium Blue")
+
+    def test_a_blank_typed_value_does_not_satisfy_a_required_field(self):
+        specs = {**COMPLETE_PHONE, "color": "   "}
+        response = self.client.post(self.url, self._payload(specs=specs), format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("color", response.data["specs"])
+
     def test_a_used_phone_needs_its_battery_health(self):
         response = self.client.post(
             self.url, self._payload(condition="used"), format="json"
@@ -271,7 +293,7 @@ class SpecsMigrationTest(TestCase):
         # Processor is typed text now: the exact model is kept as written.
         self.assertEqual(after["processor"], "Apple M3 Pro 11-core")
         self.assertEqual(after["screen_size"], 14.2)
-        self.assertEqual(after["os"], "macos")
+        self.assertEqual(after["os"], "macOS")
 
     def test_type_decides_which_fields_apply(self):
         before = {"type": "Portable Stereo Speaker", "anc": "Yes", "bluetooth": "5.3"}

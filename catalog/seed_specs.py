@@ -23,6 +23,7 @@ from .specs import (
     category_schema,
     check_value,
     matches_condition,
+    normalize_specs,
     size_to_gb,
     validate_specs,
 )
@@ -38,7 +39,8 @@ from .taxonomy.sync import sync_taxonomy
 COLORS = [
     (r"natural titanium|titanium", "natural_titanium"),
     (r"black|midnight|graphite|obsidian|onyx", "black"),
-    (r"space gr[ae]y|gr[ae]y|charcoal|slate", "gray"),
+    (r"space gr[ae]y", "space_gray"),
+    (r"gr[ae]y|charcoal|slate", "gray"),
     (r"white|starlight|chalk|cream", "white"),
     (r"silver|platinum", "silver"),
     (r"gold|champagne", "gold"),
@@ -103,7 +105,7 @@ NAME_RULES = {
 
 # Optional fields left empty rather than guessed: a random lens mount would put
 # a Sony mount on a Canon, a random network would sell an iPhone 15 as 3G.
-NEVER_RANDOM = {"lens_mount", "network"}
+NEVER_RANDOM = {"lens_mount", "network", "os", "gpu"}
 
 # What a seed assumes when the name is silent, instead of a random pick.
 INVENT_DEFAULTS = {"storage_type": "ssd", "laptop_type": "everyday"}
@@ -280,14 +282,19 @@ def seed_specs(
             field["required_if"] is not None
             and matches_condition(field["required_if"], values)
         )
+        # Optional fields with a list or suggestions get filled some of the
+        # time, so seeded listings vary the way real ones do.
         optional_pick = (
-            field["type"] == "enum"
+            bool(field["options"])
             and key not in NEVER_RANDOM
             and rng.random() < optional_rate
         )
         if required or optional_pick:
-            result[key] = _invent(field, condition, rng, schema["product_type"])
+            invented = _invent(field, condition, rng, schema["product_type"])
+            result[key] = as_text(field, invented)
 
+    # Stored exactly as a merchant's save would store it.
+    result = normalize_specs(schema, result)
     defined = {f["key"] for f in fields}
     legacy = {k: v for k, v in result.items() if k not in defined}
     errors = validate_specs(schema, result, condition=condition, existing=legacy)

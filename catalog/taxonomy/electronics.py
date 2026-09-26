@@ -4,13 +4,16 @@
 picks attributes per type, narrows enum options with `options`, and sets the
 rules. What kind of input each spec gets follows what the spec really is:
 
-- enum: a genuinely closed set buyers filter on (SIM, OS, storage type).
-  Free text there would split one answer into five spellings.
+- enum: a genuinely closed set, or one other fields depend on (SIM, network,
+  storage type, audio/camera/accessory type). Free text there would break
+  the form's `show_if` rules or split one answer into five spellings.
 - number: a measurable quantity, stored in its base unit (storage and RAM in
   GB, screen in inches). Anything can be typed -- 480GB, 1.5TB, 20GB -- and it
   still sorts, compares and filters.
-- text: open-ended identity (processor, graphics, IP rating). `options` on a
-  text attribute are suggestions offered while typing, not a limit.
+- text: pick or type (color, processor, OS, warranty, compatibility...).
+  `options` on a text attribute are suggestions offered while typing, not a
+  limit; a typed value matching one is stored as that suggestion
+  (catalog/specs.py normalize_specs), so filters still group them.
 """
 
 
@@ -25,17 +28,21 @@ SIZE_FROM_ENUM = {"type": "enum", "using": "size_gb"}
 
 ATTRIBUTES = {
     # --- shared across types ---
+    # Pick or type: the suggestions cover the common colours, and the
+    # manufacturer's own name ("Titanium Blue") can be typed. A typed value
+    # that matches a suggestion is stored as the suggestion ("black" ->
+    # "Black"; see catalog/specs.py normalize_specs), so filters still group.
     "color": {
         "label": "Color",
-        "type": "enum",
-        # The base colour buyers filter by; the marketing name ("Aurora Blue")
-        # belongs in the model/variant text.
+        "type": "text",
         "options": _opts(
             ("black", "Black"),
             ("white", "White"),
             ("silver", "Silver"),
             ("gray", "Gray"),
+            ("space_gray", "Space Gray"),
             ("gold", "Gold"),
+            ("rose_gold", "Rose Gold"),
             ("blue", "Blue"),
             ("green", "Green"),
             ("purple", "Purple"),
@@ -44,13 +51,15 @@ ATTRIBUTES = {
             ("orange", "Orange"),
             ("yellow", "Yellow"),
             ("brown", "Brown"),
+            ("midnight", "Midnight"),
+            ("starlight", "Starlight"),
             ("natural_titanium", "Natural Titanium"),
-            ("other", "Other"),
         ),
     },
+    # Pick or type: "Shop · 18 months" or "Brand 2y + shop 6m" are real too.
     "warranty": {
         "label": "Warranty",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("none", "No warranty"),
             ("shop_1m", "Shop · 1 month"),
@@ -145,10 +154,11 @@ ATTRIBUTES = {
         "options": _opts(("3g", "3G"), ("4g", "4G"), ("5g", "5G")),
     },
     # --- laptops ---
-    # What the laptop is for -- the first thing buyers narrow by.
+    # What the laptop is for -- the first thing buyers narrow by. Pick or type
+    # ("Creator", "Rugged"): nothing in the form depends on its value.
     "laptop_type": {
         "label": "Laptop type",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("gaming", "Gaming"),
             ("business", "Business"),
@@ -208,14 +218,19 @@ ATTRIBUTES = {
             ("qualcomm_adreno", "Qualcomm Adreno"),
         ),
     },
+    # Pick or type: versions matter to buyers (Windows 10 vs 11, HarmonyOS).
     "os": {
         "label": "Operating system",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("windows", "Windows"),
+            ("windows_11", "Windows 11"),
+            ("windows_10", "Windows 10"),
             ("macos", "macOS"),
             ("chromeos", "ChromeOS"),
             ("linux", "Linux"),
+            ("harmonyos", "HarmonyOS"),
+            ("android", "Android"),
             ("none", "None"),
         ),
     },
@@ -270,9 +285,10 @@ ATTRIBUTES = {
         "type": "enum",
         "options": _opts(("body_only", "Body only"), ("with_lens", "With lens")),
     },
+    # Pick or type: Leica L, Pentax K and older mounts are all real.
     "lens_mount": {
         "label": "Lens mount",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("canon_rf", "Canon RF"),
             ("canon_ef", "Canon EF"),
@@ -281,7 +297,7 @@ ATTRIBUTES = {
             ("nikon_f", "Nikon F"),
             ("fujifilm_x", "Fujifilm X"),
             ("micro_four_thirds", "Micro Four Thirds"),
-            ("other", "Other"),
+            ("leica_l", "Leica L"),
         ),
     },
     "megapixels": {
@@ -309,9 +325,10 @@ ATTRIBUTES = {
             ("other", "Other"),
         ),
     },
+    # Pick or type: a case is for a specific model ("Pixel 8", "Redmi Note 13").
     "compatible_with": {
         "label": "Works with",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("iphone", "iPhone"),
             ("samsung_galaxy", "Samsung Galaxy"),
@@ -320,14 +337,17 @@ ATTRIBUTES = {
             ("universal", "Universal"),
         ),
     },
+    # Pick or type: "DC barrel", "USB-C to Lightning"...
     "connector": {
         "label": "Connector",
-        "type": "enum",
+        "type": "text",
         "options": _opts(
             ("usb_c", "USB-C"),
             ("lightning", "Lightning"),
             ("micro_usb", "Micro-USB"),
             ("usb_a", "USB-A"),
+            ("usb_c_to_lightning", "USB-C to Lightning"),
+            ("dc_barrel", "DC barrel"),
         ),
     },
     "output_power": {"label": "Output power", "type": "number", "unit": "W", "min": 1},
@@ -350,7 +370,8 @@ ATTRIBUTES = {
 # every dict onto several lines.
 # fmt: off
 USED = {"condition": ["used"]}
-WARRANTY = {"attribute": "warranty", "required": True, "control": "select"}
+WARRANTY = {"attribute": "warranty", "required": True,
+            "placeholder": "e.g. Brand · 1 year"}
 # `control: size` = a number with a GB / TB switch, stored in GB.
 STORAGE = {"attribute": "storage", "required": True, "control": "size",
            "placeholder": "e.g. 128"}
@@ -358,7 +379,8 @@ RAM = {"attribute": "ram", "required": True, "placeholder": "e.g. 8"}
 
 
 def _color(required=True):
-    return {"attribute": "color", "required": required}
+    return {"attribute": "color", "required": required,
+            "placeholder": "e.g. Black or Titanium Blue"}
 
 
 PRODUCT_TYPES = {
@@ -389,7 +411,7 @@ PRODUCT_TYPES = {
             "MSI", "Microsoft", "Samsung", "Toshiba", "Huawei",
         ],
         "fields": [
-            {"attribute": "laptop_type", "required": True, "control": "chips"},
+            {"attribute": "laptop_type", "required": True, "placeholder": "e.g. Gaming"},
             {"attribute": "processor", "required": True,
              "placeholder": "e.g. Intel Core i5-1135G7",
              "hint": "Type the exact model; the sticker or System Info shows it."},
@@ -400,8 +422,9 @@ PRODUCT_TYPES = {
             {"attribute": "secondary_storage", "required": True, "control": "size",
              "placeholder": "e.g. 1", "show_if": {"storage_type": ["ssd_hdd"]}},
             {"attribute": "screen_size", "required": True, "placeholder": "e.g. 15.6"},
+            _color(),
             {"attribute": "touchscreen"},
-            {"attribute": "os"},
+            {"attribute": "os", "placeholder": "e.g. Windows 11"},
             {"attribute": "gpu", "placeholder": "e.g. NVIDIA GeForce RTX 4060 8GB",
              "hint": "Any brand or model; the suggestions are only a start."},
             WARRANTY,
@@ -457,7 +480,7 @@ PRODUCT_TYPES = {
             {"attribute": "camera_type", "required": True},
             {"attribute": "kit", "required": True,
              "show_if": {"camera_type": ["mirrorless", "dslr"]}},
-            {"attribute": "lens_mount", "control": "select",
+            {"attribute": "lens_mount", "placeholder": "e.g. Sony E",
              "show_if": {"camera_type": ["mirrorless", "dslr"]}},
             {"attribute": "megapixels", "placeholder": "e.g. 24"},
             WARRANTY,
@@ -475,9 +498,9 @@ PRODUCT_TYPES = {
         ],
         "fields": [
             {"attribute": "accessory_type", "required": True, "control": "select"},
-            {"attribute": "compatible_with", "control": "select",
+            {"attribute": "compatible_with", "placeholder": "e.g. iPhone 15 Pro",
              "required_if": {"accessory_type": ["case", "screen_protector"]}},
-            {"attribute": "connector",
+            {"attribute": "connector", "placeholder": "e.g. USB-C",
              "show_if": {"accessory_type": ["charger", "cable", "power_bank"]}},
             {"attribute": "output_power", "placeholder": "e.g. 20",
              "show_if": {"accessory_type": ["charger", "power_bank"]},

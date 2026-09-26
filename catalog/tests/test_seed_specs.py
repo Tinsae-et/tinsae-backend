@@ -35,7 +35,9 @@ class SeedSpecsTest(TestCase):
         self.assertEqual(specs["storage_type"], "ssd")
         self.assertNotIn("secondary_storage", specs)
         self.assertTrue(13 <= specs["screen_size"] <= 16)
-        self.assertEqual(specs["warranty"], "brand_1y")
+        # Pick-or-type fields store the label a merchant would pick.
+        self.assertEqual(specs["warranty"], "Brand · 1 year")
+        self.assertEqual(specs["color"], "Black")
 
     def test_a_single_size_in_a_phone_name_is_storage(self):
         specs = seed_specs(
@@ -46,7 +48,7 @@ class SeedSpecsTest(TestCase):
             seed="ip13",
         )
         self.assertEqual(specs["storage"], 128)
-        self.assertEqual(specs["color"], "black")
+        self.assertEqual(specs["color"], "Black")
         # Not stated in the name, so invented -- and never a budget size.
         self.assertIn(specs["ram"], {4, 6, 8, 12})
 
@@ -80,15 +82,15 @@ class SeedSpecsTest(TestCase):
                 self._cat("laptops"), {}, text=name, condition="new", seed=name
             )["laptop_type"]
 
-        self.assertEqual(laptop_type("Lenovo Legion 5 Pro RTX 3070"), "gaming")
-        self.assertEqual(laptop_type("Dell Latitude 5420 Core i5"), "business")
+        self.assertEqual(laptop_type("Lenovo Legion 5 Pro RTX 3070"), "Gaming")
+        self.assertEqual(laptop_type("Dell Latitude 5420 Core i5"), "Business")
         # "RTX A2000" is a workstation card, not a gaming one.
         self.assertEqual(
             laptop_type("Dell Precision 5560 Mobile Workstation RTX A2000"),
-            "workstation",
+            "Workstation",
         )
-        self.assertEqual(laptop_type("HP Spectre x360 2-in-1 14 OLED"), "two_in_one")
-        self.assertEqual(laptop_type("HP Pavilion 15 Core i5"), "everyday")
+        self.assertEqual(laptop_type("HP Spectre x360 2-in-1 14 OLED"), "2-in-1")
+        self.assertEqual(laptop_type("HP Pavilion 15 Core i5"), "Everyday / student")
 
     def test_used_items_get_their_condition_fields(self):
         specs = seed_specs(
@@ -99,7 +101,7 @@ class SeedSpecsTest(TestCase):
             seed="s23",
         )
         self.assertTrue(78 <= specs["battery_health"] <= 99)
-        self.assertEqual(specs["warranty"], "shop_3m")
+        self.assertEqual(specs["warranty"], "Shop · 3 months")
 
     def test_type_is_read_before_the_fields_that_depend_on_it(self):
         specs = seed_specs(
@@ -123,7 +125,7 @@ class SeedSpecsTest(TestCase):
         )
         self.assertEqual(specs["camera_type"], "mirrorless")
         self.assertEqual(specs["kit"], "with_lens")
-        self.assertEqual(specs["lens_mount"], "canon_rf")
+        self.assertEqual(specs["lens_mount"], "Canon RF")
 
     def test_old_free_text_specs_are_converted_and_kept(self):
         specs = seed_specs(

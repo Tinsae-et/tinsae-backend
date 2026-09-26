@@ -106,6 +106,31 @@ def as_text(field: dict, value):
     return next((o["label"] for o in field["options"] if o["value"] == value), value)
 
 
+def normalize_specs(schema: dict, specs):
+    """Tidy typed values before they are validated and stored.
+
+    Text is trimmed and inner whitespace collapsed; a pick-or-type value that
+    matches a suggestion by label or value, ignoring case, becomes that
+    suggestion's label -- so "black", "BLACK " and "Black" are one colour to a
+    filter, while "Titanium Blue" is kept exactly as typed.
+    """
+    if not isinstance(specs, dict):
+        return specs
+    out = dict(specs)
+    for field in schema["fields"]:
+        value = out.get(field["key"])
+        if field["type"] != AttributeType.TEXT or not isinstance(value, str):
+            continue
+        value = " ".join(value.split())
+        folded = value.casefold()
+        for option in field["options"] or []:
+            if folded in (option["label"].casefold(), option["value"].casefold()):
+                value = option["label"]
+                break
+        out[field["key"]] = value
+    return out
+
+
 def matches_condition(condition: dict | None, values: dict) -> bool:
     """Whether every key in a `show_if` / `required_if` holds an allowed value."""
     if not condition:

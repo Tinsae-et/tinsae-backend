@@ -8,7 +8,7 @@ from catalog.models import (
     ProductStatus,
 )
 from catalog.serializers import ProductImageSerializer
-from catalog.specs import category_schema, validate_specs
+from catalog.specs import category_schema, normalize_specs, validate_specs
 
 from .models import Shop, VerificationRequest
 
@@ -184,6 +184,10 @@ class ShopProductSerializer(serializers.ModelSerializer):
         if schema is None:
             return attrs
 
+        if "specs" in attrs:
+            # Tidy before checking, so "  " counts as empty and "black" is
+            # stored as the suggestion "Black".
+            attrs["specs"] = normalize_specs(schema, attrs["specs"])
         specs = attrs.get("specs", instance.specs if instance else {})
         condition = attrs.get(
             "condition", instance.condition if instance else ProductCondition.NEW
