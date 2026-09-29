@@ -166,6 +166,16 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             qs = qs.fresh()
         if category := self.request.query_params.get("category"):
             qs = qs.filter(category__slug=category)
+        # Brand is a facet, not a free-text search: a comma-separated list is
+        # the OR of the brands picked in the filter panel. Matching is
+        # case-insensitive because stored casing drifts ("APPLE" vs "Apple").
+        if brand := self.request.query_params.get("brand"):
+            brands = [b.strip() for b in brand.split(",") if b.strip()]
+            if brands:
+                brand_q = Q()
+                for b in brands:
+                    brand_q |= Q(brand__iexact=b)
+                qs = qs.filter(brand_q)
 
         # An explicit sort replaces the ranking rather than nesting underneath
         # it: a buyer who asks for cheapest-first means it. Filters compose with

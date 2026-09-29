@@ -100,6 +100,39 @@ class ProductApiTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["results"][0]["title"], "Samsung Galaxy A15")
 
+    def test_filter_by_brand_is_case_insensitive(self):
+        Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Apple",
+            name="iPhone 15",
+            slug="iphone-15",
+            price="90000.00",
+            last_confirmed_at=timezone.now(),
+        )
+
+        response = APIClient().get("/api/v1/catalog/products/?brand=apple")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["title"], "Apple iPhone 15")
+
+    def test_brand_filter_accepts_a_comma_separated_list(self):
+        Product.objects.create(
+            category=self.cat,
+            shop=self.shop,
+            brand="Apple",
+            name="iPhone 15",
+            slug="iphone-15",
+            price="90000.00",
+            last_confirmed_at=timezone.now(),
+        )
+
+        response = APIClient().get(
+            "/api/v1/catalog/products/?brand=Samsung,Apple"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+
     def test_max_price_filter(self):
         response = APIClient().get("/api/v1/catalog/products/?max_price=20000.00")
         self.assertEqual(response.status_code, 200)
