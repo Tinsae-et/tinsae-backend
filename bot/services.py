@@ -1,22 +1,36 @@
 import logging
 import re
-from decimal import Decimal
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from catalog.models import Product
-from catalog.services import apply_confirmation
+from catalog.services import answer_confirmation_request, apply_confirmation
 from shops.models import Shop
 
+from . import messages, outbox
 from . import telegram_api as telegram
+from .keyboards import prompt_markup
 from .models import (
     LINK_CODE_ALPHABET,
     LINK_CODE_LENGTH,
     LINK_CODE_PREFIX,
+    ConfirmationDigest,
     ConfirmationRequest,
+    ProcessedUpdate,
     ShopLinkCode,
+)
+from .parsing import (
+    AFFIRMATIVE as AFFIRMATIVE,
+)
+from .parsing import (
+    NEGATIVE as NEGATIVE,
+)
+from .parsing import (
+    parse_answer,
+    parse_listing_callback,
+    parse_prompt_callback,
 )
 from .selectors import pending_request_for_chat
 
@@ -34,59 +48,8 @@ LINK_CODE_RE = re.compile(
     r"(?![0-9A-Z])"
 )
 
-# Free-text answers, matched as whole normalised phrases. Kept deliberately
-# small and exact: a wrong guess writes to the catalogue, and substring matching
-# would read "no longer available" as a confirmation.
-_PUNCTUATION = re.compile(r"[^\w\s]", flags=re.UNICODE)
-
-AFFIRMATIVE = {
-    "yes",
-    "y",
-    "yeah",
-    "yep",
-    "yup",
-    "ok",
-    "okay",
-    "sure",
-    "available",
-    "still available",
-    "in stock",
-    "still in stock",
-    "have",
-    "still have",
-    "we have it",
-    "አለ",
-}
-NEGATIVE = {
-    "no",
-    "n",
-    "nope",
-    "sold",
-    "sold out",
-    "soldout",
-    "not available",
-    "out of stock",
-    "finished",
-    "gone",
-    "የለም",
-}
-
-
-def _prompt_markup(request_id: int) -> dict:
-    return {
-        "inline_keyboard": [
-            [
-                {
-                    "text": "✅ Still available",
-                    "callback_data": f"confirm_{request_id}",
-                },
-                {
-                    "text": "❌ Sold out",
-                    "callback_data": f"deny_{request_id}",
-                },
-            ]
-        ]
-    }
+# Backwards compatibility alias for the prompt keyboard constructor.
+_prompt_markup = prompt_markup
 
 
 def prompt_text(product: Product) -> str:
@@ -99,25 +62,13 @@ def prompt_text(product: Product) -> str:
     The YES/NO line is a promise, not decoration: those words are in
     `AFFIRMATIVE`/`NEGATIVE` below, and `parse_answer` lowercases before matching.
     """
-    shop = product.shop
-    if product.is_available:
-        opening = "Is this still available?"
-    else:
-        # We only re-ask about an unavailable product because the merchant told
-        # us it was out of stock a while ago. Asking "is it still available?"
-        # would read as though we had ignored them.
-        opening = "Is this back in stock?"
-
-    # A DecimalField only holds a Decimal once it has been round-tripped through
-    # the database; on an instance built in memory it is still whatever was
-    # assigned, and a str has no ",.2f" format. Coerce so this works either way.
-    price = Decimal(product.price)
-
-    return (
-        f"{opening}\n\n"
-        f"{product.brand} {product.name}\n"
-        f"{price:,.2f} {product.currency} · {shop.name}\n\n"
-        "Tap a button below, or just reply YES or NO."
+    return messages.prompt(
+        brand=product.brand,
+        name=product.name,
+        price=product.price,
+        currency=product.currency,
+        shop_name=product.shop.name,
+        is_available=product.is_available,
     )
 
 
@@ -159,9 +110,9 @@ def send_confirmation_prompt(
 ) -> ConfirmationRequest | None:
     """Ask a shop to confirm a product is still in stock.
 
-    Returns the pending ConfirmationRequest, or None if the prompt was skipped or
-    the send failed. A failed send leaves no pending row behind, so the next sweep
-    retries instead of being blocked for the whole expiry window.
+    Returns the pending ConfirmationRequest, or None if the prompt was skipped.
+    Enqueues an OutboundMessage in the same transaction so delivery is handled
+    asynchronously by the outbox sender with retries.
 
     `force` is for the hand-run `send_prompt` command and lifts only the policy
     flag; see `can_prompt`.
@@ -187,6 +138,16 @@ def send_confirmation_prompt(
             confirmation_request = ConfirmationRequest.objects.create(
                 product=product, shop=shop, status="pending"
             )
+            outbox.enqueue(
+                chat_id=shop.telegram_chat_id,
+                kind="prompt",
+                payload={
+                    "text": text,
+                    "reply_markup": _prompt_markup(confirmation_request.pk),
+                    "confirmation_request_id": confirmation_request.pk,
+                },
+                dedupe_key=f"prompt:{confirmation_request.pk}",
+            )
     except IntegrityError:
         logger.info(
             "Skipping product %s: a concurrent run already created a request.",
@@ -194,32 +155,6 @@ def send_confirmation_prompt(
         )
         return None
 
-    if not telegram.is_configured():
-        logger.info(
-            "[Mock Telegram] Prompt for product %s to chat %s: %r",
-            product.pk,
-            shop.telegram_chat_id,
-            text,
-        )
-        return confirmation_request
-
-    try:
-        result = telegram.send_message(
-            chat_id=shop.telegram_chat_id,
-            text=text,
-            reply_markup=_prompt_markup(confirmation_request.pk),
-        )
-    except telegram.TelegramError as exc:
-        # Never leave a phantom pending row — it would suppress retries until the
-        # request expires, and the sweep would report a prompt that never landed.
-        confirmation_request.delete()
-        logger.error("Prompt for product %s failed: %s", product.pk, exc)
-        return None
-
-    message_id = result.get("message_id")
-    if message_id is not None:
-        confirmation_request.telegram_message_id = str(message_id)
-        confirmation_request.save(update_fields=["telegram_message_id", "updated_at"])
     return confirmation_request
 
 
@@ -235,14 +170,15 @@ def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
     policy ("should we ping merchants?"). A merchant who opened this listing
     themselves is already talking to us.
     """
-    action, _, rest = callback_data.partition(":")
-    raw_id = rest.partition(":")[0]
-    if action not in PRODUCT_CALLBACK_ACTIONS or not raw_id.isdigit():
+    parsed = parse_listing_callback(callback_data)
+    if parsed is None:
         logger.warning("Unrecognised product callback: %r", callback_data)
         return None
 
+    action, product_id, _page = parsed
+
     try:
-        product = Product.objects.select_related("shop").get(pk=int(raw_id))
+        product = Product.objects.select_related("shop").get(pk=product_id)
     except Product.DoesNotExist:
         logger.error("No product for callback %r", callback_data)
         return None
@@ -294,51 +230,46 @@ def handle_telegram_callback(
     `chat_id` is required and must match the shop that owns the product. Without
     it, any Telegram user could mark any product fresh or out of stock.
     """
-    action, _, raw_id = callback_data.partition("_")
-    if action not in ("confirm", "deny") or not raw_id.isdigit():
+    parsed = parse_prompt_callback(callback_data)
+    if parsed is None:
         logger.warning("Unrecognised callback data: %r", callback_data)
         return False
 
-    try:
-        confirmation_request = ConfirmationRequest.objects.select_related(
-            "product", "shop"
-        ).get(pk=int(raw_id))
-    except ConfirmationRequest.DoesNotExist:
-        logger.error("No ConfirmationRequest for callback %r", callback_data)
-        return False
+    action, request_id = parsed
+    available = action == "confirm"
 
-    if str(chat_id) != str(confirmation_request.shop.telegram_chat_id):
+    outcome, product = answer_confirmation_request(
+        chat_id=chat_id, request_id=request_id, available=available
+    )
+
+    if outcome == "not_found":
         logger.warning(
-            "Callback %r from chat %s does not own shop %s — rejected.",
+            "Callback %r from chat %s rejected: request %s not found or foreign.",
             callback_data,
             chat_id,
-            confirmation_request.shop_id,
+            request_id,
         )
         return False
 
-    if confirmation_request.status != "pending":
+    if outcome == "already_answered":
         logger.info(
-            "Ignoring callback %r: request is already %s.",
+            "Ignoring callback %r: request %s is already answered.",
             callback_data,
-            confirmation_request.status,
+            request_id,
         )
         return False
 
-    product = confirmation_request.product
-
-    confirmed = action == "confirm"
-    apply_confirmation(product, confirmed=confirmed, request=confirmation_request)
-
-    response_text = (
-        f"✅ Thank you! '{product.name}' is marked in stock."
-        if confirmed
-        else f"❌ Got it — '{product.name}' is marked out of stock."
+    response_text = messages.telegram_callback_response(
+        product_name=product.name,
+        confirmed=available,
     )
 
     if telegram.is_configured():
         if callback_query_id:
             try:
-                telegram.answer_callback(callback_query_id, "Response recorded")
+                telegram.answer_callback(
+                    callback_query_id, messages.response_recorded()
+                )
             except telegram.TelegramError as exc:
                 logger.error("answerCallbackQuery failed: %s", exc)
         if message_id:
@@ -349,18 +280,6 @@ def handle_telegram_callback(
 
     logger.info("Applied callback %r to product %s.", callback_data, product.pk)
     return True
-
-
-def parse_answer(text: str) -> bool | None:
-    """Read a free-text answer as yes/no, or None if it isn't one."""
-    if not text:
-        return None
-    normalised = " ".join(_PUNCTUATION.sub(" ", text.strip().lower()).split())
-    if normalised in AFFIRMATIVE:
-        return True
-    if normalised in NEGATIVE:
-        return False
-    return None
 
 
 def handle_text_reply(
@@ -390,10 +309,16 @@ def handle_text_reply(
     if confirmed is None:
         return "unparsed", None
 
-    product = request.product
-    apply_confirmation(product, confirmed=confirmed, request=request)
+    outcome, product = answer_confirmation_request(
+        chat_id=chat_id, request_id=request.pk, available=confirmed
+    )
+    if outcome == "already_answered":
+        return "inactive", product
+    if outcome == "not_found":
+        return "orphan", None
+
     logger.info("Applied text reply %r to product %s.", text, product.pk)
-    return ("confirmed" if confirmed else "sold_out"), product
+    return outcome, product
 
 
 def issue_link_code(shop: Shop, *, created_by=None) -> ShopLinkCode:
@@ -548,7 +473,8 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
             outcome = "linked"
 
         shop.telegram_chat_id = chat_id
-        shop.save(update_fields=["telegram_chat_id", "updated_at"])
+        shop.blocked_at = None
+        shop.save(update_fields=["telegram_chat_id", "blocked_at", "updated_at"])
 
         link_code.used_at = now
         link_code.used_by_chat_id = chat_id
@@ -556,3 +482,104 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
 
     logger.info("Chat %s linked to shop %s (%s).", chat_id, shop.pk, outcome)
     return outcome, shop
+
+
+def unlink_chat(chat_id: str | int | None) -> list[Shop]:
+    """Clear telegram_chat_id and blocked_at for every shop bound to this chat.
+
+    Returns the shops that were unlinked.
+    """
+    if chat_id in (None, ""):
+        return []
+    chat_str = str(chat_id)
+    with transaction.atomic():
+        shops = list(Shop.objects.filter(telegram_chat_id=chat_str))
+        if not shops:
+            return []
+        now = timezone.now()
+        Shop.objects.filter(telegram_chat_id=chat_str).update(
+            telegram_chat_id="",
+            blocked_at=None,
+            updated_at=now,
+        )
+        for shop in shops:
+            shop.telegram_chat_id = ""
+            shop.blocked_at = None
+        logger.info("Unlinked chat %s from %d shop(s).", chat_str, len(shops))
+        return shops
+
+
+def disconnect_shop(shop: Shop) -> None:
+    """Clear a shop's Telegram binding and blocked status.
+
+    Leaves link codes intact for audit.
+    """
+    shop.telegram_chat_id = ""
+    shop.blocked_at = None
+    shop.save(update_fields=["telegram_chat_id", "blocked_at", "updated_at"])
+    logger.info("Disconnected Telegram from shop %s.", shop.pk)
+
+
+def record_update(update_id: int) -> bool:
+    """Record an inbound Telegram update_id to prevent duplicate handling.
+
+    Returns True if newly recorded (fresh), or False if already seen (duplicate).
+    """
+    try:
+        with transaction.atomic():
+            ProcessedUpdate.objects.create(update_id=update_id)
+        return True
+    except IntegrityError:
+        return False
+
+
+def answer_confirmation_digest(
+    chat_id: str | int | None, digest_id: int, *, available: bool = True
+) -> tuple[str, int]:
+    """Resolve all pending requests attached to a ConfirmationDigest.
+
+    Outcomes:
+        ("confirmed" | "sold_out", count_answered) on success
+        ("already_answered", 0) if digest is already closed
+        ("not_found", 0) if digest does not exist or chat_id does not own the shop
+    """
+    if chat_id in (None, ""):
+        return "not_found", 0
+
+    try:
+        digest = ConfirmationDigest.objects.select_related("shop").get(pk=digest_id)
+    except (ConfirmationDigest.DoesNotExist, ValueError):
+        return "not_found", 0
+
+    shop_chat_id = digest.shop.telegram_chat_id
+    if not shop_chat_id or str(shop_chat_id) != str(chat_id):
+        return "not_found", 0
+
+    if digest.closed_at is not None:
+        return "already_answered", 0
+
+    target_outcome = "confirmed" if available else "sold_out"
+    count = 0
+
+    with transaction.atomic():
+        requests = list(digest.requests.filter(status="pending"))
+        for req in requests:
+            outcome, _ = answer_confirmation_request(
+                chat_id=chat_id,
+                request_id=req.pk,
+                available=available,
+            )
+            if outcome == target_outcome:
+                count += 1
+
+        digest.closed_at = timezone.now()
+        digest.save(update_fields=["closed_at", "updated_at"])
+
+    logger.info(
+        "Chat %s answered digest %s (%s, %d items).",
+        chat_id,
+        digest_id,
+        target_outcome,
+        count,
+    )
+    return target_outcome, count

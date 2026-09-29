@@ -1,24 +1,42 @@
+import types
 from datetime import timedelta
 from io import StringIO
+from pathlib import Path
 from unittest import mock
 
 from asgiref.sync import async_to_sync
 from django.conf import settings
+from django.contrib.admin.sites import site
 from django.contrib.auth import get_user_model
 from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
+from telegram.ext import ApplicationHandlerStop
 
+from bot import keyboards, messages, parsing
 from bot import telegram_api as telegram
-from bot.management.commands.run_bot import my_products, on_callback, on_text
-from bot.models import ConfirmationRequest
+from bot.management.commands.run_bot import (
+    dedupe,
+    my_products,
+    on_callback,
+    on_error,
+    on_text,
+)
+from bot.models import (
+    ConfirmationDigest,
+    ConfirmationRequest,
+    OutboundMessage,
+    ProcessedUpdate,
+)
 from bot.selectors import listing_for_chat, shops_for_chat
+from bot.sender import drain_outbox
 from bot.services import (
     handle_product_callback,
     handle_telegram_callback,
     handle_text_reply,
     parse_answer,
+    record_update,
     send_confirmation_prompt,
 )
 from catalog.models import Category, ConfirmationStatus, Product
@@ -31,7 +49,11 @@ CHAT_ID = "987654321"
 OTHER_CHAT_ID = "111000111"
 
 
-@override_settings(TELEGRAM_BOT_TOKEN="test-token", ENABLE_TELEGRAM_BOT_PROMPTS=True)
+@override_settings(
+    TELEGRAM_BOT_TOKEN="test-token",
+    ENABLE_TELEGRAM_BOT_PROMPTS=True,
+    TELEGRAM_MOCK_SEND=False,
+)
 class BotTestCase(TestCase):
     """Shared fixture.
 
@@ -91,11 +113,22 @@ class BotTestCase(TestCase):
 
 
 class SendPromptTests(BotTestCase):
+    def test_prompt_enqueues_outbox_message_transactionally(self):
+        request = send_confirmation_prompt(self.stale_product)
+        self.assertIsNotNone(request)
+        outbox_msg = OutboundMessage.objects.get(dedupe_key=f"prompt:{request.pk}")
+        self.assertEqual(outbox_msg.chat_id, CHAT_ID)
+        self.assertEqual(outbox_msg.kind, "prompt")
+        self.assertEqual(outbox_msg.status, "queued")
+        self.assertEqual(outbox_msg.payload["confirmation_request_id"], request.pk)
+        self.assertIn(self.stale_product.name, outbox_msg.payload["text"])
+
     def test_payload_is_addressed_to_the_owning_shop(self):
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 4242}
         ) as send:
             request = send_confirmation_prompt(self.stale_product)
+            drain_outbox(rate_limit=False)
 
         send.assert_called_once()
         kwargs = send.call_args.kwargs
@@ -106,12 +139,15 @@ class SendPromptTests(BotTestCase):
             [b["callback_data"] for b in buttons],
             [f"confirm_{request.pk}", f"deny_{request.pk}"],
         )
+        outbox_msg = OutboundMessage.objects.get(dedupe_key=f"prompt:{request.pk}")
+        self.assertEqual(outbox_msg.status, "sent")
 
     def test_prompt_names_the_product_and_its_price(self):
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             send_confirmation_prompt(self.stale_product)
+            drain_outbox(rate_limit=False)
 
         text = send.call_args.kwargs["text"]
         self.assertIn("Test Galaxy S23", text)
@@ -123,6 +159,7 @@ class SendPromptTests(BotTestCase):
             "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             send_confirmation_prompt(self.stale_product)
+            drain_outbox(rate_limit=False)
 
         kwargs = send.call_args.kwargs
         labels = [b["text"] for b in kwargs["reply_markup"]["inline_keyboard"][0]]
@@ -139,16 +176,25 @@ class SendPromptTests(BotTestCase):
             "bot.telegram_api.send_message", return_value={"message_id": 4242}
         ):
             request = send_confirmation_prompt(self.stale_product)
+            drain_outbox(rate_limit=False)
         request.refresh_from_db()
         self.assertEqual(request.telegram_message_id, "4242")
 
-    def test_failed_send_leaves_no_pending_request(self):
+    def test_failed_send_keeps_pending_request_and_queues_retry(self):
+        """With an outbox, a failed network send leaves the pending request in
+        place so the sender can retry, while the outbox row remains queued."""
         with mock.patch(
             "bot.telegram_api.send_message",
-            side_effect=telegram.TelegramError("network down"),
+            side_effect=telegram.TelegramNetworkError("network down"),
         ):
-            self.assertIsNone(send_confirmation_prompt(self.stale_product))
-        self.assertEqual(ConfirmationRequest.objects.count(), 0)
+            request = send_confirmation_prompt(self.stale_product)
+            self.assertIsNotNone(request)
+            drain_outbox(rate_limit=False)
+
+        self.assertEqual(ConfirmationRequest.objects.count(), 1)
+        outbox_msg = OutboundMessage.objects.get(dedupe_key=f"prompt:{request.pk}")
+        self.assertEqual(outbox_msg.status, "queued")
+        self.assertEqual(outbox_msg.attempts, 1)
 
     def test_shop_without_telegram_is_skipped(self):
         self.assertIsNone(send_confirmation_prompt(self.unconfirmed_product))
@@ -160,6 +206,7 @@ class SendPromptTests(BotTestCase):
         ) as send:
             self.assertIsNotNone(send_confirmation_prompt(self.stale_product))
             self.assertIsNone(send_confirmation_prompt(self.stale_product))
+            drain_outbox(rate_limit=False)
         self.assertEqual(send.call_count, 1)
 
     @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
@@ -183,6 +230,7 @@ class SendPromptTests(BotTestCase):
             )
             # Already asked.
             self.assertIsNone(send_confirmation_prompt(self.stale_product, force=True))
+            drain_outbox(rate_limit=False)
 
         self.assertEqual(send.call_count, 1)
 
@@ -193,6 +241,7 @@ class SendPromptTests(BotTestCase):
             "bot.telegram_api.send_message", return_value={"message_id": 1}
         ) as send:
             send_confirmation_prompt(self.stale_product)
+            drain_outbox(rate_limit=False)
         self.assertIn("back in stock", send.call_args.kwargs["text"])
 
     def test_database_rejects_a_second_pending_request(self):
@@ -550,6 +599,47 @@ class CallbackHandlerTests(BotTestCase):
 
         request.refresh_from_db()
         self.assertEqual(request.status, "pending")
+
+    def test_handler_answers_digest_all_available(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, digest=digest, status="pending"
+        )
+        update, query = self._update(f"da:{digest.pk}")
+        async_to_sync(on_callback)(update, None)
+
+        request.refresh_from_db()
+        digest.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+        self.assertIsNotNone(digest.closed_at)
+        query.answer.assert_awaited_with(messages.response_recorded())
+        query.edit_message_text.assert_awaited_with(messages.digest_ack(1))
+
+    def test_handler_answers_digest_already_closed(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(
+            shop=self.shop, for_date=today, closed_at=timezone.now()
+        )
+        update, query = self._update(f"da:{digest.pk}")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with(messages.response_recorded())
+        query.edit_message_text.assert_awaited_with(messages.digest_already_done())
+
+    def test_handler_digest_rejects_foreign_chat(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        request = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, digest=digest, status="pending"
+        )
+        update, query = self._update(f"da:{digest.pk}", chat_id=OTHER_CHAT_ID)
+        async_to_sync(on_callback)(update, None)
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "pending")
+        query.answer.assert_awaited_with(messages.request_inactive())
+        query.edit_message_text.assert_not_awaited()
 
 
 class ListingSelectorTests(BotTestCase):
@@ -978,34 +1068,23 @@ class SendPromptCommandTests(BotTestCase):
         call_command("send_prompt", *args, stdout=out)
         return out.getvalue()
 
-    def test_it_prompts_the_named_product(self):
-        with mock.patch(
-            "bot.telegram_api.send_message", return_value={"message_id": 77}
-        ) as send:
-            output = self._run(str(self.stale_product.pk))
+    def test_it_queues_a_prompt_for_the_named_product(self):
+        output = self._run(str(self.stale_product.pk))
 
-        send.assert_called_once()
-        self.assertIn("Sent to chat", output)
-        self.assertEqual(
-            ConfirmationRequest.objects.filter(
-                product=self.stale_product, status="pending"
-            ).count(),
-            1,
+        self.assertIn("Queued for chat", output)
+        request = ConfirmationRequest.objects.get(
+            product=self.stale_product, status="pending"
         )
+        outbox_msg = OutboundMessage.objects.get(dedupe_key=f"prompt:{request.pk}")
+        self.assertEqual(outbox_msg.status, "queued")
 
     def test_a_slug_identifies_the_product_too(self):
-        with mock.patch(
-            "bot.telegram_api.send_message", return_value={"message_id": 77}
-        ) as send:
-            self._run(self.stale_product.slug)
+        output = self._run(self.stale_product.slug)
 
-        self.assertIn("Galaxy S23", send.call_args.kwargs["text"])
+        self.assertIn("Galaxy S23", output)
 
-    def test_it_shows_the_message_before_sending_anything(self):
-        with mock.patch(
-            "bot.telegram_api.send_message", return_value={"message_id": 77}
-        ):
-            output = self._run(str(self.stale_product.pk))
+    def test_it_shows_the_message_before_queueing_anything(self):
+        output = self._run(str(self.stale_product.pk))
 
         self.assertIn("10,000.00 ETB", output)
         self.assertIn("reply YES or NO", output)
@@ -1015,7 +1094,7 @@ class SendPromptCommandTests(BotTestCase):
         output = self._run(str(self.stale_product.pk))
 
         self.assertIn("10,000.00 ETB", output)
-        self.assertIn("nothing left the server", output)
+        self.assertIn("marked dead", output)
 
     def test_a_product_with_a_pending_request_is_not_asked_twice(self):
         ConfirmationRequest.objects.create(
@@ -1036,13 +1115,9 @@ class SendPromptCommandTests(BotTestCase):
 
     @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
     def test_force_sends_while_the_flag_is_off(self):
-        with mock.patch(
-            "bot.telegram_api.send_message", return_value={"message_id": 77}
-        ) as send:
-            output = self._run(str(self.stale_product.pk), "--force")
+        output = self._run(str(self.stale_product.pk), "--force")
 
-        send.assert_called_once()
-        self.assertIn("Sent to chat", output)
+        self.assertIn("Queued for chat", output)
 
     @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
     def test_force_does_not_lift_the_double_send_guard(self):
@@ -1066,3 +1141,504 @@ class SendPromptCommandTests(BotTestCase):
             self._run("99999999")
         with self.assertRaisesMessage(CommandError, "No product matching"):
             self._run("no-such-slug")
+
+
+class RecordUpdateTests(TestCase):
+    """Idempotency service tests for recording update IDs."""
+
+    def test_fresh_update_records_and_returns_true(self):
+        self.assertTrue(record_update(12345))
+        self.assertTrue(ProcessedUpdate.objects.filter(update_id=12345).exists())
+
+    def test_duplicate_update_returns_false(self):
+        self.assertTrue(record_update(12345))
+        self.assertFalse(record_update(12345))
+        self.assertEqual(ProcessedUpdate.objects.filter(update_id=12345).count(), 1)
+
+    def test_multiple_distinct_updates_record_independently(self):
+        self.assertTrue(record_update(1001))
+        self.assertTrue(record_update(1002))
+        self.assertEqual(
+            ProcessedUpdate.objects.filter(update_id__in=[1001, 1002]).count(), 2
+        )
+
+
+class DedupeHandlerTests(TestCase):
+    """PTB TypeHandler dedupe logic: drop redelivered updates before handlers run."""
+
+    def test_fresh_update_passes_through(self):
+        update = mock.Mock()
+        update.update_id = 98765432101
+        context = mock.Mock()
+
+        async_to_sync(dedupe)(update, context)
+        self.assertTrue(ProcessedUpdate.objects.filter(update_id=98765432101).exists())
+
+    def test_duplicate_update_raises_application_handler_stop(self):
+        ProcessedUpdate.objects.create(update_id=98765432102)
+        update = mock.Mock()
+        update.update_id = 98765432102
+        context = mock.Mock()
+
+        with self.assertRaises(ApplicationHandlerStop):
+            async_to_sync(dedupe)(update, context)
+
+    def test_update_without_id_passes_through(self):
+        context = mock.Mock()
+
+        update_none = mock.Mock()
+        update_none.update_id = None
+        async_to_sync(dedupe)(update_none, context)
+
+        update_no_attr = mock.Mock(spec=[])
+        async_to_sync(dedupe)(update_no_attr, context)
+
+
+class GlobalErrorHandlerTests(TestCase):
+    """PTB on_error global error handler."""
+
+    def test_logs_error_and_replies_when_effective_message_exists(self):
+        update = mock.Mock()
+        update.update_id = 55555
+        update.effective_chat = mock.Mock(id=67890)
+        update.effective_message = mock.AsyncMock()
+        context = mock.Mock()
+        context.error = ValueError("Database connection lost")
+
+        with self.assertLogs("bot.management.commands.run_bot", level="ERROR") as cm:
+            async_to_sync(on_error)(update, context)
+
+        update.effective_message.reply_text.assert_awaited_once_with(
+            "Something went wrong, please try again."
+        )
+        self.assertTrue(
+            any(
+                "Exception while handling update 55555 (chat 67890): ValueError: Database connection lost"
+                in log
+                for log in cm.output
+            )
+        )
+
+    def test_handles_update_none_without_exception(self):
+        context = mock.Mock()
+        context.error = RuntimeError("Polling transport timeout")
+
+        with self.assertLogs("bot.management.commands.run_bot", level="ERROR") as cm:
+            async_to_sync(on_error)(None, context)
+
+        self.assertTrue(
+            any(
+                "Exception while handling update None (chat None): RuntimeError: Polling transport timeout"
+                in log
+                for log in cm.output
+            )
+        )
+
+    def test_handles_update_without_effective_message(self):
+        update = mock.Mock()
+        update.update_id = 55556
+        update.effective_chat = mock.Mock(id=67891)
+        update.effective_message = None
+        context = mock.Mock()
+        context.error = RuntimeError("Unhandled update type")
+
+        with self.assertLogs("bot.management.commands.run_bot", level="ERROR") as cm:
+            async_to_sync(on_error)(update, context)
+
+        self.assertTrue(
+            any(
+                "Exception while handling update 55556 (chat 67891): RuntimeError: Unhandled update type"
+                in log
+                for log in cm.output
+            )
+        )
+
+    def test_catches_reply_failure_without_crashing_poller(self):
+        update = mock.Mock()
+        update.update_id = 55557
+        update.effective_chat = mock.Mock(id=67892)
+        update.effective_message = mock.AsyncMock()
+        update.effective_message.reply_text.side_effect = Exception(
+            "Network unreachable"
+        )
+        context = mock.Mock()
+        context.error = ValueError("Original error")
+
+        with self.assertLogs("bot.management.commands.run_bot", level="WARNING") as cm:
+            async_to_sync(on_error)(update, context)
+
+        self.assertTrue(
+            any(
+                "Failed to send error reply to chat 67892: Network unreachable" in log
+                for log in cm.output
+            )
+        )
+
+
+class NoOrmInHandlersTests(SimpleTestCase):
+    """CI guard: handlers must never touch the ORM directly.
+
+    DB access belongs strictly in application/domain services invoked via
+    sync_to_async.
+    """
+
+    def _find_handler_files(self):
+        base_dir = Path(settings.BASE_DIR)
+        files = [base_dir / "bot" / "management" / "commands" / "run_bot.py"]
+        handlers_dir = base_dir / "bot" / "handlers"
+        if handlers_dir.is_dir():
+            files.extend(handlers_dir.rglob("*.py"))
+        return [f for f in files if f.exists()]
+
+    def test_handler_files_contain_no_orm_objects_access(self):
+        handler_files = self._find_handler_files()
+        self.assertTrue(len(handler_files) > 0, "No handler files found to scan")
+
+        violations = []
+        for file_path in handler_files:
+            content = file_path.read_text(encoding="utf-8")
+            if ".objects" in content:
+                for line_no, line in enumerate(content.splitlines(), start=1):
+                    if ".objects" in line:
+                        violations.append(f"{file_path.name}:{line_no}: {line.strip()}")
+
+        self.assertEqual(
+            violations,
+            [],
+            "Found direct ORM access (.objects) in handler files:\n"
+            + "\n".join(violations),
+        )
+
+    def test_scanner_detects_objects_access_in_snippet(self):
+        sample = "products = Product.objects.filter(active=True)"
+        self.assertIn(".objects", sample)
+
+
+class ProcessedUpdateAdminTests(TestCase):
+    """Admin tests for ProcessedUpdate read-only registration."""
+
+    def setUp(self):
+        self.admin = site._registry[ProcessedUpdate]
+        self.request = mock.Mock()
+
+    def test_admin_is_read_only(self):
+        self.assertFalse(self.admin.has_add_permission(self.request))
+        self.assertFalse(self.admin.has_change_permission(self.request))
+
+    def test_admin_list_display_and_filters(self):
+        self.assertEqual(self.admin.list_display, ["update_id", "created_at"])
+        self.assertEqual(self.admin.list_filter, ["created_at"])
+        self.assertEqual(self.admin.search_fields, ["update_id"])
+
+
+class MessagesTests(SimpleTestCase):
+    """Pure unit tests for user-facing string generation."""
+
+    def test_text_reply_ack_confirmed_matches_exact_pinned_wording(self):
+        result = messages.text_reply_ack("confirmed", "Test Phone")
+        self.assertEqual(result, "✅ Thanks — 'Test Phone' is marked in stock.")
+
+    def test_text_reply_ack_all_branches(self):
+        self.assertEqual(
+            messages.text_reply_ack("sold_out", "Item"),
+            "❌ Got it — 'Item' is marked out of stock.",
+        )
+        self.assertIn("Several products", messages.text_reply_ack("ambiguous"))
+        self.assertIn("no longer active", messages.text_reply_ack("inactive"))
+        self.assertIn("Nothing is waiting", messages.text_reply_ack("orphan"))
+        self.assertIn("I didn't catch that", messages.text_reply_ack("unknown"))
+
+    def test_prompt_formatting_available_and_unavailable(self):
+        prompt_avail = messages.prompt(
+            brand="Samsung",
+            name="Galaxy",
+            price="10000",
+            currency="ETB",
+            shop_name="Bole Shop",
+            is_available=True,
+        )
+        self.assertIn("Is this still available?", prompt_avail)
+        self.assertIn("Samsung Galaxy", prompt_avail)
+        self.assertIn("10,000.00 ETB · Bole Shop", prompt_avail)
+        self.assertIn("reply YES or NO", prompt_avail)
+
+        prompt_unavail = messages.prompt(
+            brand="Samsung",
+            name="Galaxy",
+            price=500.5,
+            currency="ETB",
+            shop_name="Bole Shop",
+            is_available=False,
+        )
+        self.assertIn("Is this back in stock?", prompt_unavail)
+        self.assertIn("500.50 ETB · Bole Shop", prompt_unavail)
+
+    def test_welcome_and_help(self):
+        welcome = messages.welcome(12345)
+        self.assertIn("Welcome to Tinsae", welcome)
+        self.assertIn("12345", welcome)
+        self.assertIn("/myproducts", messages.help_text())
+
+    def test_link_ack_branches(self):
+        self.assertIn("Bole Shop", messages.link_ack("linked", "Bole Shop"))
+        self.assertIn("Bole Shop", messages.link_ack("relinked", "Bole Shop"))
+        self.assertIn("Bole Shop", messages.link_ack("already_linked", "Bole Shop"))
+        self.assertIn("expired", messages.link_ack("expired"))
+        self.assertIn("already been used", messages.link_ack("used"))
+        self.assertIn("don't recognise", messages.link_ack("invalid"))
+
+    def test_digest_formatting(self):
+        text = messages.digest(
+            "Bole Electronics",
+            [
+                (1, "Apple iPhone 15", "10,000.00 ETB"),
+                (2, "Samsung Galaxy", "8,000.00 ETB"),
+            ],
+            more_count=3,
+            hidden_after_days=14,
+        )
+        self.assertIn("Weekly stock check for Bole Electronics:", text)
+        self.assertIn("1. Apple iPhone 15 — 10,000.00 ETB", text)
+        self.assertIn("2. Samsung Galaxy — 8,000.00 ETB", text)
+        self.assertIn("…and 3 more", text)
+        self.assertIn("hidden after 14 days", text)
+
+    def test_digest_acks(self):
+        self.assertEqual(
+            messages.digest_ack(1), "✅ Thanks! 1 product is confirmed in stock."
+        )
+        self.assertEqual(
+            messages.digest_ack(4), "✅ Thanks! All 4 products are confirmed in stock."
+        )
+        self.assertEqual(
+            messages.digest_already_done(), "This digest has already been answered. 🎉"
+        )
+
+
+class ParsingTests(SimpleTestCase):
+    """Pure unit tests for answer parsing and callback data formatters/parsers."""
+
+    def test_parse_answer_affirmative(self):
+        for word in (
+            "yes",
+            "y",
+            "yeah",
+            "yep",
+            "yup",
+            "ok",
+            "okay",
+            "sure",
+            "available",
+            "still available",
+            "in stock",
+            "still in stock",
+            "have",
+            "still have",
+            "we have it",
+            "አለ",
+        ):
+            self.assertTrue(parsing.parse_answer(word), f"Expected True for {word!r}")
+
+    def test_parse_answer_negative(self):
+        for word in (
+            "no",
+            "n",
+            "nope",
+            "sold",
+            "sold out",
+            "soldout",
+            "not available",
+            "out of stock",
+            "finished",
+            "gone",
+            "የለም",
+        ):
+            self.assertFalse(parsing.parse_answer(word), f"Expected False for {word!r}")
+
+    def test_parse_answer_unrecognised_and_empty(self):
+        self.assertIsNone(parsing.parse_answer(""))
+        self.assertIsNone(parsing.parse_answer(None))
+        self.assertIsNone(parsing.parse_answer("maybe next week"))
+        self.assertIsNone(parsing.parse_answer("how much does it cost?"))
+
+    def test_parse_answer_normalises_whitespace_case_and_punctuation(self):
+        self.assertTrue(parsing.parse_answer("  YES!  "))
+        self.assertTrue(parsing.parse_answer("Still Available..."))
+        self.assertFalse(parsing.parse_answer("Sold out!"))
+
+    def test_prompt_callback_round_trip(self):
+        confirm_data = parsing.format_prompt_callback("confirm", 42)
+        self.assertEqual(confirm_data, "confirm_42")
+        self.assertEqual(parsing.parse_prompt_callback(confirm_data), ("confirm", 42))
+
+        deny_data = parsing.format_prompt_callback("deny", 999)
+        self.assertEqual(deny_data, "deny_999")
+        self.assertEqual(parsing.parse_prompt_callback(deny_data), ("deny", 999))
+
+    def test_prompt_callback_invalid(self):
+        self.assertIsNone(parsing.parse_prompt_callback("confirm_abc"))
+        self.assertIsNone(parsing.parse_prompt_callback("other_42"))
+        self.assertIsNone(parsing.parse_prompt_callback("confirm"))
+        self.assertIsNone(parsing.parse_prompt_callback(""))
+
+    def test_listing_callback_round_trip(self):
+        pconfirm_data = parsing.format_listing_callback("pconfirm", 101, 3)
+        self.assertEqual(pconfirm_data, "pconfirm:101:3")
+        self.assertEqual(
+            parsing.parse_listing_callback(pconfirm_data),
+            ("pconfirm", 101, 3),
+        )
+
+        pdeny_data = parsing.format_listing_callback("pdeny", 202, 0)
+        self.assertEqual(pdeny_data, "pdeny:202:0")
+        self.assertEqual(
+            parsing.parse_listing_callback(pdeny_data),
+            ("pdeny", 202, 0),
+        )
+
+    def test_listing_callback_invalid(self):
+        self.assertIsNone(parsing.parse_listing_callback("pconfirm:abc:0"))
+        self.assertIsNone(parsing.parse_listing_callback("unknown:1:0"))
+        self.assertIsNone(parsing.parse_listing_callback("nonsense"))
+        self.assertIsNone(parsing.parse_listing_callback(""))
+
+    def test_page_callback_round_trip(self):
+        page_data = parsing.format_page_callback(4)
+        self.assertEqual(page_data, "page:4")
+        self.assertEqual(parsing.parse_page_callback(page_data), 4)
+
+    def test_page_callback_invalid(self):
+        self.assertIsNone(parsing.parse_page_callback("page:abc"))
+        self.assertIsNone(parsing.parse_page_callback("page:"))
+        self.assertIsNone(parsing.parse_page_callback("other:1"))
+
+    def test_unlink_callback_round_trip(self):
+        unlink_yes = parsing.format_unlink_callback("yes")
+        self.assertEqual(unlink_yes, "unlink:yes")
+        self.assertEqual(parsing.parse_unlink_callback(unlink_yes), "yes")
+
+        unlink_cancel = parsing.format_unlink_callback("cancel")
+        self.assertEqual(unlink_cancel, "unlink:cancel")
+        self.assertEqual(parsing.parse_unlink_callback(unlink_cancel), "cancel")
+
+    def test_unlink_callback_invalid(self):
+        self.assertIsNone(parsing.parse_unlink_callback("unlink:unknown"))
+        self.assertIsNone(parsing.parse_unlink_callback("unlink:"))
+        self.assertIsNone(parsing.parse_unlink_callback("other:yes"))
+        self.assertIsNone(parsing.parse_unlink_callback(""))
+        self.assertIsNone(parsing.parse_page_callback(""))
+
+    def test_digest_all_callback_round_trip(self):
+        callback_data = parsing.format_digest_all_callback(123)
+        self.assertEqual(callback_data, "da:123")
+        self.assertEqual(parsing.parse_digest_all_callback(callback_data), 123)
+
+    def test_digest_all_callback_invalid(self):
+        self.assertIsNone(parsing.parse_digest_all_callback("da:abc"))
+        self.assertIsNone(parsing.parse_digest_all_callback("da:"))
+        self.assertIsNone(parsing.parse_digest_all_callback("da"))
+        self.assertIsNone(parsing.parse_digest_all_callback("other:123"))
+        self.assertIsNone(parsing.parse_digest_all_callback(""))
+
+
+class KeyboardsTests(SimpleTestCase):
+    """Pure unit tests for inline keyboard markup constructors."""
+
+    def test_prompt_markup_structure(self):
+        markup = keyboards.prompt_markup(88)
+        self.assertIn("inline_keyboard", markup)
+        row = markup["inline_keyboard"][0]
+        self.assertEqual(len(row), 2)
+        self.assertEqual(row[0]["text"], "✅ Still available")
+        self.assertEqual(row[0]["callback_data"], "confirm_88")
+        self.assertEqual(row[1]["text"], "❌ Sold out")
+        self.assertEqual(row[1]["callback_data"], "deny_88")
+
+    def test_digest_markup(self):
+        markup = keyboards.digest_markup(42)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 1)
+        self.assertEqual(rows[0][0].text, "✅ All still available")
+        self.assertEqual(rows[0][0].callback_data, "da:42")
+
+    def test_listing_markup_first_page_has_next_no_prev(self):
+        product = types.SimpleNamespace(
+            brand="Sony",
+            name="WH-1000XM5",
+            pk=10,
+            shop=types.SimpleNamespace(name="TechZone"),
+        )
+        markup = keyboards.listing_markup([product], page=0, pages=3, label_shop=True)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 2)
+
+        product_row = rows[0]
+        self.assertEqual(len(product_row), 2)
+        self.assertEqual(product_row[0].text, "✅ TechZone — Sony WH-1000XM5")
+        self.assertEqual(product_row[0].callback_data, "pconfirm:10:0")
+        self.assertEqual(product_row[1].text, "❌")
+        self.assertEqual(product_row[1].callback_data, "pdeny:10:0")
+
+        nav_row = rows[1]
+        self.assertEqual(len(nav_row), 1)
+        self.assertEqual(nav_row[0].text, "Next ▶")
+        self.assertEqual(nav_row[0].callback_data, "page:1")
+
+    def test_listing_markup_middle_page_has_prev_and_next(self):
+        product = types.SimpleNamespace(
+            brand="Apple",
+            name="iPad",
+            pk=20,
+            shop=types.SimpleNamespace(name="iStore"),
+        )
+        markup = keyboards.listing_markup([product], page=1, pages=3, label_shop=False)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 2)
+
+        product_row = rows[0]
+        self.assertEqual(product_row[0].text, "✅ Apple iPad")
+        self.assertEqual(product_row[0].callback_data, "pconfirm:20:1")
+
+        nav_row = rows[1]
+        self.assertEqual(len(nav_row), 2)
+        self.assertEqual(nav_row[0].text, "◀ Prev")
+        self.assertEqual(nav_row[0].callback_data, "page:0")
+        self.assertEqual(nav_row[1].text, "Next ▶")
+        self.assertEqual(nav_row[1].callback_data, "page:2")
+
+    def test_listing_markup_last_page_has_prev_no_next(self):
+        product = types.SimpleNamespace(
+            brand="Apple",
+            name="iPad",
+            pk=20,
+            shop=types.SimpleNamespace(name="iStore"),
+        )
+        markup = keyboards.listing_markup([product], page=2, pages=3, label_shop=False)
+        rows = markup.inline_keyboard
+        nav_row = rows[1]
+        self.assertEqual(len(nav_row), 1)
+        self.assertEqual(nav_row[0].text, "◀ Prev")
+        self.assertEqual(nav_row[0].callback_data, "page:1")
+
+    def test_listing_markup_truncates_long_label(self):
+        very_long_name = "X" * 100
+        product = types.SimpleNamespace(
+            brand="LongBrand",
+            name=very_long_name,
+            pk=30,
+            shop=types.SimpleNamespace(name="Shop"),
+        )
+        markup = keyboards.listing_markup([product], page=0, pages=1, label_shop=False)
+        button_text = markup.inline_keyboard[0][0].text
+        self.assertLessEqual(len(button_text), keyboards.BUTTON_LABEL_LIMIT)
+
+    def test_unlink_confirmation_markup(self):
+        markup = keyboards.unlink_confirmation_markup()
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows[0]), 2)
+        self.assertEqual(rows[0][0].text, "Yes, unlink")
+        self.assertEqual(rows[0][0].callback_data, "unlink:yes")
+        self.assertEqual(rows[0][1].text, "Cancel")
+        self.assertEqual(rows[0][1].callback_data, "unlink:cancel")

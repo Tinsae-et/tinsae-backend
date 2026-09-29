@@ -13,7 +13,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from bot.management.commands.run_bot import link, on_text
+from bot.management.commands.run_bot import link, on_callback, on_text, start, unlink
 from bot.models import ShopLinkCode
 from bot.services import (
     AFFIRMATIVE,
@@ -23,6 +23,7 @@ from bot.services import (
     looks_like_link_code,
     normalise_link_code,
     resolve_link_code,
+    unlink_chat,
 )
 from shops.models import Shop
 
@@ -143,6 +144,29 @@ class LinkServiceTests(LinkCodeTestCase):
 
         self.shop.refresh_from_db()
         self.assertEqual(self.shop.telegram_chat_id, "")
+
+    def test_unlink_chat_clears_telegram_chat_id_and_blocked_at(self):
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.blocked_at = timezone.now()
+        self.shop.save(update_fields=["telegram_chat_id", "blocked_at"])
+
+        second = Shop.objects.create(
+            name="Piassa Electronics",
+            owner=self.user,
+            telegram_chat_id=CHAT_ID,
+            blocked_at=timezone.now(),
+        )
+
+        unlinked = unlink_chat(CHAT_ID)
+        self.assertEqual(len(unlinked), 2)
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        self.assertIsNone(self.shop.blocked_at)
+
+        second.refresh_from_db()
+        self.assertEqual(second.telegram_chat_id, "")
+        self.assertIsNone(second.blocked_at)
 
 
 class LinkCodeShapeTests(LinkCodeTestCase):
@@ -266,6 +290,90 @@ class LinkHandlerTests(LinkCodeTestCase):
         self.shop.refresh_from_db()
         self.assertEqual(self.shop.telegram_chat_id, CHAT_ID)
         self.assertIn("Bole Electronics", message.reply_text.call_args.args[0])
+
+    def test_start_with_code_links(self):
+        update, message = self._message_update(f"/start {self.code.code}")
+
+        async_to_sync(start)(update, mock.Mock(args=[self.code.code]))
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, CHAT_ID)
+        self.assertIn("Bole Electronics", message.reply_text.call_args.args[0])
+
+    def test_plain_start_shows_welcome(self):
+        update, message = self._message_update("/start")
+
+        async_to_sync(start)(update, mock.Mock(args=[]))
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        reply = (
+            message.reply_text.call_args.kwargs.get("text")
+            or message.reply_text.call_args.args[0]
+        )
+        self.assertIn("Welcome to Tinsae", reply)
+
+    def test_unlink_not_linked(self):
+        update, message = self._message_update("/unlink")
+
+        async_to_sync(unlink)(update, mock.Mock(args=[]))
+
+        reply = (
+            message.reply_text.call_args.kwargs.get("text")
+            or message.reply_text.call_args.args[0]
+        )
+        self.assertIn("not linked", reply)
+
+    def test_unlink_prompts_confirmation(self):
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.save(update_fields=["telegram_chat_id"])
+
+        update, message = self._message_update("/unlink")
+
+        async_to_sync(unlink)(update, mock.Mock(args=[]))
+
+        self.assertIn("unlink this chat", message.reply_text.call_args.kwargs["text"])
+        markup = message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "unlink:yes")
+        self.assertEqual(markup.inline_keyboard[0][1].callback_data, "unlink:cancel")
+
+    def test_unlink_confirm_button_clears_binding(self):
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.save(update_fields=["telegram_chat_id"])
+
+        update = mock.Mock()
+        update.effective_chat.id = int(CHAT_ID)
+        query = mock.AsyncMock()
+        query.data = "unlink:yes"
+        query.message = mock.AsyncMock()
+        query.message.chat.id = int(CHAT_ID)
+        update.callback_query = query
+
+        async_to_sync(on_callback)(update, mock.Mock())
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        query.answer.assert_awaited()
+        self.assertIn("unlinked", query.edit_message_text.call_args.args[0])
+
+    def test_unlink_cancel_does_nothing(self):
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.save(update_fields=["telegram_chat_id"])
+
+        update = mock.Mock()
+        update.effective_chat.id = int(CHAT_ID)
+        query = mock.AsyncMock()
+        query.data = "unlink:cancel"
+        query.message = mock.AsyncMock()
+        query.message.chat.id = int(CHAT_ID)
+        update.callback_query = query
+
+        async_to_sync(on_callback)(update, mock.Mock())
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, CHAT_ID)
+        query.answer.assert_awaited()
+        self.assertIn("cancelled", query.edit_message_text.call_args.args[0])
 
 
 class LinkAdminTests(LinkCodeTestCase):

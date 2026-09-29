@@ -14,7 +14,13 @@ from django.utils import timezone
 
 from bot.models import ConfirmationRequest
 from catalog.models import Category, ConfirmationStatus, Product
-from catalog.services import apply_confirmation, resolve_request
+from catalog.services import (
+    answer_confirmation_request,
+    apply_confirmation,
+    mark_back_in_stock,
+    mark_sold,
+    resolve_request,
+)
 from shops.models import Shop
 
 
@@ -132,3 +138,149 @@ class SearchFilterTests(TestCase):
             self.assertIn(f"word{i}", q_str)
         for i in range(MAX_SEARCH_TERMS, 15):
             self.assertNotIn(f"word{i}", q_str)
+
+
+class MarkSoldAndBackInStockTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="merchant", password="password123"
+        )
+        self.shop = Shop.objects.create(name="Bole Electronics", owner=self.user)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy S23",
+            price="10000.00",
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+            confirmation_status=ConfirmationStatus.STALE,
+            is_available=True,
+        )
+
+    def test_mark_sold_sets_unavailable_and_refreshes_clock(self):
+        mark_sold(self.product)
+
+        self.product.refresh_from_db()
+        self.assertFalse(self.product.is_available)
+        self.assertEqual(self.product.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertGreater(
+            self.product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+
+    def test_mark_back_in_stock_sets_available_and_refreshes_clock(self):
+        self.product.is_available = False
+        self.product.save(update_fields=["is_available"])
+
+        mark_back_in_stock(self.product)
+
+        self.product.refresh_from_db()
+        self.assertTrue(self.product.is_available)
+        self.assertEqual(self.product.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertGreater(
+            self.product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+
+
+class AnswerConfirmationRequestTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="merchant", password="password123"
+        )
+        self.chat_id = "12345678"
+        self.shop = Shop.objects.create(
+            name="Bole Electronics",
+            owner=self.user,
+            telegram_chat_id=self.chat_id,
+        )
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Samsung",
+            name="Galaxy S23",
+            price="10000.00",
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+            confirmation_status=ConfirmationStatus.STALE,
+            is_available=True,
+        )
+        self.request = ConfirmationRequest.objects.create(
+            product=self.product, shop=self.shop, status="pending"
+        )
+
+    def test_owning_chat_confirms_available(self):
+        outcome, product = answer_confirmation_request(
+            chat_id=self.chat_id, request_id=self.request.pk, available=True
+        )
+
+        self.assertEqual(outcome, "confirmed")
+        self.assertEqual(product.pk, self.product.pk)
+        product.refresh_from_db()
+        self.assertTrue(product.is_available)
+        self.assertEqual(product.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertGreater(
+            product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+        self.request.refresh_from_db()
+        self.assertEqual(self.request.status, "confirmed")
+        self.assertIsNotNone(self.request.responded_at)
+
+    def test_owning_chat_marks_sold_out(self):
+        outcome, product = answer_confirmation_request(
+            chat_id=self.chat_id, request_id=self.request.pk, available=False
+        )
+
+        self.assertEqual(outcome, "sold_out")
+        self.assertEqual(product.pk, self.product.pk)
+        product.refresh_from_db()
+        self.assertFalse(product.is_available)
+        self.assertEqual(product.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertGreater(
+            product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+        self.request.refresh_from_db()
+        self.assertEqual(self.request.status, "sold_out")
+        self.assertIsNotNone(self.request.responded_at)
+
+    def test_foreign_chat_returns_not_found_and_mutates_nothing(self):
+        before_confirmed_at = self.product.last_confirmed_at
+
+        outcome, product = answer_confirmation_request(
+            chat_id="99999999", request_id=self.request.pk, available=True
+        )
+
+        self.assertEqual(outcome, "not_found")
+        self.assertIsNone(product)
+        self.request.refresh_from_db()
+        self.assertEqual(self.request.status, "pending")
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.last_confirmed_at, before_confirmed_at)
+        self.assertEqual(self.product.confirmation_status, ConfirmationStatus.STALE)
+
+    def test_missing_request_id_returns_not_found(self):
+        outcome, product = answer_confirmation_request(
+            chat_id=self.chat_id, request_id=99999999, available=True
+        )
+
+        self.assertEqual(outcome, "not_found")
+        self.assertIsNone(product)
+
+    def test_already_resolved_request_returns_already_answered_and_is_noop(self):
+        self.request.status = "confirmed"
+        self.request.responded_at = timezone.now() - timedelta(hours=1)
+        self.request.save()
+        original_responded_at = self.request.responded_at
+        before_confirmed_at = self.product.last_confirmed_at
+
+        outcome, product = answer_confirmation_request(
+            chat_id=self.chat_id, request_id=self.request.pk, available=False
+        )
+
+        self.assertEqual(outcome, "already_answered")
+        self.assertEqual(product.pk, self.product.pk)
+        self.request.refresh_from_db()
+        self.assertEqual(self.request.status, "confirmed")
+        self.assertEqual(self.request.responded_at, original_responded_at)
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.last_confirmed_at, before_confirmed_at)
+        self.assertTrue(self.product.is_available)

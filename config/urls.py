@@ -11,6 +11,7 @@ urlpatterns = [
     path("api/health/", include("health.urls")),
     path("api/v1/catalog/", include("catalog.urls")),
     path("api/v1/", include("shops.urls")),
+    path("api/v1/", include("bot.urls")),
     path("api/v1/ops/", include("ops.urls")),
     # The HTML health page. Kept off the /admin/ prefix on purpose: that path is
     # consumed whole by admin.site.urls, which 404s unknown sub-paths rather

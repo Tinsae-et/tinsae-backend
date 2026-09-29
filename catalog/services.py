@@ -112,6 +112,50 @@ def apply_confirmation(
         )
 
 
+def answer_confirmation_request(
+    chat_id, request_id, *, available: bool
+) -> tuple[str, Product | None]:
+    """Resolve a ConfirmationRequest from the chat that owns its shop and
+    record the answer.
+
+    Outcomes: "confirmed" | "sold_out" | "already_answered" | "not_found".
+    The shop is resolved from chat_id, never from the caller's input; a
+    request that does not belong to a shop with this telegram_chat_id is
+    reported as "not_found", identical to a request id that does not exist,
+    so a caller cannot probe for other shops' ids.
+    """
+    if chat_id in (None, ""):
+        return "not_found", None
+
+    try:
+        request = ConfirmationRequest.objects.select_related("shop", "product").get(
+            pk=request_id
+        )
+    except (ConfirmationRequest.DoesNotExist, ValueError):
+        return "not_found", None
+
+    shop_chat_id = request.shop.telegram_chat_id
+    if not shop_chat_id or str(shop_chat_id) != str(chat_id):
+        return "not_found", None
+
+    if request.status != "pending":
+        return "already_answered", request.product
+
+    apply_confirmation(request.product, confirmed=available, request=request)
+    outcome = "confirmed" if available else "sold_out"
+    return outcome, request.product
+
+
+def mark_sold(product: Product) -> None:
+    """Mark a product sold out and reset its confirmation clock to now."""
+    apply_confirmation(product, confirmed=False)
+
+
+def mark_back_in_stock(product: Product) -> None:
+    """Mark a product back in stock and reset its confirmation clock to now."""
+    apply_confirmation(product, confirmed=True)
+
+
 def pause_listing(product: Product) -> None:
     """Take a listing off the storefront without making a stock claim.
 

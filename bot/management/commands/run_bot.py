@@ -12,28 +12,30 @@ import math
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
-from bot.selectors import listing_for_chat
+from bot import keyboards, messages, parsing
+from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
+    answer_confirmation_digest,
     handle_product_callback,
     handle_telegram_callback,
     handle_text_reply,
     link_shop_to_chat,
     looks_like_link_code,
+    record_update,
+    unlink_chat,
 )
-
-# Telegram truncates long button labels unhelpfully; do it ourselves so the
-# product name stays readable.
-BUTTON_LABEL_LIMIT = 55
 
 logger = logging.getLogger(__name__)
 
@@ -48,16 +50,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(
         "Inbound /start from user %s (chat %s)", update.effective_user.username, chat_id
     )
+
+    code = " ".join(context.args).strip() if context.args else ""
+    if code:
+        logger.info("Inbound /start with code from chat %s", chat_id)
+        await _apply_link(update, chat_id, code)
+        return
+
     # The link code, not the chat ID, is what a merchant now needs: `/link` binds
     # the shop for them. The chat ID stays on the last line because support still
     # asks for it when diagnosing a shop that is prompting the wrong chat.
-    text = (
-        "Welcome to Tinsae marketplace.\n\n"
-        "To connect your shop, send me its link code — like this:\n"
-        "/link TIN-ABC2345\n\n"
-        "Ask us for a code if you don't have one. Enter /help for help.\n"
-        f"(Support may ask for this chat ID: {chat_id})"
-    )
+    text = messages.welcome(chat_id)
     await update.message.reply_text(text=text)
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
 
@@ -67,11 +70,7 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(
         "Inbound /help from user %s (chat %s)", update.effective_user.username, chat_id
     )
-    text = (
-        "This is the help page — what do you want to know?\n"
-        "/link <code> — connect this chat to your shop.\n"
-        "/myproducts — list the products waiting on your confirmation."
-    )
+    text = messages.help_text()
     await update.message.reply_text(text=text)
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
 
@@ -90,35 +89,11 @@ def _render_listing(shops, products, page: int):
     visible = products[start : start + page_size]
     label_shop = len(shops) > 1
 
-    rows = []
-    for product in visible:
-        label = f"{product.brand} {product.name}"
-        if label_shop:
-            label = f"{product.shop.name} — {label}"
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"✅ {label}"[:BUTTON_LABEL_LIMIT],
-                    callback_data=f"pconfirm:{product.pk}:{page}",
-                ),
-                InlineKeyboardButton("❌", callback_data=f"pdeny:{product.pk}:{page}"),
-            ]
-        )
-
-    nav = []
-    if page > 0:
-        nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"page:{page - 1}"))
-    if page < pages - 1:
-        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"page:{page + 1}"))
-    if nav:
-        rows.append(nav)
-
-    text = (
-        f"{total} product{'' if total == 1 else 's'} waiting on you "
-        f"(page {page + 1} of {pages}).\n"
-        "Tap ✅ if it is still available, ❌ if it is out of stock."
+    text = messages.listing_summary(total, page, pages)
+    markup = keyboards.listing_markup(
+        visible, page=page, pages=pages, label_shop=label_shop
     )
-    return text, InlineKeyboardMarkup(rows)
+    return text, markup
 
 
 async def my_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -131,14 +106,11 @@ async def my_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if not shops:
-        await update.message.reply_text(
-            "This chat is not linked to a shop yet. Send your shop's link code — "
-            "like /link TIN-ABC2345 — or ask us for one."
-        )
+        await update.message.reply_text(messages.not_linked())
         return
 
     if not products:
-        await update.message.reply_text("Nothing needs confirming right now. 🎉")
+        await update.message.reply_text(messages.nothing_needs_confirming())
         return
 
     text, markup = _render_listing(shops, products, page=0)
@@ -151,7 +123,7 @@ async def _refresh_listing(query, chat_id, page: int):
         chat_id
     )
     if not products:
-        await query.edit_message_text("Nothing left to confirm. 🎉")
+        await query.edit_message_text(messages.nothing_left_to_confirm())
         return
 
     text, markup = _render_listing(shops, products, page=page)
@@ -167,19 +139,14 @@ async def _on_listing_answer(query, chat_id, data: str):
         # Could be a foreign chat, a deleted product, or ✅ on something already
         # out of stock. The merchant does not need to know which; they need a way
         # forward that does not involve an out-of-date message.
-        await query.answer("Couldn't record that — send /myproducts for a fresh list.")
+        await query.answer(messages.could_not_record())
         return
 
-    await query.answer("Recorded")
+    await query.answer(messages.recorded())
     # The answered row leaves the list, so redraw to keep the count honest.
-    await _refresh_listing(query, chat_id, page=_page_from(data, index=2))
-
-
-def _page_from(data: str, index: int) -> int:
-    parts = data.split(":")
-    if len(parts) > index and parts[index].isdigit():
-        return int(parts[index])
-    return 0
+    parsed = parsing.parse_listing_callback(data)
+    page = parsed[2] if parsed else 0
+    await _refresh_listing(query, chat_id, page=page)
 
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -188,17 +155,57 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query is None:
         return
 
-    chat_id = query.message.chat.id if query.message else None
+    chat_id = (
+        query.message.chat.id
+        if query.message and query.message.chat
+        else (update.effective_chat.id if update.effective_chat else None)
+    )
     data = query.data or ""
     logger.info("Inbound callback %r from chat %s", data, chat_id)
 
+    unlink_action = parsing.parse_unlink_callback(data)
+    if unlink_action is not None:
+        if unlink_action == "yes":
+            unlinked_shops = await sync_to_async(unlink_chat, thread_sensitive=True)(
+                chat_id
+            )
+            await query.answer(messages.recorded())
+            if query.message:
+                await query.edit_message_text(
+                    messages.unlink_confirmed(len(unlinked_shops))
+                )
+        else:
+            await query.answer()
+            if query.message:
+                await query.edit_message_text(messages.unlink_cancelled())
+        return
+
+    digest_id = parsing.parse_digest_all_callback(data)
+    if digest_id is not None:
+        outcome, count = await sync_to_async(
+            answer_confirmation_digest, thread_sensitive=True
+        )(chat_id=str(chat_id), digest_id=digest_id, available=True)
+        if outcome == "not_found":
+            await query.answer(messages.request_inactive())
+            return
+        if outcome == "already_answered":
+            await query.answer(messages.response_recorded())
+            if query.message:
+                await query.edit_message_text(messages.digest_already_done())
+            return
+        await query.answer(messages.response_recorded())
+        if query.message:
+            await query.edit_message_text(messages.digest_ack(count))
+        return
+
     # /myproducts buttons are colon-separated and product-keyed; the original
     # inline prompts are underscore-separated and request-keyed. Route on that.
-    if data.startswith("page:"):
+    page = parsing.parse_page_callback(data)
+    if page is not None:
         await query.answer()
-        await _refresh_listing(query, chat_id, page=_page_from(data, index=1))
+        await _refresh_listing(query, chat_id, page=page)
         return
-    if data.startswith(("pconfirm:", "pdeny:")):
+    if parsing.parse_listing_callback(data) is not None:
         await _on_listing_answer(query, chat_id, data)
         return
 
@@ -211,50 +218,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     if not handled:
-        await query.answer("This request is no longer active.")
+        await query.answer(messages.request_inactive())
         return
 
-    action = data.partition("_")[0]
-    await query.answer("Response recorded")
+    parsed_prompt = parsing.parse_prompt_callback(data)
+    action = parsed_prompt[0] if parsed_prompt else ""
+    await query.answer(messages.response_recorded())
     if query.message:
         await query.edit_message_text(
-            "✅ Thank you — marked in stock."
-            if action == "confirm"
-            else "❌ Got it — marked out of stock."
+            messages.callback_confirm_ack(action == "confirm")
         )
 
 
 def _link_ack(outcome: str, shop) -> str:
     """One short line per link outcome. Every failure names a way forward."""
-    if outcome == "linked":
-        return (
-            "✅ Linked! This chat now receives stock confirmations for "
-            f"{shop.name}.\nSend /myproducts to see what's waiting on you."
-        )
-    if outcome == "relinked":
-        return (
-            f"✅ Done — {shop.name} now sends its confirmations here instead of "
-            "the chat it used before.\nSend /myproducts to see what's waiting."
-        )
-    if outcome == "already_linked":
-        return (
-            f"👍 This chat is already linked to {shop.name}. "
-            "Send /myproducts to see what's waiting on you."
-        )
-    if outcome == "expired":
-        return (
-            "That code has expired — they are only good for a short while. "
-            "Ask us for a new one and send it here."
-        )
-    if outcome == "used":
-        return (
-            "That code has already been used. Ask us for a new one if this chat "
-            "still needs linking to your shop."
-        )
-    return (
-        "I don't recognise that code. They look like TIN-ABC2345 — check it and "
-        "send it again, or ask us for a new one."
-    )
+    shop_name = shop.name if shop else None
+    return messages.link_ack(outcome, shop_name)
 
 
 async def _apply_link(update: Update, chat_id, code: str):
@@ -273,33 +252,31 @@ async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     argument = " ".join(context.args) if context.args else ""
     if not argument:
-        await update.message.reply_text(
-            "Send the code along with the command, like this:\n/link TIN-ABC2345"
-        )
+        await update.message.reply_text(messages.link_usage())
         return
 
     await _apply_link(update, chat_id, argument)
 
 
+async def unlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Offer to unlink this chat from its shop(s)."""
+    chat_id = update.effective_chat.id
+    logger.info("Inbound /unlink from chat %s", chat_id)
+
+    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
+    if not shops:
+        await update.message.reply_text(messages.not_linked())
+        return
+
+    text = messages.unlink_prompt(len(shops))
+    markup = keyboards.unlink_confirmation_markup()
+    await update.message.reply_text(text=text, reply_markup=markup)
+
+
 def _text_reply_ack(outcome: str, product) -> str:
     """One short line per outcome. Every failure names a way forward."""
-    if outcome == "confirmed":
-        return f"✅ Thanks — '{product.name}' is marked in stock."
-    if outcome == "sold_out":
-        return f"❌ Got it — '{product.name}' is marked out of stock."
-    if outcome == "ambiguous":
-        return (
-            "Several products are waiting on you, so I'm not sure which one you "
-            "mean. Send /myproducts, or reply directly to the message about it."
-        )
-    if outcome == "inactive":
-        return "That request is no longer active — send /myproducts for a fresh list."
-    if outcome == "orphan":
-        return "Nothing is waiting on you right now. Send /myproducts to check."
-    return (
-        "I didn't catch that. Reply \"yes\" if it's still available or "
-        '"sold out" if it isn\'t — or send /myproducts.'
-    )
+    product_name = product.name if product else None
+    return messages.text_reply_ack(outcome, product_name)
 
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -332,6 +309,41 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.reply_text(_text_reply_ack(outcome, product))
 
 
+async def dedupe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Drop redelivered updates before they reach any business handlers."""
+    if not hasattr(update, "update_id") or update.update_id is None:
+        return
+    fresh = await sync_to_async(record_update, thread_sensitive=True)(update.update_id)
+    if not fresh:
+        logger.info("Duplicate update %s dropped.", update.update_id)
+        raise ApplicationHandlerStop
+
+
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Global error handler. Logs exceptions and informs the user if possible."""
+    error = context.error
+    update_id = getattr(update, "update_id", None) if update else None
+    chat_id = None
+    if update and hasattr(update, "effective_chat") and update.effective_chat:
+        chat_id = update.effective_chat.id
+
+    error_type = type(error).__name__ if error else "UnknownError"
+    logger.exception(
+        "Exception while handling update %s (chat %s): %s: %s",
+        update_id,
+        chat_id,
+        error_type,
+        error,
+        exc_info=error,
+    )
+
+    if update and hasattr(update, "effective_message") and update.effective_message:
+        try:
+            await update.effective_message.reply_text(messages.generic_error())
+        except Exception as exc:
+            logger.warning("Failed to send error reply to chat %s: %s", chat_id, exc)
+
+
 class Command(BaseCommand):
     help = (
         "Runs the Telegram listener: onboarding, shop linking, /myproducts, "
@@ -346,9 +358,12 @@ class Command(BaseCommand):
             )
 
         app = Application.builder().token(token).build()
+        app.add_error_handler(on_error)
+        app.add_handler(TypeHandler(Update, dedupe), group=-1)
         app.add_handler(CommandHandler("start", start))
         app.add_handler(CommandHandler("help", help))
         app.add_handler(CommandHandler("link", link))
+        app.add_handler(CommandHandler("unlink", unlink))
         app.add_handler(CommandHandler("myproducts", my_products))
         app.add_handler(CallbackQueryHandler(on_callback))
         # Last, and command-free: a merchant who ignores the buttons and just

@@ -11,6 +11,7 @@ SECRET_KEY = env("DJANGO_SECRET_KEY")
 DEBUG = env.bool("DJANGO_DEBUG", default=False)
 ALLOWED_HOSTS = env.list("DJANGO_ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")
+TELEGRAM_BOT_USERNAME = env("TELEGRAM_BOT_USERNAME", default="").lstrip("@")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -23,6 +24,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
+    "django_celery_beat",
     "health",
     "users",
     "shops",
@@ -214,6 +216,7 @@ STORAGES = {
 # ("can we reach Telegram"). The flag below is policy ("should we prompt at all").
 # Sending a prompt requires both.
 ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=False)
+TELEGRAM_MOCK_SEND = env.bool("TELEGRAM_MOCK_SEND", default=False)
 
 # Days without a confirmation signal before a product is considered stale.
 # This lives in settings rather than a CLI flag because Product.confirmation_status
@@ -226,6 +229,11 @@ PRODUCT_STALENESS_DAYS = env.int("PRODUCT_STALENESS_DAYS", default=30)
 CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
     "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
 )
+
+# Weekly confirmation digest interval in days, and period after which unconfirmed
+# listings are hidden from buyer-facing views.
+CONFIRMATION_INTERVAL_DAYS = env.int("CONFIRMATION_INTERVAL_DAYS", default=7)
+CONFIRMATION_HIDDEN_AFTER_DAYS = env.int("CONFIRMATION_HIDDEN_AFTER_DAYS", default=14)
 
 # Days a SearchLog row is kept before `sweep_search_logs` deletes it.
 #
@@ -248,3 +256,9 @@ MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
 # code is a bearer credential for a shop's prompt channel, and it reaches the
 # merchant over whatever channel support happens to be using that day.
 TELEGRAM_LINK_CODE_TTL_HOURS = env.int("TELEGRAM_LINK_CODE_TTL_HOURS", default=24)
+
+# Celery & background tasks
+CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
+CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/0")
+CELERY_TIMEZONE = TIME_ZONE
+CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"

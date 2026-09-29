@@ -358,6 +358,7 @@ row of the table above.
 ### Local Cron Scheduling
 
 Only once prompts are enabled — see the section above.
+*(Note: `sweep_freshness` is not scheduled on Celery yet — A0 is scaffolding only — so host cron remains the runner for now.)*
 
 To run the sweep daily at midnight on your host machine:
 
@@ -440,7 +441,56 @@ request are rejected rather than reapplied. Every callback — inline prompt or
 `/myproducts` button — is checked against the `telegram_chat_id` of the shop that
 owns the product, so one merchant cannot answer another's.
 
-*(Note: Celery/Redis background task scheduling is planned as a Go Live production upgrade.)*
+### Celery & Redis Background Processing
+
+Celery handles background processing and periodic tasks with Redis as the broker and result backend. Periodic task schedules are stored in the database via `django-celery-beat`.
+
+In Docker Compose, `redis`, `celery-worker`, and `celery-beat` run as services alongside `backend` and `db`:
+
+```bash
+docker compose up -d redis celery-worker celery-beat
+```
+
+To run worker or beat manually inside the container:
+
+```bash
+# Run Celery worker
+docker compose exec backend celery -A config worker -l INFO
+
+# Run Celery beat scheduler
+docker compose exec backend celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+```
+
+Or on the host (with local virtualenv active and local Redis container running):
+
+> **Note**: Inside Docker containers, Redis is addressed via the internal service name `redis://redis:6379/0`. On the host machine, the dev port is exposed at `6380` (`redis://localhost:6380/0`), so host commands should point `CELERY_BROKER_URL` and `CELERY_RESULT_BACKEND` to port `6380`.
+
+```bash
+CELERY_BROKER_URL=redis://localhost:6380/0 CELERY_RESULT_BACKEND=redis://localhost:6380/0 celery -A config worker -l INFO
+CELERY_BROKER_URL=redis://localhost:6380/0 CELERY_RESULT_BACKEND=redis://localhost:6380/0 celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+```
+
+#### Bot Periodic Schedules
+
+To configure periodic schedules in `django-celery-beat` (e.g. running `bot.tasks.drain_outbox` every 15 seconds):
+
+```bash
+docker compose exec backend python manage.py setup_bot_schedules
+```
+
+#### Verifying Celery Locally
+
+
+1. **Direct smoke task execution**:
+   ```bash
+   docker compose exec backend python manage.py shell -c "from bot.tasks import smoke_heartbeat; res = smoke_heartbeat.delay(); print('Result:', res.get(timeout=5))"
+   ```
+2. **PeriodicTask schedule (manual verification)**:
+   - Navigate to Django Admin at `http://localhost:8000/admin/django_celery_beat/periodictask/`.
+   - Add a test periodic task pointing to `bot.tasks.smoke_heartbeat` with an interval.
+   - Watch `docker compose logs -f celery-worker` to see the task executed by the scheduler.
+   - Delete the test task after verifying (do not commit test periodic tasks to code/migrations).
+
 
 ## Loop health check (TIN-32)
 
