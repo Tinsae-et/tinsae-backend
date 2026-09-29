@@ -37,6 +37,30 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  # Redis In-Memory Store — Celery broker, result backend, and task queue
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        reservations:
+          memory: 128M
+        limits:
+          memory: 384M
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
   # Backend App Server (Gunicorn Multi-Worker)
   backend:
     build:
@@ -73,11 +97,69 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "5"
+
+  # Celery Background Worker
+  celery-worker:
+    build:
+      context: .
+      target: prod
+    command: celery -A config worker -l INFO --concurrency 2
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.prod
+    deploy:
+      resources:
+        reservations:
+          memory: 256M
+        limits:
+          memory: 512M
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
+  # Celery Beat Periodic Scheduler (django-celery-beat)
+  celery-beat:
+    build:
+      context: .
+      target: prod
+    command: celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.prod
+    deploy:
+      resources:
+        reservations:
+          memory: 128M
+        limits:
+          memory: 256M
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
 
   # Nginx Reverse Proxy — Only service with exposed public ports
   web:
@@ -100,5 +182,6 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
   staticfiles:
   media:
