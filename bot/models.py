@@ -91,6 +91,37 @@ class ShopLinkCode(BaseModel):
         super().save(*args, **kwargs)
 
 
+class ConfirmationDigest(BaseModel):
+    shop = models.ForeignKey(
+        "shops.Shop",
+        on_delete=models.CASCADE,
+        related_name="confirmation_digests",
+    )
+    for_date = models.DateField(
+        help_text="EAT date for which this weekly digest was issued."
+    )
+    telegram_message_id = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+    )
+    review_cursor = models.PositiveIntegerField(default=0)
+    reminded_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["-for_date", "-created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["shop", "for_date"],
+                name="unique_shop_digest_for_date",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"ConfirmationDigest({self.shop.name} - {self.for_date})"
+
+
 class ConfirmationRequest(BaseModel):
     STATUS_CHOICES = [
         ("pending", "Pending"),
@@ -108,6 +139,13 @@ class ConfirmationRequest(BaseModel):
         "shops.Shop",
         on_delete=models.CASCADE,
         related_name="confirmation_requests",
+    )
+    digest = models.ForeignKey(
+        ConfirmationDigest,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="requests",
     )
     status = models.CharField(
         max_length=20,
@@ -152,3 +190,68 @@ class ConfirmationRequest(BaseModel):
             f"ConfirmationRequest({self.product.name} - "
             f"{self.shop.name} [{self.status}])"
         )
+
+
+class OutboundMessage(BaseModel):
+    """A proactive Telegram message queued for asynchronous delivery.
+
+    Proactive messages (prompts, digests, reminders) are written to this table
+    inside the caller's transaction. A separate sender process drains the table
+    using a claim-then-send pattern so no database transaction is held open
+    across network calls.
+    """
+
+    STATUS_CHOICES = [
+        ("queued", "Queued"),
+        ("sending", "Sending"),
+        ("sent", "Sent"),
+        ("dead", "Dead"),
+        ("cancelled", "Cancelled"),
+    ]
+
+    chat_id = models.CharField(max_length=50)
+    kind = models.CharField(max_length=50)
+    payload = models.JSONField(default=dict)
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="queued",
+    )
+    attempts = models.PositiveIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    claimed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When a worker claimed this row. Used for crash recovery if stuck in sending.",
+    )
+    last_error = models.TextField(blank=True)
+    telegram_message_id = models.CharField(max_length=100, blank=True, null=True)
+    dedupe_key = models.CharField(max_length=255, unique=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["status", "next_attempt_at"],
+                name="outbox_status_next_attempt_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"OutboundMessage({self.pk}, chat={self.chat_id}, kind={self.kind}, status={self.status})"
+
+
+class ProcessedUpdate(BaseModel):
+    """An inbound Telegram update_id recorded to deduplicate redelivered updates.
+
+    Telegram redelivers up to 24h of updates after a restart; updates recorded
+    here are dropped before reaching any application handlers.
+    """
+
+    update_id = models.BigIntegerField(unique=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"ProcessedUpdate({self.update_id})"

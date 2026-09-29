@@ -65,17 +65,21 @@ class ShopAdmin(admin.ModelAdmin):
     list_display = (
         "name",
         "city",
+        "language",
         "is_verified",
         "telegram_linked",
+        "blocked_at",
         "owner",
         "created_at",
     )
     list_filter = (
         "is_verified",
+        "language",
         "city",
         # `telegram_chat_id` is blank rather than null when unset, which
         # EmptyFieldListFilter treats as empty — so this reads as linked/unlinked.
         ("telegram_chat_id", admin.EmptyFieldListFilter),
+        ("blocked_at", admin.EmptyFieldListFilter),
     )
     search_fields = ("name", "city")
     prepopulated_fields = {"slug": ("name",)}

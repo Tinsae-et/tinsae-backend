@@ -38,6 +38,16 @@ class Shop(BaseModel):
         ],
     )
     telegram_chat_id = models.CharField(max_length=50, blank=True)
+    blocked_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When Telegram reported a 403 Forbidden (bot blocked by user).",
+    )
+    language = models.CharField(
+        max_length=10,
+        default="en",
+        help_text="Preferred language for bot messages (e.g. en, am).",
+    )
     is_verified = models.BooleanField(default=False)
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL,

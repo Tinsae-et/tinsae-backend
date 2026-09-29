@@ -26,11 +26,56 @@ DEFAULT_TIMEOUT = 5
 
 
 class TelegramError(Exception):
-    """The API was unreachable, timed out, or returned ok=false."""
+    """Base error: the API was unreachable, timed out, or returned ok=false."""
+
+
+class TelegramRetryAfter(TelegramError):
+    """429 Too Many Requests; honour the retry_after seconds exactly."""
+
+    def __init__(self, retry_after: int, description: str = ""):
+        self.retry_after = retry_after
+        self.description = description
+        super().__init__(
+            f"Too Many Requests: retry after {retry_after}s ({description})"
+        )
+
+
+class TelegramForbidden(TelegramError):
+    """403 Forbidden; bot was blocked by the user or lacks permission."""
+
+    def __init__(self, description: str = ""):
+        self.description = description
+        super().__init__(f"Forbidden: {description}")
+
+
+class TelegramBadRequest(TelegramError):
+    """400 Bad Request; our bug — do not retry."""
+
+    def __init__(self, description: str = ""):
+        self.description = description
+        super().__init__(f"Bad Request: {description}")
+
+
+class TelegramNetworkError(TelegramError):
+    """Network connection failure or timeout."""
 
 
 def is_configured() -> bool:
     return bool(getattr(settings, "TELEGRAM_BOT_TOKEN", None))
+
+
+def _parse_telegram_error(
+    error_code: int | None, description: str, parameters: dict | None = None
+) -> TelegramError:
+    parameters = parameters or {}
+    if error_code == 429:
+        retry_after = int(parameters.get("retry_after", 1))
+        return TelegramRetryAfter(retry_after=retry_after, description=description)
+    if error_code == 403:
+        return TelegramForbidden(description=description)
+    if error_code == 400:
+        return TelegramBadRequest(description=description)
+    return TelegramError(f"Telegram API error {error_code}: {description}")
 
 
 def _call(method: str, payload: dict, timeout: int = DEFAULT_TIMEOUT):
@@ -46,11 +91,27 @@ def _call(method: str, payload: dict, timeout: int = DEFAULT_TIMEOUT):
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        raise TelegramError(f"{method} failed: {exc}") from exc
+    except urllib.error.HTTPError as exc:
+        try:
+            err_body = json.loads(exc.read().decode("utf-8"))
+            error_code = err_body.get("error_code", exc.code)
+            description = err_body.get("description", str(exc))
+            parameters = err_body.get("parameters", {})
+        except Exception:
+            error_code = exc.code
+            description = str(exc)
+            parameters = {}
+        raise _parse_telegram_error(error_code, description, parameters) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise TelegramNetworkError(f"{method} network error: {exc}") from exc
+    except ValueError as exc:
+        raise TelegramError(f"{method} returned invalid JSON: {exc}") from exc
 
     if not body.get("ok"):
-        raise TelegramError(f"{method} returned ok=false: {body.get('description')}")
+        error_code = body.get("error_code")
+        description = body.get("description", "")
+        parameters = body.get("parameters", {})
+        raise _parse_telegram_error(error_code, description, parameters)
     return body.get("result", {})
 
 

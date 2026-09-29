@@ -1,9 +1,9 @@
 """Send one confirmation prompt, by hand.
 
 `sweep_freshness` decides *which* products to ask about; this command asks about
-the one you name. It exists to exercise the outbound path before any automation
-is wired up, so it prints the composed message whether or not a token is set --
+the one you name. It prints the composed message whether or not a token is set --
 checking the wording should not require sending anything to a real merchant.
+The prompt is enqueued to the outbox; delivery is handled by the Celery worker.
 
 The gate checks below duplicate `can_prompt`'s, deliberately: the service returns
 a bare None for every refusal, and someone running this by hand needs to be told
@@ -78,16 +78,17 @@ class Command(BaseCommand):
         if telegram.is_configured():
             self.stdout.write(
                 self.style.SUCCESS(
-                    f"Sent to chat {shop.telegram_chat_id} "
-                    f"(ConfirmationRequest #{request.pk}, pending)."
+                    f"Queued for chat {shop.telegram_chat_id} "
+                    f"(ConfirmationRequest #{request.pk}, pending). "
+                    "The Celery worker will deliver it."
                 )
             )
         else:
             self.stdout.write(
                 self.style.WARNING(
-                    "TELEGRAM_BOT_TOKEN is not set, so nothing left the server. "
-                    f"ConfirmationRequest #{request.pk} was still created -- "
-                    "delete it if you did not mean to block the next sweep."
+                    "TELEGRAM_BOT_TOKEN is not set, so the queued message will be "
+                    "marked dead by the sender until a token is configured. "
+                    f"ConfirmationRequest #{request.pk} was created."
                 )
             )
 
