@@ -29,6 +29,21 @@ def shops_for_chat(chat_id) -> list[Shop]:
     return list(Shop.objects.filter(telegram_chat_id=str(chat_id)).order_by("name"))
 
 
+def due_products_for_shop(shop: Shop, cutoff) -> list[Product]:
+    """Products belonging to a shop that need confirmation, excluding pending requests.
+
+    One query using Product.objects.needing_confirmation(cutoff) filtered by shop
+    and .exclude(confirmation_requests__status="pending").
+    """
+    return list(
+        Product.objects.needing_confirmation(cutoff)
+        .filter(shop=shop)
+        .exclude(confirmation_requests__status="pending")
+        .select_related("shop")
+        .order_by(F("last_confirmed_at").asc(nulls_first=True), "pk")
+    )
+
+
 def listing_for_chat(chat_id) -> tuple[list[Shop], list[Product]]:
     """Everything /myproducts needs, derived only from the inbound chat.
 
