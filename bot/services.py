@@ -3,10 +3,11 @@ import re
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
-from catalog.models import ConfirmationStatus, Product
+from catalog.freshness import Freshness, freshness_case
+from catalog.models import ConfirmationStatus, Product, ProductStatus
 from catalog.services import answer_confirmation_request, apply_confirmation
 from shops.models import Shop
 
@@ -1289,3 +1290,50 @@ def prune(
         "processed_retention_days": processed_retention_days,
         "outbox_retention_days": outbox_retention_days,
     }
+
+
+def shop_status(shop: Shop, *, now=None) -> dict:
+    """Counts over the shop's buyer-relevant listings on the single confirmation clock.
+
+    fresh:  available + LIVE + age <= CONFIRMATION_INTERVAL_DAYS (buyer-visible)
+    due:    available + LIVE + CONFIRMATION_INTERVAL_DAYS < age <= CONFIRMATION_HIDDEN_AFTER_DAYS ("due soon")
+    hidden: available + LIVE + age > CONFIRMATION_HIDDEN_AFTER_DAYS or never confirmed (not buyer-visible)
+
+    Non-LIVE (DRAFT, SOLD) and unavailable (is_available=False) products are excluded.
+    last_checkin: most recent ConfirmationRequest.responded_at for the shop, or None.
+    """
+    if now is None:
+        now = timezone.now()
+
+    counts = (
+        Product.objects.filter(
+            shop=shop,
+            is_available=True,
+            status=ProductStatus.LIVE,
+        )
+        .annotate(freshness_tier=freshness_case(now=now))
+        .aggregate(
+            fresh=models.Count("pk", filter=models.Q(freshness_tier=Freshness.FRESH)),
+            due=models.Count(
+                "pk", filter=models.Q(freshness_tier=Freshness.ALMOST_EXPIRED)
+            ),
+            hidden=models.Count(
+                "pk", filter=models.Q(freshness_tier=Freshness.EXPIRED)
+            ),
+        )
+    )
+
+    last_checkin = (
+        ConfirmationRequest.objects.filter(shop=shop, responded_at__isnull=False)
+        .order_by("-responded_at")
+        .values_list("responded_at", flat=True)
+        .first()
+    )
+
+    return {
+        "fresh": counts["fresh"] or 0,
+        "due": counts["due"] or 0,
+        "hidden": counts["hidden"] or 0,
+        "last_checkin": last_checkin,
+    }
+

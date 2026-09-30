@@ -1,5 +1,6 @@
 import types
-from datetime import timedelta
+import zoneinfo
+from datetime import datetime, timedelta
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -18,10 +19,12 @@ from bot import keyboards, messages, parsing
 from bot import telegram_api as telegram
 from bot.management.commands.run_bot import (
     dedupe,
+    help,
     my_products,
     on_callback,
     on_error,
     on_text,
+    status,
 )
 from bot.models import (
     ConfirmationDigest,
@@ -39,9 +42,10 @@ from bot.services import (
     record_update,
     review_next,
     send_confirmation_prompt,
+    shop_status,
     start_review,
 )
-from catalog.models import Category, ConfirmationStatus, Product
+from catalog.models import Category, ConfirmationStatus, Product, ProductStatus
 from catalog.services import apply_confirmation
 from shops.models import Shop
 
@@ -1102,7 +1106,7 @@ class MyProductsHandlerTests(BotTestCase):
         self.assertIn("Nothing needs confirming", message.reply_text.call_args.args[0])
 
     def test_a_long_list_is_capped_and_paged(self):
-        self._stale_extras(7)
+        self._stale_extras(settings.MYPRODUCTS_PAGE_SIZE + 2)
         update, message = self._message_update()
 
         async_to_sync(my_products)(update, None)
@@ -1113,7 +1117,7 @@ class MyProductsHandlerTests(BotTestCase):
         self.assertEqual(rows[-1][0].callback_data, "page:1")
 
     def test_paging_edits_the_message_instead_of_sending_another(self):
-        self._stale_extras(7)
+        self._stale_extras(settings.MYPRODUCTS_PAGE_SIZE + 2)
         update, query = self._callback_update("page:1")
 
         async_to_sync(on_callback)(update, None)
@@ -1640,6 +1644,82 @@ class MessagesTests(SimpleTestCase):
         self.assertIn("12345", welcome)
         self.assertIn("/myproducts", messages.help_text())
 
+    def test_help_text_content_and_plain_text(self):
+        help_msg = messages.help_text()
+        self.assertIn("/myproducts", help_msg)
+        self.assertIn("/status", help_msg)
+        self.assertIn("/unlink", help_msg)
+        self.assertIn("/help", help_msg)
+        self.assertIn('"all"', help_msg)
+        self.assertIn('"sold 2 5"', help_msg)
+        # Ensure no html/markdown tags/markers
+        self.assertNotIn("<", help_msg)
+        self.assertNotIn(">", help_msg)
+        self.assertNotIn("`", help_msg)
+        self.assertNotIn("*", help_msg)
+
+    def test_format_last_checkin_none_returns_never(self):
+        self.assertEqual(messages.format_last_checkin(None), "never")
+
+    def test_format_last_checkin_today(self):
+        eat = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
+        now = datetime(2026, 9, 30, 14, 0, tzinfo=eat)
+        dt = datetime(2026, 9, 30, 8, 14, tzinfo=eat)
+        self.assertEqual(messages.format_last_checkin(dt, now=now), "today 08:14")
+
+    def test_format_last_checkin_earlier_date(self):
+        eat = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
+        now = datetime(2026, 9, 30, 14, 0, tzinfo=eat)
+        dt = datetime(2026, 9, 3, 8, 14, tzinfo=eat)
+        self.assertEqual(messages.format_last_checkin(dt, now=now), "3 Sep 08:14")
+
+    def test_format_last_checkin_utc_conversion(self):
+        # 05:14 UTC on Sep 30 is 08:14 EAT on Sep 30
+        utc = zoneinfo.ZoneInfo("UTC")
+        now = datetime(2026, 9, 30, 10, 0, tzinfo=utc)
+        dt = datetime(2026, 9, 30, 5, 14, tzinfo=utc)
+        self.assertEqual(messages.format_last_checkin(dt, now=now), "today 08:14")
+
+    def test_status_formatting_single_shop(self):
+        msg = messages.status(
+            shop_name="Bole Shop",
+            fresh=3,
+            due=1,
+            hidden=0,
+            last_checkin_str="today 08:14",
+            prefix_shop=False,
+        )
+        self.assertEqual(msg, "3 fresh, 1 due soon, 0 hidden · Last check-in: today 08:14")
+
+    def test_status_formatting_prefixed_shop(self):
+        msg = messages.status(
+            shop_name="Bole Shop",
+            fresh=3,
+            due=1,
+            hidden=0,
+            last_checkin_str="today 08:14",
+            prefix_shop=True,
+        )
+        self.assertEqual(
+            msg, "Bole Shop: 3 fresh, 1 due soon, 0 hidden · Last check-in: today 08:14"
+        )
+
+    def test_status_summary_formatting(self):
+        # Empty
+        self.assertEqual(messages.status_summary([]), messages.not_linked())
+        # Single shop: no prefix
+        single = messages.status_summary([("Bole Shop", 2, 0, 1, "today 08:14")])
+        self.assertEqual(single, "2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14")
+        # Multiple shops: prefixed
+        multi = messages.status_summary([
+            ("Bole Shop", 2, 0, 1, "today 08:14"),
+            ("Piassa Shop", 0, 0, 0, "never"),
+        ])
+        lines = multi.split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[0], "Bole Shop: 2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14")
+        self.assertEqual(lines[1], "Piassa Shop: 0 fresh, 0 due soon, 0 hidden · Last check-in: never")
+
     def test_link_ack_branches(self):
         self.assertIn("Bole Shop", messages.link_ack("linked", "Bole Shop"))
         self.assertIn("Bole Shop", messages.link_ack("relinked", "Bole Shop"))
@@ -1970,3 +2050,151 @@ class KeyboardsTests(SimpleTestCase):
         self.assertEqual(rows[0][0].callback_data, "unlink:yes")
         self.assertEqual(rows[0][1].text, "Cancel")
         self.assertEqual(rows[0][1].callback_data, "unlink:cancel")
+
+
+class ShopStatusTests(BotTestCase):
+    """Tests for bot.services.shop_status."""
+
+    def test_shop_status_counts_fresh_due_and_hidden(self):
+        now = timezone.now()
+        Product.objects.filter(shop=self.shop).delete()
+
+        # 1. Fresh (age <= 7d): 2 days ago
+        self._product("P Fresh", "p-fresh", self.shop, now - timedelta(days=2))
+        # 2. Due (7d < age <= 14d): 9 days ago
+        self._product("P Due", "p-due", self.shop, now - timedelta(days=9))
+        # 3. Hidden (age > 14d): 15 days ago
+        self._product("P Hidden", "p-hidden", self.shop, now - timedelta(days=15))
+        # 4. Hidden (never confirmed): last_confirmed_at=None
+        self._product("P Never", "p-never", self.shop, None)
+
+        # 5. Excluded: unavailable
+        p_unavail = self._product("P Unavail", "p-unavail", self.shop, now - timedelta(days=2))
+        p_unavail.is_available = False
+        p_unavail.save(update_fields=["is_available"])
+
+        # 6. Excluded: non-LIVE (draft, sold)
+        p_draft = self._product("P Draft", "p-draft", self.shop, now - timedelta(days=2))
+        p_draft.status = ProductStatus.DRAFT
+        p_draft.save(update_fields=["status"])
+
+        p_sold = self._product("P Sold", "p-sold", self.shop, now - timedelta(days=2))
+        p_sold.status = ProductStatus.SOLD
+        p_sold.save(update_fields=["status"])
+
+        status_data = shop_status(self.shop, now=now)
+        self.assertEqual(status_data["fresh"], 1)
+        self.assertEqual(status_data["due"], 1)
+        self.assertEqual(status_data["hidden"], 2)  # p_hidden and p_never
+        self.assertIsNone(status_data["last_checkin"])
+
+    def test_shop_status_exact_boundaries_at_7d_and_14d(self):
+        now = timezone.now()
+        Product.objects.filter(shop=self.shop).delete()
+
+        # Exactly 7 days ago -> age <= 7d -> fresh
+        self._product("P 7d", "p-7d", self.shop, now - timedelta(days=7))
+        # Exactly 14 days ago -> 7d < age <= 14d -> due
+        self._product("P 14d", "p-14d", self.shop, now - timedelta(days=14))
+
+        status_data = shop_status(self.shop, now=now)
+        self.assertEqual(status_data["fresh"], 1)
+        self.assertEqual(status_data["due"], 1)
+        self.assertEqual(status_data["hidden"], 0)
+
+    def test_shop_status_last_checkin_returns_latest_responded_at(self):
+        ConfirmationRequest.objects.filter(shop=self.shop).delete()
+
+        t1 = timezone.now() - timedelta(days=5)
+        t2 = timezone.now() - timedelta(days=1)
+        ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.fresh_product,
+            status="confirmed",
+            responded_at=t1,
+        )
+        ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.fresh_product,
+            status="sold_out",
+            responded_at=t2,
+        )
+        ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.fresh_product,
+            status="pending",
+            responded_at=None,
+        )
+
+        status_data = shop_status(self.shop)
+        self.assertEqual(status_data["last_checkin"], t2)
+
+    def test_shop_status_scoped_to_shop(self):
+        other_shop = Shop.objects.create(
+            name="Other Shop", owner=self.user, telegram_chat_id="555"
+        )
+        self._product("Other Product", "other-product", other_shop, timezone.now())
+        ConfirmationRequest.objects.create(
+            shop=other_shop,
+            product=Product.objects.filter(shop=other_shop).first(),
+            status="confirmed",
+            responded_at=timezone.now(),
+        )
+
+        Product.objects.filter(shop=self.shop).delete()
+        ConfirmationRequest.objects.filter(shop=self.shop).delete()
+
+        status_data = shop_status(self.shop)
+        self.assertEqual(status_data["fresh"], 0)
+        self.assertEqual(status_data["due"], 0)
+        self.assertEqual(status_data["hidden"], 0)
+        self.assertIsNone(status_data["last_checkin"])
+
+
+class StatusCommandTests(BotTestCase):
+    """PTB command handler wiring for /status and /help."""
+
+    def _message_update(self, chat_id=CHAT_ID):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.effective_chat.id = int(chat_id)
+        return update, update.message
+
+    def test_status_unlinked_chat_replies_not_linked(self):
+        update, message = self._message_update(chat_id=OTHER_CHAT_ID)
+        async_to_sync(status)(update, None)
+
+        message.reply_text.assert_awaited_once_with(messages.not_linked())
+
+    def test_status_single_shop_replies_one_line_without_shop_prefix(self):
+        update, message = self._message_update(chat_id=CHAT_ID)
+        async_to_sync(status)(update, None)
+
+        message.reply_text.assert_awaited_once()
+        text = message.reply_text.call_args[0][0]
+        self.assertFalse(text.startswith(f"{self.shop.name}:"))
+        self.assertIn("fresh", text)
+        self.assertIn("due soon", text)
+        self.assertIn("hidden", text)
+        self.assertIn("Last check-in:", text)
+
+    def test_status_multiple_shops_prefixes_each_line(self):
+        second_shop = Shop.objects.create(
+            name="Mercato Gadgets", owner=self.user, telegram_chat_id=CHAT_ID
+        )
+        update, message = self._message_update(chat_id=CHAT_ID)
+        async_to_sync(status)(update, None)
+
+        message.reply_text.assert_awaited_once()
+        text = message.reply_text.call_args[0][0]
+        lines = text.strip().split("\n")
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith(f"{self.shop.name}:"))
+        self.assertTrue(lines[1].startswith(f"{second_shop.name}:"))
+
+    def test_help_command_replies_help_text(self):
+        update, message = self._message_update(chat_id=CHAT_ID)
+        async_to_sync(help)(update, None)
+
+        message.reply_text.assert_awaited_once_with(text=messages.help_text())
+

@@ -37,6 +37,7 @@ from bot.services import (
     looks_like_link_code,
     record_update,
     review_next,
+    shop_status,
     start_review,
     unlink_chat,
 )
@@ -385,6 +386,33 @@ async def unlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text=text, reply_markup=markup)
 
 
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View listing freshness and last check-in for linked shop(s)."""
+    chat_id = update.effective_chat.id
+    logger.info("Inbound /status from chat %s", chat_id)
+
+    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
+    if not shops:
+        await update.message.reply_text(messages.not_linked())
+        return
+
+    prefix_shop = len(shops) > 1
+    lines = []
+    for shop in shops:
+        data = await sync_to_async(shop_status, thread_sensitive=True)(shop)
+        lines.append(
+            messages.status(
+                shop_name=shop.name,
+                fresh=data["fresh"],
+                due=data["due"],
+                hidden=data["hidden"],
+                last_checkin=data["last_checkin"],
+                prefix_shop=prefix_shop,
+            )
+        )
+    await update.message.reply_text("\n".join(lines))
+
+
 def _text_reply_ack(outcome: str, product) -> str:
     """One short line per outcome. Every failure names a way forward."""
     product_name = product.name if product else None
@@ -509,6 +537,7 @@ class Command(BaseCommand):
         app.add_handler(CommandHandler("help", help))
         app.add_handler(CommandHandler("link", link))
         app.add_handler(CommandHandler("unlink", unlink))
+        app.add_handler(CommandHandler("status", status))
         app.add_handler(CommandHandler("myproducts", my_products))
         app.add_handler(CallbackQueryHandler(on_callback))
         # Last, and command-free: a merchant who ignores the buttons and just

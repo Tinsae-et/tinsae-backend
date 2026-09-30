@@ -245,7 +245,7 @@ SEARCH_LOG_RETENTION_DAYS = env.int("SEARCH_LOG_RETENTION_DAYS", default=180)
 
 # Products per page in the bot's /myproducts listing. Telegram inline keyboards
 # become unusable past a handful of rows, so the listing pages instead of capping.
-MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=5)
+MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=8)
 
 # Hours an admin-issued Telegram link code stays valid. Short on purpose: the
 # code is a bearer credential for a shop's prompt channel, and it reaches the

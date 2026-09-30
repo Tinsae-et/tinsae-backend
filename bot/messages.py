@@ -5,7 +5,11 @@ text. No Django model imports, no ORM, no Telegram dependencies, and no HTML
 escaping (plain text v1; formatting is deferred per D21).
 """
 
+import zoneinfo
+from datetime import datetime
 from decimal import Decimal
+
+EAT = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
 
 
 def welcome(chat_id: str | int) -> str:
@@ -20,9 +24,14 @@ def welcome(chat_id: str | int) -> str:
 
 def help_text() -> str:
     return (
-        "This is the help page — what do you want to know?\n"
-        "/link <code> — connect this chat to your shop.\n"
-        "/myproducts — list the products waiting on your confirmation."
+        "Commands:\n"
+        "/myproducts — check products waiting on confirmation\n"
+        "/status — view listing freshness and last check-in\n"
+        "/unlink — disconnect this chat from your shop\n"
+        "/help — show this help guide\n\n"
+        "Weekly check-in:\n"
+        'Reply "all" if everything is still in stock.\n'
+        'Reply "sold 2 5" to mark items 2 and 5 out of stock.'
     )
 
 
@@ -343,3 +352,91 @@ def reminder(shop_name: str, count: int = 0) -> str:
 
 
 digest_reminder = reminder
+
+
+def format_last_checkin(
+    dt: datetime | None, now: datetime | None = None
+) -> str:
+    """Format last check-in date/time in EAT.
+
+    Returns:
+    - "never" if dt is None
+    - "today %H:%M" if dt falls on the same calendar day in EAT as now
+    - "{day} {month_abbr} %H:%M" (e.g. "3 Sep 08:14") if earlier
+    """
+    if dt is None:
+        return "never"
+
+    if dt.tzinfo is None:
+        local_dt = dt.replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(EAT)
+    else:
+        local_dt = dt.astimezone(EAT)
+
+    if now is None:
+        local_now = datetime.now(EAT)
+    elif now.tzinfo is None:
+        local_now = now.replace(tzinfo=zoneinfo.ZoneInfo("UTC")).astimezone(EAT)
+    else:
+        local_now = now.astimezone(EAT)
+
+    if local_dt.date() == local_now.date():
+        return f"today {local_dt.strftime('%H:%M')}"
+    return f"{local_dt.day} {local_dt.strftime('%b %H:%M')}"
+
+
+def status(
+    shop_name: str,
+    fresh: int,
+    due: int,
+    hidden: int,
+    last_checkin: datetime | str | None = None,
+    prefix_shop: bool = False,
+    *,
+    last_checkin_str: str | None = None,
+) -> str:
+    """Format a shop status line.
+
+    If 1 shop: one status line (prefix_shop=False).
+    If several: one line per shop, prefixed with shop name (prefix_shop=True).
+    """
+    if last_checkin_str is not None:
+        checkin_str = last_checkin_str
+    elif isinstance(last_checkin, str):
+        checkin_str = last_checkin
+    else:
+        checkin_str = format_last_checkin(last_checkin)
+
+    body = (
+        f"{fresh} fresh, {due} due soon, {hidden} hidden · "
+        f"Last check-in: {checkin_str}"
+    )
+    if prefix_shop:
+        return f"{shop_name}: {body}"
+    return body
+
+
+def status_summary(
+    shops_data: list[tuple[str, int, int, int, datetime | str | None]],
+) -> str:
+    """Format status for one or multiple shops.
+
+    If 1 shop: one status line without prefix.
+    If several: one line per shop, prefixed with shop name.
+    If empty: not_linked().
+    """
+    if not shops_data:
+        return not_linked()
+    prefix_shop = len(shops_data) > 1
+    lines = [
+        status(
+            shop_name,
+            fresh,
+            due,
+            hidden,
+            last_checkin,
+            prefix_shop=prefix_shop,
+        )
+        for shop_name, fresh, due, hidden, last_checkin in shops_data
+    ]
+    return "\n".join(lines)
+
