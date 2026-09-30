@@ -142,3 +142,19 @@ def get_updates(offset=None, timeout: int = 30) -> list:
         payload["offset"] = offset
     result = _call("getUpdates", payload, timeout=timeout + 5)
     return result if isinstance(result, list) else []
+
+
+def set_my_commands(commands: list[tuple[str, str]]) -> dict:
+    """Register the bot's command list so the client ☰ menu shows it.
+
+    `commands` is a list of (command, description) pairs, without the leading "/".
+    """
+    return _call(
+        "setMyCommands",
+        {
+            "commands": [
+                {"command": command, "description": description}
+                for command, description in commands
+            ]
+        },
+    )

@@ -20,6 +20,7 @@ from bot import telegram_api as telegram
 from bot.management.commands.run_bot import (
     dedupe,
     help,
+    menu,
     my_products,
     on_callback,
     on_error,
@@ -1170,10 +1171,12 @@ class MyProductsHandlerTests(BotTestCase):
         async_to_sync(my_products)(update, None)
 
         markup = message.reply_text.call_args.kwargs["reply_markup"]
-        self.assertEqual(len(markup.inline_keyboard), 1)
+        # One row per product, then the ☰ Menu row.
+        self.assertEqual(len(markup.inline_keyboard), 2)
         confirm, deny = markup.inline_keyboard[0]
         self.assertEqual(confirm.callback_data, f"pconfirm:{self.stale_product.pk}:0")
         self.assertEqual(deny.callback_data, f"pdeny:{self.stale_product.pk}:0")
+        self.assertEqual(markup.inline_keyboard[-1][0].callback_data, "menu:home")
 
     def test_an_unlinked_chat_is_told_how_to_link(self):
         update, message = self._message_update(OTHER_CHAT_ID)
@@ -1199,9 +1202,10 @@ class MyProductsHandlerTests(BotTestCase):
         async_to_sync(my_products)(update, None)
 
         rows = message.reply_text.call_args.kwargs["reply_markup"].inline_keyboard
-        # One row per product on this page, plus a navigation row.
-        self.assertEqual(len(rows), settings.MYPRODUCTS_PAGE_SIZE + 1)
-        self.assertEqual(rows[-1][0].callback_data, "page:1")
+        # One row per product on this page, a navigation row, and the ☰ Menu row.
+        self.assertEqual(len(rows), settings.MYPRODUCTS_PAGE_SIZE + 2)
+        self.assertEqual(rows[-2][0].callback_data, "page:1")
+        self.assertEqual(rows[-1][0].callback_data, "menu:home")
 
     def test_paging_edits_the_message_instead_of_sending_another(self):
         self._stale_extras(settings.MYPRODUCTS_PAGE_SIZE + 2)
@@ -1211,8 +1215,8 @@ class MyProductsHandlerTests(BotTestCase):
 
         query.edit_message_text.assert_awaited()
         rows = query.edit_message_text.call_args.kwargs["reply_markup"].inline_keyboard
-        # Last page: three products and a nav row offering only Prev.
-        self.assertEqual(rows[-1][0].callback_data, "page:0")
+        # Last page: products, a nav row offering only Prev, and the ☰ Menu row.
+        self.assertEqual(rows[-2][0].callback_data, "page:0")
 
     def test_several_products_confirmed_in_one_interaction(self):
         """The point of the feature: no waiting for separate pings per product."""
@@ -1273,7 +1277,8 @@ class MyProductsHandlerTests(BotTestCase):
         text = message.reply_text.call_args.args[0]
         self.assertIn("🔄 to put back in stock", text)
         markup = message.reply_text.call_args.kwargs["reply_markup"]
-        self.assertEqual(len(markup.inline_keyboard), 1)
+        # Restock row, then the ☰ Menu row.
+        self.assertEqual(len(markup.inline_keyboard), 2)
         row = markup.inline_keyboard[0]
         self.assertEqual(len(row), 1)
         button = row[0]
@@ -2145,13 +2150,14 @@ class KeyboardsTests(SimpleTestCase):
     def test_digest_markup(self):
         markup = keyboards.digest_markup(42)
         rows = markup.inline_keyboard
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(len(rows[0]), 1)
         self.assertEqual(rows[0][0].text, "✅ All still available")
         self.assertEqual(rows[0][0].callback_data, "da:42")
         self.assertEqual(len(rows[1]), 1)
         self.assertEqual(rows[1][0].text, "✏️ Check one by one")
         self.assertEqual(rows[1][0].callback_data, "drev:42")
+        self.assertEqual(rows[2][0].callback_data, "menu:home")
 
     def test_review_markup(self):
         markup = keyboards.review_markup(99)
@@ -2177,7 +2183,7 @@ class KeyboardsTests(SimpleTestCase):
         )
         markup = keyboards.listing_markup([product], page=0, pages=3, label_shop=True)
         rows = markup.inline_keyboard
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
 
         product_row = rows[0]
         self.assertEqual(len(product_row), 2)
@@ -2200,7 +2206,7 @@ class KeyboardsTests(SimpleTestCase):
         )
         markup = keyboards.listing_markup([product], page=1, pages=3, label_shop=False)
         rows = markup.inline_keyboard
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
 
         product_row = rows[0]
         self.assertEqual(product_row[0].text, "✅ Apple iPad")
@@ -2399,3 +2405,129 @@ class StatusCommandTests(BotTestCase):
         async_to_sync(help)(update, None)
 
         message.reply_text.assert_awaited_once_with(text=messages.help_text())
+
+
+class MenuParsingTests(SimpleTestCase):
+    def test_menu_callback_round_trip(self):
+        for action in parsing.MENU_ACTIONS:
+            data = parsing.format_menu_callback(action)
+            self.assertEqual(data, f"menu:{action}")
+            self.assertEqual(parsing.parse_menu_callback(data), action)
+
+    def test_menu_callback_invalid(self):
+        self.assertIsNone(parsing.parse_menu_callback("menu:bogus"))
+        self.assertIsNone(parsing.parse_menu_callback("menu:"))
+        self.assertIsNone(parsing.parse_menu_callback("other:home"))
+        self.assertIsNone(parsing.parse_menu_callback(""))
+
+
+class MenuKeyboardTests(SimpleTestCase):
+    def test_menu_markup(self):
+        rows = keyboards.menu_markup().inline_keyboard
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][0].callback_data, "menu:products")
+        self.assertEqual(rows[0][1].callback_data, "menu:status")
+        self.assertEqual(rows[1][0].callback_data, "menu:help")
+        self.assertEqual(rows[1][1].callback_data, "menu:unlink")
+
+
+class BotCommandsListTests(SimpleTestCase):
+    def test_bot_commands_are_well_formed(self):
+        self.assertTrue(messages.BOT_COMMANDS)
+        names = [command for command, _ in messages.BOT_COMMANDS]
+        self.assertIn("menu", names)
+        self.assertIn("myproducts", names)
+        for command, description in messages.BOT_COMMANDS:
+            self.assertFalse(command.startswith("/"))
+            self.assertTrue(description)
+        self.assertEqual(len(names), len(set(names)))
+
+    def test_run_bot_registers_the_listed_commands(self):
+        """The advertised list must match the handlers run_bot registers."""
+        import inspect
+
+        from bot.management.commands import run_bot as run_bot_module
+
+        source = inspect.getsource(run_bot_module.Command.handle)
+        for command, _ in messages.BOT_COMMANDS:
+            self.assertIn(f'CommandHandler("{command}"', source)
+
+
+class MenuHandlerTests(BotTestCase):
+    """PTB wiring for /menu and the menu:* callbacks."""
+
+    def _message_update(self, chat_id=CHAT_ID):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.effective_chat.id = int(chat_id)
+        return update, update.message
+
+    def _callback_update(self, data, chat_id=CHAT_ID):
+        query = mock.AsyncMock()
+        query.data = data
+        query.message.chat.id = int(chat_id)
+        update = mock.Mock()
+        update.callback_query = query
+        return update, query
+
+    def test_menu_command_shows_the_hub(self):
+        update, message = self._message_update()
+
+        async_to_sync(menu)(update, None)
+
+        markup = message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "menu:products")
+
+    def test_menu_home_redraws_the_hub(self):
+        update, query = self._callback_update("menu:home")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited()
+        markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "menu:products")
+
+    def test_menu_products_opens_the_listing(self):
+        update, query = self._callback_update("menu:products")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.edit_message_text.assert_awaited()
+
+    def test_menu_status_shows_status(self):
+        update, query = self._callback_update("menu:status")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.edit_message_text.assert_awaited()
+
+    def test_menu_help_shows_help(self):
+        update, query = self._callback_update("menu:help")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.edit_message_text.assert_awaited_with(messages.help_text())
+
+    def test_menu_unlink_shows_confirmation(self):
+        update, query = self._callback_update("menu:unlink")
+
+        async_to_sync(on_callback)(update, None)
+
+        markup = query.edit_message_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "unlink:yes")
+
+
+class SyncBotCommandsTests(SimpleTestCase):
+    def test_requires_token(self):
+        with override_settings(TELEGRAM_BOT_TOKEN=""):
+            with self.assertRaisesMessage(
+                CommandError, "TELEGRAM_BOT_TOKEN is not set"
+            ):
+                call_command("sync_bot_commands")
+
+    def test_registers_the_command_list(self):
+        with override_settings(TELEGRAM_BOT_TOKEN="test-token"):
+            with mock.patch("bot.telegram_api.set_my_commands") as set_commands:
+                call_command("sync_bot_commands", stdout=StringIO())
+
+        set_commands.assert_called_once_with(messages.BOT_COMMANDS)

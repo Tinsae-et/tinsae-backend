@@ -11,6 +11,23 @@ from decimal import Decimal
 
 EAT = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
 
+# The commands advertised in Telegram's client menu (setMyCommands). Order is the
+# order they appear. Kept here so run_bot and the sync_bot_commands command share
+# one source.
+BOT_COMMANDS = [
+    ("start", "Start or connect your shop"),
+    ("menu", "Open the menu"),
+    ("myproducts", "Products waiting on your confirmation"),
+    ("status", "Listing freshness and last check-in"),
+    ("unlink", "Disconnect this chat from your shop"),
+    ("link", "Connect using a shop code"),
+    ("help", "How to use the bot"),
+]
+
+
+def menu() -> str:
+    return "What would you like to do?"
+
 
 def welcome(chat_id: str | int) -> str:
     return (
@@ -361,9 +378,7 @@ def reminder(shop_name: str, count: int = 0) -> str:
 digest_reminder = reminder
 
 
-def format_last_checkin(
-    dt: datetime | None, now: datetime | None = None
-) -> str:
+def format_last_checkin(dt: datetime | None, now: datetime | None = None) -> str:
     """Format last check-in date/time in EAT.
 
     Returns:
@@ -446,4 +461,3 @@ def status_summary(
         for shop_name, fresh, due, hidden, last_checkin in shops_data
     ]
     return "\n".join(lines)
-

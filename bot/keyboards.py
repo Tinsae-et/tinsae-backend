@@ -9,6 +9,7 @@ from bot.parsing import (
     format_digest_all_callback,
     format_digest_review_callback,
     format_listing_callback,
+    format_menu_callback,
     format_numeric_selection_callback,
     format_page_callback,
     format_prompt_callback,
@@ -60,11 +61,15 @@ def listing_markup(
                 [
                     InlineKeyboardButton(
                         f"✅ {label}"[:BUTTON_LABEL_LIMIT],
-                        callback_data=format_listing_callback("pconfirm", product.pk, page),
+                        callback_data=format_listing_callback(
+                            "pconfirm", product.pk, page
+                        ),
                     ),
                     InlineKeyboardButton(
                         "❌",
-                        callback_data=format_listing_callback("pdeny", product.pk, page),
+                        callback_data=format_listing_callback(
+                            "pdeny", product.pk, page
+                        ),
                     ),
                 ]
             )
@@ -73,7 +78,9 @@ def listing_markup(
                 [
                     InlineKeyboardButton(
                         f"🔄 {label}"[:BUTTON_LABEL_LIMIT],
-                        callback_data=format_listing_callback("pback", product.pk, page),
+                        callback_data=format_listing_callback(
+                            "pback", product.pk, page
+                        ),
                     ),
                 ]
             )
@@ -96,7 +103,45 @@ def listing_markup(
     if nav:
         rows.append(nav)
 
+    rows.append([_menu_button()])
+
     return InlineKeyboardMarkup(rows)
+
+
+def _menu_button() -> InlineKeyboardButton:
+    """The ☰ Menu button, shown on navigable messages so merchants can get back."""
+    return InlineKeyboardButton(
+        "☰ Menu",
+        callback_data=format_menu_callback("home"),
+    )
+
+
+def menu_markup() -> InlineKeyboardMarkup:
+    """Build the /menu navigation hub."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 My products",
+                    callback_data=format_menu_callback("products"),
+                ),
+                InlineKeyboardButton(
+                    "📊 Status",
+                    callback_data=format_menu_callback("status"),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "❓ Help",
+                    callback_data=format_menu_callback("help"),
+                ),
+                InlineKeyboardButton(
+                    "🔌 Unlink",
+                    callback_data=format_menu_callback("unlink"),
+                ),
+            ],
+        ]
+    )
 
 
 def unlink_confirmation_markup() -> InlineKeyboardMarkup:
@@ -133,6 +178,7 @@ def digest_markup(digest_id: int) -> InlineKeyboardMarkup:
                     callback_data=format_digest_review_callback(digest_id),
                 )
             ],
+            [_menu_button()],
         ]
     )
 

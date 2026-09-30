@@ -25,6 +25,7 @@ from telegram.ext import (
 )
 
 from bot import keyboards, messages, parsing
+from bot import telegram_api as telegram
 from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     answer_confirmation_digest,
@@ -81,6 +82,15 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
 
 
+async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Open the navigation hub."""
+    chat_id = update.effective_chat.id
+    logger.info("Inbound /menu from chat %s", chat_id)
+    await update.message.reply_text(
+        messages.menu(), reply_markup=keyboards.menu_markup()
+    )
+
+
 def _render_listing(shops, products, page: int):
     """Build one page of the confirmation listing.
 
@@ -103,24 +113,55 @@ def _render_listing(shops, products, page: int):
     return text, markup
 
 
+async def _products_content(chat_id):
+    """The /myproducts content for a chat: `(text, markup | None)`."""
+    shops, products = await sync_to_async(listing_for_chat, thread_sensitive=True)(
+        chat_id
+    )
+    if not shops:
+        return messages.not_linked(), None
+    if not products:
+        return messages.nothing_needs_confirming(), None
+    return _render_listing(shops, products, page=0)
+
+
+async def _status_content(chat_id):
+    """The /status text for a chat."""
+    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
+    if not shops:
+        return messages.not_linked()
+
+    prefix_shop = len(shops) > 1
+    lines = []
+    for shop in shops:
+        data = await sync_to_async(shop_status, thread_sensitive=True)(shop)
+        lines.append(
+            messages.status(
+                shop_name=shop.name,
+                fresh=data["fresh"],
+                due=data["due"],
+                hidden=data["hidden"],
+                last_checkin=data["last_checkin"],
+                prefix_shop=prefix_shop,
+            )
+        )
+    return "\n".join(lines)
+
+
+async def _unlink_content(chat_id):
+    """The /unlink content for a chat: `(text, markup | None)`."""
+    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
+    if not shops:
+        return messages.not_linked(), None
+    return messages.unlink_prompt(len(shops)), keyboards.unlink_confirmation_markup()
+
+
 async def my_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """List the products this chat's shops need to confirm."""
     chat_id = update.effective_chat.id
     logger.info("Inbound /myproducts from chat %s", chat_id)
 
-    shops, products = await sync_to_async(listing_for_chat, thread_sensitive=True)(
-        chat_id
-    )
-
-    if not shops:
-        await update.message.reply_text(messages.not_linked())
-        return
-
-    if not products:
-        await update.message.reply_text(messages.nothing_needs_confirming())
-        return
-
-    text, markup = _render_listing(shops, products, page=0)
+    text, markup = await _products_content(chat_id)
     await update.message.reply_text(text, reply_markup=markup)
 
 
@@ -169,6 +210,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     data = query.data or ""
     logger.info("Inbound callback %r from chat %s", data, chat_id)
+
+    menu_action = parsing.parse_menu_callback(data)
+    if menu_action is not None:
+        await query.answer()
+        if query.message:
+            if menu_action == "home":
+                await query.edit_message_text(
+                    messages.menu(), reply_markup=keyboards.menu_markup()
+                )
+            elif menu_action == "products":
+                text, markup = await _products_content(chat_id)
+                await query.edit_message_text(text, reply_markup=markup)
+            elif menu_action == "status":
+                await query.edit_message_text(await _status_content(chat_id))
+            elif menu_action == "help":
+                await query.edit_message_text(messages.help_text())
+            elif menu_action == "unlink":
+                text, markup = await _unlink_content(chat_id)
+                await query.edit_message_text(text, reply_markup=markup)
+        return
 
     unlink_action = parsing.parse_unlink_callback(data)
     if unlink_action is not None:
@@ -378,13 +439,7 @@ async def unlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info("Inbound /unlink from chat %s", chat_id)
 
-    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
-    if not shops:
-        await update.message.reply_text(messages.not_linked())
-        return
-
-    text = messages.unlink_prompt(len(shops))
-    markup = keyboards.unlink_confirmation_markup()
+    text, markup = await _unlink_content(chat_id)
     await update.message.reply_text(text=text, reply_markup=markup)
 
 
@@ -393,26 +448,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info("Inbound /status from chat %s", chat_id)
 
-    shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
-    if not shops:
-        await update.message.reply_text(messages.not_linked())
-        return
-
-    prefix_shop = len(shops) > 1
-    lines = []
-    for shop in shops:
-        data = await sync_to_async(shop_status, thread_sensitive=True)(shop)
-        lines.append(
-            messages.status(
-                shop_name=shop.name,
-                fresh=data["fresh"],
-                due=data["due"],
-                hidden=data["hidden"],
-                last_checkin=data["last_checkin"],
-                prefix_shop=prefix_shop,
-            )
-        )
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(await _status_content(chat_id))
 
 
 def _text_reply_ack(outcome: str, product) -> str:
@@ -540,6 +576,7 @@ class Command(BaseCommand):
         app.add_error_handler(on_error)
         app.add_handler(TypeHandler(Update, dedupe), group=-1)
         app.add_handler(CommandHandler("start", start))
+        app.add_handler(CommandHandler("menu", menu))
         app.add_handler(CommandHandler("help", help))
         app.add_handler(CommandHandler("link", link))
         app.add_handler(CommandHandler("unlink", unlink))
@@ -549,6 +586,16 @@ class Command(BaseCommand):
         # Last, and command-free: a merchant who ignores the buttons and just
         # types "sold out" still gets an answer recorded.
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+
+        # Register the command list with Telegram (the client ☰ menu). Best effort:
+        # a failure here must not stop the poller.
+        try:
+            telegram.set_my_commands(messages.BOT_COMMANDS)
+            logger.info(
+                "Registered %d bot commands with Telegram.", len(messages.BOT_COMMANDS)
+            )
+        except telegram.TelegramError as exc:
+            logger.warning("Could not register bot commands: %s", exc)
 
         logger.info("Starting Telegram long-polling...")
         app.run_polling()

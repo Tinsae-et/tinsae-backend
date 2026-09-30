@@ -322,3 +322,23 @@ def parse_numeric_selection_callback(
         if raw_indices and all(idx.isdigit() for idx in raw_indices):
             return int(parts[1]), parts[2], [int(idx) for idx in raw_indices]
     return None
+
+
+# --- Callback family 9: Menu navigation (menu:<action>) ---
+
+MENU_ACTIONS = ("products", "status", "help", "unlink", "home")
+
+
+def format_menu_callback(action: str) -> str:
+    """Format callback_data for the /menu hub buttons."""
+    return f"menu:{action}"
+
+
+def parse_menu_callback(callback_data: str) -> str | None:
+    """Parse menu:<action> callback_data where action is a known menu action."""
+    if not callback_data:
+        return None
+    parts = callback_data.split(":")
+    if len(parts) == 2 and parts[0] == "menu" and parts[1] in MENU_ACTIONS:
+        return parts[1]
+    return None
