@@ -58,6 +58,8 @@ def link_usage() -> str:
 
 def link_ack(outcome: str, shop_name: str | None = None) -> str:
     """One short line per link outcome. Every failure names a way forward."""
+    if outcome == "throttled":
+        return "Too many attempts. Please wait a while and try again."
     if outcome == "linked":
         return (
             "✅ Linked! This chat now receives stock confirmations for "
@@ -428,29 +430,3 @@ def status(
     if prefix_shop:
         return f"{shop_name}: {body}"
     return body
-
-
-def status_summary(
-    shops_data: list[tuple[str, int, int, int, datetime | str | None]],
-) -> str:
-    """Format status for one or multiple shops.
-
-    If 1 shop: one status line without prefix.
-    If several: one line per shop, prefixed with shop name.
-    If empty: not_linked().
-    """
-    if not shops_data:
-        return not_linked()
-    prefix_shop = len(shops_data) > 1
-    lines = [
-        status(
-            shop_name,
-            fresh,
-            due,
-            hidden,
-            last_checkin,
-            prefix_shop=prefix_shop,
-        )
-        for shop_name, fresh, due, hidden, last_checkin in shops_data
-    ]
-    return "\n".join(lines)

@@ -44,6 +44,11 @@ from .parsing import (
     parse_sold_indices,
 )
 from .selectors import pending_request_for_chat, resolve_digest_for_chat
+from .throttle import (
+    clear_link_failures,
+    link_attempts_exceeded,
+    record_link_failure,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,7 +386,7 @@ def handle_text_reply(
     if outcome == "not_found":
         return "orphan", None
 
-    logger.info("Applied text reply %r to product %s.", text, product.pk)
+    logger.info("Applied text reply (len=%d) to product %s.", len(text), product.pk)
     return outcome, product
 
 
@@ -474,7 +479,7 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
     """Bind a Telegram chat to the Shop named by a one-time code.
 
     Returns `(outcome, shop)`, where outcome is one of "linked", "relinked",
-    "already_linked", "unknown", "expired", "used". The caller owns the wording —
+    "already_linked", "unknown", "expired", "used", "throttled". The caller owns the wording —
     the same split as `handle_text_reply`.
 
     Linking is additive per chat and exclusive per shop: one chat may run several
@@ -483,11 +488,19 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
     The code is never logged. It is a bearer credential, and a log aggregator is
     not a place to leave one.
     """
-    normalised = resolve_link_code(code)
-    if not normalised or chat_id in (None, ""):
+    if chat_id in (None, ""):
         return "unknown", None
 
     chat_id = str(chat_id)
+
+    if link_attempts_exceeded(chat_id):
+        return "throttled", None
+
+    normalised = resolve_link_code(code)
+    if not normalised:
+        record_link_failure(chat_id)
+        return "unknown", None
+
     now = timezone.now()
 
     with transaction.atomic():
@@ -501,6 +514,7 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
             )
         except ShopLinkCode.DoesNotExist:
             logger.info("Link attempt from chat %s with an unknown code.", chat_id)
+            record_link_failure(chat_id)
             return "unknown", None
 
         shop = link_code.shop
@@ -512,6 +526,7 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
                 str(link_code.used_by_chat_id) == chat_id
                 and str(shop.telegram_chat_id) == chat_id
             ):
+                clear_link_failures(chat_id)
                 return "already_linked", shop
             logger.warning(
                 "Chat %s replayed a spent link code for shop %s (spent by chat %s).",
@@ -519,10 +534,12 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
                 shop.pk,
                 link_code.used_by_chat_id,
             )
+            record_link_failure(chat_id)
             return "used", None
 
         if link_code.expires_at <= now:
             logger.info("Link attempt from chat %s with an expired code.", chat_id)
+            record_link_failure(chat_id)
             return "expired", None
 
         previous = str(shop.telegram_chat_id or "")
@@ -544,6 +561,7 @@ def link_shop_to_chat(code: str, chat_id: str) -> tuple[str, Shop | None]:
         link_code.used_by_chat_id = chat_id
         link_code.save(update_fields=["used_at", "used_by_chat_id", "updated_at"])
 
+    clear_link_failures(chat_id)
     logger.info("Chat %s linked to shop %s (%s).", chat_id, shop.pk, outcome)
     return outcome, shop
 

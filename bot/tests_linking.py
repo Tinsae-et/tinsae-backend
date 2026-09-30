@@ -4,12 +4,14 @@ The state changes live in LinkServiceTests; the PTB wiring is LinkHandlerTests'
 job, in the same split the rest of `bot` uses.
 """
 
+import time
 from datetime import timedelta
 from unittest import mock
 
 from asgiref.sync import async_to_sync
 from django.contrib.admin.sites import site
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
@@ -26,6 +28,10 @@ from bot.services import (
     resolve_link_code,
     unlink_chat,
 )
+from bot.throttle import (
+    clear_link_failures,
+    record_link_failure,
+)
 from shops.models import Shop
 
 User = get_user_model()
@@ -39,6 +45,7 @@ class LinkCodeTestCase(TestCase):
     """A shop with no chat yet, and one live code for it."""
 
     def setUp(self):
+        cache.clear()
         self.user = User.objects.create_user(
             username="merchant",
             email="merchant@example.com",
@@ -168,6 +175,161 @@ class LinkServiceTests(LinkCodeTestCase):
         second.refresh_from_db()
         self.assertEqual(second.telegram_chat_id, "")
         self.assertIsNone(second.blocked_at)
+
+
+class LinkThrottleTests(LinkCodeTestCase):
+    """P1 & P2: Link-code failed-attempt throttling and shared cache integration."""
+
+    def test_five_failed_codes_throttle_sixth_attempt(self):
+        """5 failed codes from a chat -> the 6th attempt (even a valid code) is
+        'throttled' and nothing is linked."""
+        for i in range(5):
+            outcome, shop = link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+            self.assertEqual(outcome, "unknown")
+            self.assertIsNone(shop)
+
+        # 6th attempt with the valid code
+        outcome, shop = link_shop_to_chat(self.code.code, CHAT_ID)
+        self.assertEqual(outcome, "throttled")
+        self.assertIsNone(shop)
+
+        # Invariants: nothing linked, code not spent
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        self.code.refresh_from_db()
+        self.assertIsNone(self.code.used_at)
+        self.assertTrue(self.code.is_live)
+
+    def test_successful_link_clears_the_counter(self):
+        """A successful link clears the failed attempt counter."""
+        for i in range(4):
+            outcome, _ = link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+            self.assertEqual(outcome, "unknown")
+
+        self.assertEqual(cache.get(f"linkfail:{CHAT_ID}"), 4)
+
+        # Successful link
+        outcome, shop = link_shop_to_chat(self.code.code, CHAT_ID)
+        self.assertEqual(outcome, "linked")
+        self.assertEqual(shop.pk, self.shop.pk)
+
+        # Counter is cleared in cache
+        self.assertIsNone(cache.get(f"linkfail:{CHAT_ID}"))
+
+    def test_already_linked_and_relinked_clear_throttle_counter(self):
+        """Both already_linked and relinked outcomes clear the throttle counter."""
+        # 1. already_linked clears counter
+        link_shop_to_chat(self.code.code, CHAT_ID)
+        cache.set(f"linkfail:{CHAT_ID}", 2)
+        outcome, _ = link_shop_to_chat(self.code.code, CHAT_ID)
+        self.assertEqual(outcome, "already_linked")
+        self.assertIsNone(cache.get(f"linkfail:{CHAT_ID}"))
+
+        # 2. relinked clears counter
+        second_code = issue_link_code(self.shop)
+        cache.set(f"linkfail:{OTHER_CHAT_ID}", 3)
+        outcome, _ = link_shop_to_chat(second_code.code, OTHER_CHAT_ID)
+        self.assertEqual(outcome, "relinked")
+        self.assertIsNone(cache.get(f"linkfail:{OTHER_CHAT_ID}"))
+
+    def test_expired_and_used_codes_increment_failure_counter(self):
+        """Expired and used code attempts count as failures toward throttle."""
+        # Expired code counts as failure
+        ShopLinkCode.objects.filter(pk=self.code.pk).update(
+            expires_at=timezone.now() - timedelta(minutes=1)
+        )
+        outcome, _ = link_shop_to_chat(self.code.code, CHAT_ID)
+        self.assertEqual(outcome, "expired")
+        self.assertEqual(cache.get(f"linkfail:{CHAT_ID}"), 1)
+
+        # Used code replayed by another chat counts as failure
+        new_code = issue_link_code(self.shop)
+        link_shop_to_chat(new_code.code, OTHER_CHAT_ID)
+        outcome, _ = link_shop_to_chat(new_code.code, CHAT_ID)
+        self.assertEqual(outcome, "used")
+        self.assertEqual(cache.get(f"linkfail:{CHAT_ID}"), 2)
+
+    def test_different_chat_is_unaffected_by_throttle(self):
+        """Throttling is chat-scoped: one chat's failures do not affect another."""
+        for i in range(5):
+            link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+
+        # CHAT_ID is throttled
+        self.assertEqual(link_shop_to_chat(self.code.code, CHAT_ID)[0], "throttled")
+
+        # OTHER_CHAT_ID can still link successfully
+        outcome, shop = link_shop_to_chat(self.code.code, OTHER_CHAT_ID)
+        self.assertEqual(outcome, "linked")
+        self.assertEqual(shop.pk, self.shop.pk)
+
+    @override_settings(
+        TELEGRAM_LINK_FAILURE_LIMIT=2,
+        TELEGRAM_LINK_FAILURE_WINDOW_SECONDS=1,
+    )
+    def test_window_resets_counter(self):
+        """After window expires, throttle resets and new attempts are accepted."""
+        for i in range(2):
+            link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+
+        # Throttled on 3rd attempt
+        self.assertEqual(link_shop_to_chat(self.code.code, CHAT_ID)[0], "throttled")
+
+        # Sleep past the 1s window
+        time.sleep(1.1)
+
+        # Now attempt goes through and succeeds
+        outcome, shop = link_shop_to_chat(self.code.code, CHAT_ID)
+        self.assertEqual(outcome, "linked")
+        self.assertEqual(shop.pk, self.shop.pk)
+
+    def test_throttle_works_through_cache_api(self):
+        """P2: Verify throttling interacts through Django's cache API."""
+        with mock.patch("bot.throttle.cache") as mock_cache:
+            mock_cache.get.return_value = 5
+
+            outcome, shop = link_shop_to_chat(self.code.code, CHAT_ID)
+            self.assertEqual(outcome, "throttled")
+            self.assertIsNone(shop)
+            mock_cache.get.assert_called_with(f"linkfail:{CHAT_ID}", 0)
+
+    def test_record_failure_sets_and_increments_cache(self):
+        """P2: Verify record_link_failure uses cache.add and cache.incr."""
+        with mock.patch("bot.throttle.cache") as mock_cache:
+            # When key does not exist yet (add returns True)
+            mock_cache.add.return_value = True
+            record_link_failure(CHAT_ID)
+            mock_cache.add.assert_called_once_with(
+                f"linkfail:{CHAT_ID}", 1, timeout=3600
+            )
+            mock_cache.incr.assert_not_called()
+
+        with mock.patch("bot.throttle.cache") as mock_cache:
+            # When key already exists (add returns False)
+            mock_cache.add.return_value = False
+            record_link_failure(CHAT_ID)
+            mock_cache.incr.assert_called_once_with(f"linkfail:{CHAT_ID}")
+
+        with mock.patch("bot.throttle.cache") as mock_cache:
+            clear_link_failures(CHAT_ID)
+            mock_cache.delete.assert_called_once_with(f"linkfail:{CHAT_ID}")
+
+    def test_redis_cache_backend_support(self):
+        """P2: Verify that RedisCache backend works correctly when configured."""
+        import redis
+        from django.core.cache.backends.redis import RedisCache
+
+        try:
+            r_cache = RedisCache("redis://redis:6379/1", {})
+            key = f"linkfail:test_{CHAT_ID}"
+            r_cache.delete(key)
+            self.assertTrue(r_cache.add(key, 1, timeout=60))
+            self.assertEqual(r_cache.get(key), 1)
+            self.assertEqual(r_cache.incr(key), 2)
+            self.assertEqual(r_cache.get(key), 2)
+            r_cache.delete(key)
+            self.assertIsNone(r_cache.get(key))
+        except (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError):
+            pass
 
 
 class LinkCodeShapeTests(LinkCodeTestCase):
@@ -329,6 +491,45 @@ class LinkHandlerTests(LinkCodeTestCase):
         self.shop.refresh_from_db()
         self.assertEqual(self.shop.telegram_chat_id, CHAT_ID)
         self.assertIn("Bole Electronics", message.reply_text.call_args.args[0])
+
+    def test_throttled_link_command_replies_with_throttled_message(self):
+        for i in range(5):
+            link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+
+        update, message = self._message_update(f"/link {self.code.code}")
+        async_to_sync(link)(update, mock.Mock(args=[self.code.code]))
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        message.reply_text.assert_called_once_with(
+            "Too many attempts. Please wait a while and try again."
+        )
+
+    def test_throttled_start_with_code_replies_with_throttled_message(self):
+        for i in range(5):
+            link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+
+        update, message = self._message_update(f"/start {self.code.code}")
+        async_to_sync(start)(update, mock.Mock(args=[self.code.code]))
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        message.reply_text.assert_called_once_with(
+            "Too many attempts. Please wait a while and try again."
+        )
+
+    def test_throttled_bare_code_replies_with_throttled_message(self):
+        for i in range(5):
+            link_shop_to_chat(f"TIN-BAD{i}AA", CHAT_ID)
+
+        update, message = self._message_update(self.code.code)
+        async_to_sync(on_text)(update, None)
+
+        self.shop.refresh_from_db()
+        self.assertEqual(self.shop.telegram_chat_id, "")
+        message.reply_text.assert_called_once_with(
+            "Too many attempts. Please wait a while and try again."
+        )
 
     def test_plain_start_shows_welcome(self):
         update, message = self._message_update("/start")

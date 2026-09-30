@@ -181,20 +181,33 @@ DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="Tinsae <no-reply@tinsae.
 FRONTEND_URL = env("FRONTEND_URL", default="http://localhost:3000")
 PASSWORD_RESET_TIMEOUT = env.int("PASSWORD_RESET_TIMEOUT", default=60 * 60 * 3)
 
-# Throttle counters live here. LocMemCache is per-process: under multi-worker
-# gunicorn every worker keeps its own counter and the effective rate becomes
-# N x the numbers above. This must become Redis before any multi-worker deploy
-# — the rates are not the thing that needs revisiting, the backend is.
+REDIS_URL = env("REDIS_URL", default="")
+
+# Throttle counters and cache-backed state live here.
+# Under multi-worker gunicorn, LocMemCache is per-process so every worker keeps
+# its own counter and the effective rate becomes N x the limits. When REDIS_URL
+# is configured (e.g. in multi-worker environments), Django's built-in RedisCache
+# backend is used so counters are shared across all workers. Use Redis DB /1
+# (the Celery broker uses /0) so cache keys cannot collide with the broker.
+# If REDIS_URL is not set, LocMemCache serves as the per-process dev fallback.
 #
 # Both rates key on client IP for anonymous callers. Ethiopian mobile carriers
 # NAT aggressively, so a shared egress IP can exhaust these on legitimate
 # traffic; widen them if that shows up before the Redis switch.
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "tinsae-throttle",
+if REDIS_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": REDIS_URL,
+        }
     }
-}
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "tinsae-throttle",
+        }
+    }
 CORS_ALLOWED_ORIGINS = env.list(
     "CORS_ALLOWED_ORIGINS", default=["http://localhost:3000"]
 )
@@ -246,6 +259,13 @@ MYPRODUCTS_PAGE_SIZE = env.int("MYPRODUCTS_PAGE_SIZE", default=8)
 # code is a bearer credential for a shop's prompt channel, and it reaches the
 # merchant over whatever channel support happens to be using that day.
 TELEGRAM_LINK_CODE_TTL_HOURS = env.int("TELEGRAM_LINK_CODE_TTL_HOURS", default=24)
+
+# Failed link attempt throttle: max failures permitted per chat before
+# linking is throttled, and the window (in seconds) the failure counter is retained.
+TELEGRAM_LINK_FAILURE_LIMIT = env.int("TELEGRAM_LINK_FAILURE_LIMIT", default=5)
+TELEGRAM_LINK_FAILURE_WINDOW_SECONDS = env.int(
+    "TELEGRAM_LINK_FAILURE_WINDOW_SECONDS", default=3600
+)
 
 # Celery & background tasks
 CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")

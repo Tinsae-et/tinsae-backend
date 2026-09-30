@@ -1891,38 +1891,16 @@ class MessagesTests(SimpleTestCase):
             msg, "Bole Shop: 3 fresh, 1 due soon, 0 hidden · Last check-in: today 08:14"
         )
 
-    def test_status_summary_formatting(self):
-        # Empty
-        self.assertEqual(messages.status_summary([]), messages.not_linked())
-        # Single shop: no prefix
-        single = messages.status_summary([("Bole Shop", 2, 0, 1, "today 08:14")])
-        self.assertEqual(
-            single, "2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14"
-        )
-        # Multiple shops: prefixed
-        multi = messages.status_summary(
-            [
-                ("Bole Shop", 2, 0, 1, "today 08:14"),
-                ("Piassa Shop", 0, 0, 0, "never"),
-            ]
-        )
-        lines = multi.split("\n")
-        self.assertEqual(len(lines), 2)
-        self.assertEqual(
-            lines[0],
-            "Bole Shop: 2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14",
-        )
-        self.assertEqual(
-            lines[1],
-            "Piassa Shop: 0 fresh, 0 due soon, 0 hidden · Last check-in: never",
-        )
-
     def test_link_ack_branches(self):
         self.assertIn("Bole Shop", messages.link_ack("linked", "Bole Shop"))
         self.assertIn("Bole Shop", messages.link_ack("relinked", "Bole Shop"))
         self.assertIn("Bole Shop", messages.link_ack("already_linked", "Bole Shop"))
         self.assertIn("expired", messages.link_ack("expired"))
         self.assertIn("already been used", messages.link_ack("used"))
+        self.assertEqual(
+            messages.link_ack("throttled"),
+            "Too many attempts. Please wait a while and try again.",
+        )
         self.assertIn("don't recognise", messages.link_ack("invalid"))
 
     def test_digest_formatting(self):
