@@ -6,18 +6,22 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('catalog', '0018_attribute_producttype_category_product_type_and_more'),
+        ("catalog", "0018_attribute_producttype_category_product_type_and_more"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='producttypeattribute',
-            name='recommended',
+            model_name="producttypeattribute",
+            name="recommended",
             field=models.BooleanField(default=False),
         ),
         migrations.AddField(
-            model_name='producttypeattribute',
-            name='section',
-            field=models.CharField(choices=[('key', 'Key'), ('details', 'Details'), ('item', 'This item')], default='key', max_length=10),
+            model_name="producttypeattribute",
+            name="section",
+            field=models.CharField(
+                choices=[("key", "Key"), ("details", "Details"), ("item", "This item")],
+                default="key",
+                max_length=10,
+            ),
         ),
     ]
