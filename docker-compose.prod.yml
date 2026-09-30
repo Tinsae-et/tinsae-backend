@@ -161,6 +161,37 @@ services:
         max-size: "50m"
         max-file: "3"
 
+  # Inbound Telegram poller. MUST be exactly one instance per bot token
+  # (Telegram allows a single getUpdates consumer; a second gets 409 Conflict).
+  # Do not scale this service. Outbound sends go through the outbox, drained by
+  # celery-worker.
+  bot:
+    build:
+      context: .
+      target: prod
+    command: python manage.py run_bot
+    env_file:
+      - .env
+    environment:
+      - DJANGO_SETTINGS_MODULE=config.settings.prod
+    deploy:
+      resources:
+        reservations:
+          memory: 128M
+        limits:
+          memory: 256M
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "3"
+
   # Nginx Reverse Proxy — Only service with exposed public ports
   web:
     image: nginx:alpine

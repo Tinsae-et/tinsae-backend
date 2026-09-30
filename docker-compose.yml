@@ -1,5 +1,5 @@
-# Starts the whole local stack with one command: docker compose up
-# Two containers: Postgres (db) and the Django app (backend).
+# Starts the whole local stack: Postgres (db), Redis, the Django app (backend),
+# the Telegram poller (bot), and Celery worker + beat.
 
 services:
   db:
@@ -67,6 +67,21 @@ services:
       db:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  # Inbound Telegram poller. Exactly ONE instance per bot token (Telegram allows
+  # a single getUpdates consumer; a second gets 409 Conflict). Outbound sends go
+  # through the outbox, drained by celery-worker.
+  bot:
+    build:
+      context: .
+      target: dev
+    command: python manage.py run_bot
+    volumes: [".:/app"]
+    env_file: [.env]
+    restart: unless-stopped
+    depends_on:
+      db:
         condition: service_healthy
 
 volumes:
