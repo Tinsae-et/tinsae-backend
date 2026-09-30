@@ -116,6 +116,7 @@ class TelegramStatusApiTests(TelegramApiTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "idle")
         self.assertIsNone(response.data["linked_at"])
+        self.assertIsNone(response.data["blocked_at"])
 
     def test_connected_status_when_chat_id_set(self):
         self.shop.telegram_chat_id = "987654321"
@@ -126,16 +127,20 @@ class TelegramStatusApiTests(TelegramApiTestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "connected")
         self.assertIsNone(response.data["linked_at"])
+        self.assertIsNone(response.data["blocked_at"])
 
     def test_blocked_status_when_blocked_at_set(self):
+        blocked_time = timezone.now()
         self.shop.telegram_chat_id = "987654321"
-        self.shop.blocked_at = timezone.now()
+        self.shop.blocked_at = blocked_time
         self.shop.save(update_fields=["telegram_chat_id", "blocked_at"])
 
         response = self.client.get(self._url())
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data["status"], "blocked")
+        self.assertIsNotNone(response.data["blocked_at"])
+        self.assertEqual(parse_datetime(response.data["blocked_at"]), blocked_time)
 
     def test_linked_at_reflects_most_recent_used_code(self):
         t1 = timezone.now() - timedelta(days=2)

@@ -1044,6 +1044,51 @@ class VerificationRequestApiTests(TestCase):
         shop_admin = ShopAdmin(Shop, site)
         self.assertIn("is_verified", shop_admin.readonly_fields)
 
+    def test_shop_admin_blocked_at_in_list_display_and_filter(self):
+        from django.contrib.admin.sites import site
+
+        from shops.admin import ShopAdmin
+
+        shop_admin = ShopAdmin(Shop, site)
+        self.assertIn("blocked_at", shop_admin.list_display)
+        self.assertTrue(
+            any(
+                "blocked_at" == (f if isinstance(f, str) else f[0])
+                for f in shop_admin.list_filter
+            )
+        )
+
+    def test_shop_admin_clear_telegram_block_action(self):
+        from django.contrib.admin.sites import site
+
+        from shops.admin import ShopAdmin
+
+        shop_admin = ShopAdmin(Shop, site)
+        self.assertIn("clear_telegram_block", shop_admin.actions)
+
+        shop1 = Shop.objects.create(
+            name="Blocked 1", owner=self.owner, blocked_at=timezone.now()
+        )
+        shop2 = Shop.objects.create(
+            name="Blocked 2", owner=self.owner, blocked_at=timezone.now()
+        )
+        shop3 = Shop.objects.create(name="Active", owner=self.owner, blocked_at=None)
+
+        request = type("Request", (), {})()
+        shop_admin.message_user = mock.Mock()
+
+        qs = Shop.objects.filter(pk__in=[shop1.pk, shop2.pk, shop3.pk])
+        shop_admin.clear_telegram_block(request, qs)
+
+        shop1.refresh_from_db()
+        shop2.refresh_from_db()
+        shop3.refresh_from_db()
+
+        self.assertIsNone(shop1.blocked_at)
+        self.assertIsNone(shop2.blocked_at)
+        self.assertIsNone(shop3.blocked_at)
+        shop_admin.message_user.assert_called_once()
+
     def test_verification_request_submitted_at(self):
         req = VerificationRequest.objects.create(
             shop=self.shop, supporting_detail="Doc"

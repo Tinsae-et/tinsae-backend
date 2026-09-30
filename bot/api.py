@@ -19,6 +19,7 @@ class TelegramConnectResponseSerializer(serializers.Serializer):
 class TelegramStatusResponseSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=["idle", "connected", "blocked"])
     linked_at = serializers.DateTimeField(allow_null=True)
+    blocked_at = serializers.DateTimeField(allow_null=True)
 
 
 class TelegramConnectView(APIView):
@@ -74,6 +75,7 @@ class TelegramStatusView(APIView):
         data = {
             "status": tele_status,
             "linked_at": last_used,
+            "blocked_at": shop.blocked_at,
         }
         return Response(
             TelegramStatusResponseSerializer(data).data,

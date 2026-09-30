@@ -29,6 +29,7 @@ from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     answer_confirmation_digest,
     answer_digest_selection,
+    clear_blocked_for_chat,
     handle_digest_text,
     handle_product_callback,
     handle_telegram_callback,
@@ -95,9 +96,7 @@ def _render_listing(shops, products, page: int):
     label_shop = len(shops) > 1
 
     has_restockable = any(not getattr(p, "is_available", True) for p in visible)
-    text = messages.listing_summary(
-        total, page, pages, has_restockable=has_restockable
-    )
+    text = messages.listing_summary(total, page, pages, has_restockable=has_restockable)
     markup = keyboards.listing_markup(
         visible, page=page, pages=pages, label_shop=label_shop
     )
@@ -493,6 +492,10 @@ async def dedupe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not fresh:
         logger.info("Duplicate update %s dropped.", update.update_id)
         raise ApplicationHandlerStop
+
+    chat = getattr(update, "effective_chat", None)
+    if chat and getattr(chat, "id", None) is not None:
+        await sync_to_async(clear_blocked_for_chat, thread_sensitive=True)(chat.id)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):

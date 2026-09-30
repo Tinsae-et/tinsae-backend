@@ -18,6 +18,7 @@ from bot.models import ShopLinkCode
 from bot.services import (
     AFFIRMATIVE,
     NEGATIVE,
+    clear_blocked_for_chat,
     issue_link_code,
     link_shop_to_chat,
     looks_like_link_code,
@@ -207,6 +208,35 @@ class LinkCodeShapeTests(LinkCodeTestCase):
         """Right shape, wrong alphabet: it was meant as a code, so say so."""
         self.assertTrue(looks_like_link_code("TIN-BADCODE"))
         self.assertEqual(resolve_link_code("TIN-BADCODE"), "")
+
+    def test_clear_blocked_for_chat_clears_blocked_at_for_all_shops_on_chat(self):
+        second = Shop.objects.create(
+            name="Piassa Electronics",
+            owner=self.user,
+            telegram_chat_id=CHAT_ID,
+            blocked_at=timezone.now(),
+        )
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.blocked_at = timezone.now()
+        self.shop.save(update_fields=["telegram_chat_id", "blocked_at"])
+
+        count = clear_blocked_for_chat(CHAT_ID)
+        self.assertEqual(count, 2)
+
+        self.shop.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNone(self.shop.blocked_at)
+        self.assertIsNone(second.blocked_at)
+
+    def test_clear_blocked_for_chat_noop_when_not_blocked(self):
+        self.shop.telegram_chat_id = CHAT_ID
+        self.shop.blocked_at = None
+        self.shop.save(update_fields=["telegram_chat_id", "blocked_at"])
+
+        self.assertEqual(clear_blocked_for_chat(CHAT_ID), 0)
+        self.assertEqual(clear_blocked_for_chat(OTHER_CHAT_ID), 0)
+        self.assertEqual(clear_blocked_for_chat(""), 0)
+        self.assertEqual(clear_blocked_for_chat(None), 0)
 
 
 class LinkHandlerTests(LinkCodeTestCase):

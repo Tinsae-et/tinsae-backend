@@ -1,4 +1,5 @@
 from django.contrib import admin, messages
+from django.utils import timezone
 from django.utils.html import format_html
 from django.utils.timezone import localtime
 
@@ -85,7 +86,7 @@ class ShopAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("is_verified", "created_at", "updated_at")
     inlines = [ProductInline]
-    actions = ["generate_telegram_link_code"]
+    actions = ["generate_telegram_link_code", "clear_telegram_block"]
 
     @admin.display(boolean=True, description="Telegram", ordering="telegram_chat_id")
     def telegram_linked(self, obj):
@@ -112,3 +113,13 @@ class ShopAdmin(admin.ModelAdmin):
                 ),
                 messages.SUCCESS,
             )
+
+    @admin.action(description="Clear Telegram block")
+    def clear_telegram_block(self, request, queryset):
+        """Set blocked_at=None for the selected shops."""
+        count = queryset.update(blocked_at=None, updated_at=timezone.now())
+        self.message_user(
+            request,
+            f"Cleared Telegram block for {count} shop(s).",
+            messages.SUCCESS,
+        )

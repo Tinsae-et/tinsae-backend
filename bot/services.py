@@ -566,6 +566,24 @@ def disconnect_shop(shop: Shop) -> None:
     logger.info("Disconnected Telegram from shop %s.", shop.pk)
 
 
+def clear_blocked_for_chat(chat_id: str | int | None) -> int:
+    """Clear blocked_at for every shop bound to this chat that is currently blocked.
+
+    Returns the number of shops unblocked.
+    """
+    if chat_id in (None, ""):
+        return 0
+    chat_str = str(chat_id)
+    updated = Shop.objects.filter(
+        telegram_chat_id=chat_str, blocked_at__isnull=False
+    ).update(blocked_at=None, updated_at=timezone.now())
+    if updated:
+        logger.info(
+            "Cleared blocked status for %d shop(s) on chat %s.", updated, chat_str
+        )
+    return updated
+
+
 def record_update(update_id: int) -> bool:
     """Record an inbound Telegram update_id to prevent duplicate handling.
 
@@ -1351,4 +1369,3 @@ def shop_status(shop: Shop, *, now=None) -> dict:
         "hidden": counts["hidden"] or 0,
         "last_checkin": last_checkin,
     }
-

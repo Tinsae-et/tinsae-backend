@@ -1577,6 +1577,62 @@ class DedupeHandlerTests(TestCase):
         update_no_attr = mock.Mock(spec=[])
         async_to_sync(dedupe)(update_no_attr, context)
 
+    def test_inbound_update_clears_blocked_at_for_chat(self):
+        user = User.objects.create_user(username="blocked_owner", password="pw")
+        shop = Shop.objects.create(
+            name="Blocked Shop",
+            owner=user,
+            telegram_chat_id="12345",
+            blocked_at=timezone.now(),
+        )
+        update = mock.Mock()
+        update.update_id = 98765432103
+        update.effective_chat = mock.Mock(id=12345)
+        context = mock.Mock()
+
+        async_to_sync(dedupe)(update, context)
+
+        shop.refresh_from_db()
+        self.assertIsNone(shop.blocked_at)
+
+    def test_duplicate_update_does_not_clear_blocked_at(self):
+        user = User.objects.create_user(username="blocked_owner_2", password="pw")
+        shop = Shop.objects.create(
+            name="Blocked Shop 2",
+            owner=user,
+            telegram_chat_id="12345",
+            blocked_at=timezone.now(),
+        )
+        ProcessedUpdate.objects.create(update_id=98765432104)
+        update = mock.Mock()
+        update.update_id = 98765432104
+        update.effective_chat = mock.Mock(id=12345)
+        context = mock.Mock()
+
+        with self.assertRaises(ApplicationHandlerStop):
+            async_to_sync(dedupe)(update, context)
+
+        shop.refresh_from_db()
+        self.assertIsNotNone(shop.blocked_at)
+
+    def test_inbound_update_for_unblocked_chat_is_noop(self):
+        user = User.objects.create_user(username="normal_owner", password="pw")
+        shop = Shop.objects.create(
+            name="Normal Shop",
+            owner=user,
+            telegram_chat_id="54321",
+            blocked_at=None,
+        )
+        update = mock.Mock()
+        update.update_id = 98765432105
+        update.effective_chat = mock.Mock(id=54321)
+        context = mock.Mock()
+
+        async_to_sync(dedupe)(update, context)
+
+        shop.refresh_from_db()
+        self.assertIsNone(shop.blocked_at)
+
 
 class GlobalErrorHandlerTests(TestCase):
     """PTB on_error global error handler."""
@@ -1808,7 +1864,9 @@ class MessagesTests(SimpleTestCase):
             last_checkin_str="today 08:14",
             prefix_shop=False,
         )
-        self.assertEqual(msg, "3 fresh, 1 due soon, 0 hidden · Last check-in: today 08:14")
+        self.assertEqual(
+            msg, "3 fresh, 1 due soon, 0 hidden · Last check-in: today 08:14"
+        )
 
     def test_status_formatting_prefixed_shop(self):
         msg = messages.status(
@@ -1828,16 +1886,26 @@ class MessagesTests(SimpleTestCase):
         self.assertEqual(messages.status_summary([]), messages.not_linked())
         # Single shop: no prefix
         single = messages.status_summary([("Bole Shop", 2, 0, 1, "today 08:14")])
-        self.assertEqual(single, "2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14")
+        self.assertEqual(
+            single, "2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14"
+        )
         # Multiple shops: prefixed
-        multi = messages.status_summary([
-            ("Bole Shop", 2, 0, 1, "today 08:14"),
-            ("Piassa Shop", 0, 0, 0, "never"),
-        ])
+        multi = messages.status_summary(
+            [
+                ("Bole Shop", 2, 0, 1, "today 08:14"),
+                ("Piassa Shop", 0, 0, 0, "never"),
+            ]
+        )
         lines = multi.split("\n")
         self.assertEqual(len(lines), 2)
-        self.assertEqual(lines[0], "Bole Shop: 2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14")
-        self.assertEqual(lines[1], "Piassa Shop: 0 fresh, 0 due soon, 0 hidden · Last check-in: never")
+        self.assertEqual(
+            lines[0],
+            "Bole Shop: 2 fresh, 0 due soon, 1 hidden · Last check-in: today 08:14",
+        )
+        self.assertEqual(
+            lines[1],
+            "Piassa Shop: 0 fresh, 0 due soon, 0 hidden · Last check-in: never",
+        )
 
     def test_link_ack_branches(self):
         self.assertIn("Bole Shop", messages.link_ack("linked", "Bole Shop"))
@@ -2199,12 +2267,16 @@ class ShopStatusTests(BotTestCase):
         self._product("P Never", "p-never", self.shop, None)
 
         # 5. Excluded: unavailable
-        p_unavail = self._product("P Unavail", "p-unavail", self.shop, now - timedelta(days=2))
+        p_unavail = self._product(
+            "P Unavail", "p-unavail", self.shop, now - timedelta(days=2)
+        )
         p_unavail.is_available = False
         p_unavail.save(update_fields=["is_available"])
 
         # 6. Excluded: non-LIVE (draft, sold)
-        p_draft = self._product("P Draft", "p-draft", self.shop, now - timedelta(days=2))
+        p_draft = self._product(
+            "P Draft", "p-draft", self.shop, now - timedelta(days=2)
+        )
         p_draft.status = ProductStatus.DRAFT
         p_draft.save(update_fields=["status"])
 
@@ -2327,4 +2399,3 @@ class StatusCommandTests(BotTestCase):
         async_to_sync(help)(update, None)
 
         message.reply_text.assert_awaited_once_with(text=messages.help_text())
-
