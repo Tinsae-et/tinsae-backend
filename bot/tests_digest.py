@@ -7,7 +7,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 
@@ -1296,3 +1296,37 @@ class PreviewDigestCommandTests(TestCase):
             call_command("preview_digest", "non-existent-shop-slug")
         with self.assertRaises(CommandError):
             call_command("preview_digest", self.shop.slug, "--date", "not-a-date")
+
+
+@override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
+class PromptsDisabledTests(TestCase):
+    """The master outbound flag must stop the digest and reminder jobs."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="pd", password="pw")
+        self.shop = Shop.objects.create(
+            name="PD Shop",
+            slug="pd-shop",
+            owner=self.user,
+            telegram_chat_id="777000",
+        )
+        self.category = Category.objects.create(name="Phones PD", slug="phones-pd")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Brand",
+            name="Device",
+            price="100.00",
+            is_available=True,
+            last_confirmed_at=timezone.now() - timedelta(days=10),
+        )
+
+    def test_send_due_digests_disabled_writes_nothing(self):
+        self.assertEqual(digest.send_due_digests(), 0)
+        self.assertEqual(ConfirmationDigest.objects.count(), 0)
+        self.assertEqual(ConfirmationRequest.objects.count(), 0)
+        self.assertEqual(OutboundMessage.objects.count(), 0)
+
+    def test_send_reminders_disabled_returns_zero(self):
+        self.assertEqual(send_reminders(), 0)
+        self.assertEqual(OutboundMessage.objects.count(), 0)

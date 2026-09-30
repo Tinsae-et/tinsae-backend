@@ -57,6 +57,10 @@ def send_due_digests() -> int:
     creates ConfirmationDigest and pending ConfirmationRequests; enqueues an
     OutboundMessage in the same transaction.
     """
+    if not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
+        logger.info("Telegram prompts are disabled; skipping digests.")
+        return 0
+
     now = timezone.now()
     today = timezone.localtime(now).date()
     cutoff = now - timedelta(days=settings.CONFIRMATION_INTERVAL_DAYS)

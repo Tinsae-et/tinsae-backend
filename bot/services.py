@@ -1213,6 +1213,10 @@ def send_reminders() -> int:
 
     Returns the number of reminders enqueued.
     """
+    if not getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False):
+        logger.info("Telegram prompts are disabled; skipping reminders.")
+        return 0
+
     now = timezone.now()
     today = timezone.localtime(now).date()
     interval_days = getattr(settings, "CONFIRMATION_INTERVAL_DAYS", 7)
