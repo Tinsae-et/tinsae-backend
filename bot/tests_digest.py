@@ -1,5 +1,4 @@
-"""Tests for the weekly confirmation digest and digest-level confirmation."""
-
+import io
 from datetime import timedelta
 from unittest import mock
 
@@ -7,6 +6,7 @@ from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
@@ -1177,3 +1177,122 @@ class SendRemindersTests(TestCase):
         )
         count = send_reminders()
         self.assertEqual(count, 0)
+
+
+class PreviewDigestCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username="merchant", password="password123"
+        )
+        self.shop = Shop.objects.create(
+            name="Bole Electronics",
+            slug="bole-electronics",
+            owner=self.user,
+            telegram_chat_id="987654321",
+        )
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.now = timezone.now()
+        self.today = timezone.localtime(self.now).date()
+        # Create a due product
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Galaxy S23",
+            brand="Samsung",
+            price=1000.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+        )
+
+    def test_preview_creates_no_database_rows(self):
+        counts_before = {
+            "digest": ConfirmationDigest.objects.count(),
+            "request": ConfirmationRequest.objects.count(),
+            "outbox": OutboundMessage.objects.count(),
+            "product": Product.objects.count(),
+            "shop": Shop.objects.count(),
+        }
+
+        out = io.StringIO()
+        call_command("preview_digest", self.shop.slug, stdout=out)
+
+        counts_after = {
+            "digest": ConfirmationDigest.objects.count(),
+            "request": ConfirmationRequest.objects.count(),
+            "outbox": OutboundMessage.objects.count(),
+            "product": Product.objects.count(),
+            "shop": Shop.objects.count(),
+        }
+        self.assertEqual(counts_before, counts_after)
+
+    def test_due_shop_prints_items_and_would_send(self):
+        out = io.StringIO()
+        call_command("preview_digest", str(self.shop.pk), stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("Shop: Bole Electronics", output)
+        self.assertIn("Samsung Galaxy S23", output)
+        self.assertIn("1,000.00 ETB", output)
+        self.assertIn("Buttons: ✅ All still available", output)
+        self.assertIn(f"Dedupe key: digest:{self.shop.pk}:{self.today}", output)
+        self.assertIn("Verdict: WOULD SEND", output)
+
+    def test_shop_with_recent_digest_prints_would_skip_with_cadence_reason(self):
+        ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=2),
+        )
+
+        out = io.StringIO()
+        call_command("preview_digest", self.shop.slug, stdout=out)
+        output = out.getvalue()
+
+        self.assertIn("Verdict: WOULD SKIP (cadence: last digest was on", output)
+        self.assertIn("2d < 7d", output)
+
+    def test_all_flag_lists_due_shops_and_skips_the_rest(self):
+        # shop2: blocked -> not candidate
+        Shop.objects.create(
+            name="Blocked Shop",
+            slug="blocked-shop",
+            owner=self.user,
+            telegram_chat_id="111222",
+            blocked_at=self.now,
+        )
+        # shop3: linked, unblocked, but recent digest -> candidate, but cadence skip
+        shop3 = Shop.objects.create(
+            name="Recent Shop",
+            slug="recent-shop",
+            owner=self.user,
+            telegram_chat_id="333444",
+        )
+        ConfirmationDigest.objects.create(
+            shop=shop3,
+            for_date=self.today - timedelta(days=3),
+        )
+
+        out = io.StringIO()
+        call_command("preview_digest", "--all", stdout=out)
+        output = out.getvalue()
+
+        # shop is due -> listed in summary as WOULD SEND and in full block
+        self.assertIn(f"- Bole Electronics ({self.shop.pk}): WOULD SEND", output)
+        # shop3 has recent digest -> listed in summary as WOULD SKIP
+        self.assertIn(f"- Recent Shop ({shop3.pk}): WOULD SKIP (cadence:", output)
+        # shop2 is blocked -> not even a candidate
+        self.assertNotIn("Blocked Shop", output)
+
+        # Full block rendered only for would_send (Bole Electronics)
+        self.assertIn("Full digest preview for 1 shop(s) that WOULD SEND:", output)
+        self.assertIn("Samsung Galaxy S23", output)
+
+    def test_argument_validation(self):
+        with self.assertRaises(CommandError):
+            call_command("preview_digest")  # neither
+        with self.assertRaises(CommandError):
+            call_command("preview_digest", self.shop.slug, "--all")  # both
+        with self.assertRaises(CommandError):
+            call_command("preview_digest", "non-existent-shop-slug")
+        with self.assertRaises(CommandError):
+            call_command("preview_digest", self.shop.slug, "--date", "not-a-date")
