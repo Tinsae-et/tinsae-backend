@@ -479,8 +479,14 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _apply_link(update, chat_id, message.text)
         return
 
+    # Log the shape of the message, not its text: a free-text reply is the
+    # merchant's content, and IDs at INFO are enough to diagnose. (The link-code
+    # path above returns before this, so a pasted code never reaches a log.)
     logger.info(
-        "Inbound text %r from chat %s (reply_to=%s)", message.text, chat_id, reply_to
+        "Inbound text from chat %s (len=%d, reply_to=%s)",
+        chat_id,
+        len(message.text),
+        reply_to,
     )
 
     digest_res = await sync_to_async(handle_digest_text, thread_sensitive=True)(
