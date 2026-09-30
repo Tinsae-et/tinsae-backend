@@ -8,7 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from catalog.freshness import FRESH_WINDOW
+from catalog.freshness import fresh_window
 from catalog.models import Product, ProductImage, ProductStatus
 from catalog.serializers import ProductSerializer
 from catalog.services import (
@@ -183,7 +183,7 @@ class ShopProductViewSet(viewsets.ModelViewSet):
                 "stale",
                 "expired",
             ):
-                cutoff = timezone.now() - FRESH_WINDOW
+                cutoff = timezone.now() - fresh_window()
                 qs = qs.needing_confirmation(cutoff)
 
         ordering = self.request.query_params.get("ordering")

@@ -265,7 +265,8 @@ and with the buyer-facing freshness status.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `PRODUCT_STALENESS_DAYS` | `30` | Days without a signal before a product is stale |
+| `CONFIRMATION_INTERVAL_DAYS` | `7` | Days without a signal before a product is stale / due |
+| `CONFIRMATION_HIDDEN_AFTER_DAYS` | `14` | Days after which an unconfirmed listing is hidden |
 | `CONFIRMATION_REQUEST_EXPIRY_HOURS` | `48` | Hours before an unanswered prompt expires |
 | `ENABLE_TELEGRAM_BOT_PROMPTS` | `False` | Master switch for **outbound** prompts |
 | `TELEGRAM_BOT_TOKEN` | — | Required to reach Telegram at all |
@@ -290,7 +291,7 @@ docker compose exec backend python manage.py sweep_freshness --staleness-days 14
 
 A product is stale when it is still listed as available **and** either:
 
-- `last_confirmed_at` is older than `PRODUCT_STALENESS_DAYS`, or
+- `last_confirmed_at` is older than `CONFIRMATION_INTERVAL_DAYS`, or
 - it has never been confirmed at all (`last_confirmed_at` is `NULL`).
 
 A never-confirmed listing is stale from the moment it is created — the age of the
@@ -338,7 +339,7 @@ API never reaches this code.
 inbound, nothing writes `last_confirmed_at` — the Telegram callbacks are the only
 code paths that do, apart from `seed_shop_data` and manual admin edits. Because a
 NULL `last_confirmed_at` counts as stale, a scheduled sweep would walk the whole
-catalog to `stale` within `PRODUCT_STALENESS_DAYS` of the last seed, and anything
+catalog to `stale` within `CONFIRMATION_INTERVAL_DAYS` of the last seed, and anything
 added through the admin would be stale on creation. A confirmation-status-based filter
 would then return an empty list.
 

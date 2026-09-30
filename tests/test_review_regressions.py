@@ -115,7 +115,7 @@ class PauseAndResumeDoNotLaunderFreshness(ShopFixture):
 
     def setUp(self):
         super().setUp()
-        self.stale_at = timezone.now() - timedelta(days=10)
+        self.stale_at = timezone.now() - timedelta(days=20)
         Product.objects.filter(pk=self.product.pk).update(
             last_confirmed_at=self.stale_at,
             confirmation_status=ConfirmationStatus.STALE,

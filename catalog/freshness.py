@@ -1,20 +1,23 @@
 """The one definition of the freshness label.
 
-Derived at read time from `Product.last_confirmed_at` so the label can never
-drift from the clock. `get_freshness` is the Python path (one product already in
-hand), `freshness_case` the SQL path (annotating a queryset). Both read the same
-two constants, so moving a window moves every caller together.
+Derived at read time from `Product.last_confirmed_at` on the unified confirmation
+clock (CONFIRMATION_INTERVAL_DAYS and CONFIRMATION_HIDDEN_AFTER_DAYS) so the label
+can never drift from the clock. `get_freshness` is the Python path (one product
+already in hand), `freshness_case` the SQL path (annotating a queryset). Both read
+the same two windows from settings:
 
-Deliberately *not* the same thing as `Product.confirmation_status`, which answers
-a different question on a different clock (`settings.PRODUCT_STALENESS_DAYS`):
-"should we prompt the merchant to reconfirm?" rather than "how much should a
-buyer trust this listing right now?". The first needs stored state -- it has to
-remember who has already been asked. The second is a pure function of the clock
-and must never be stored.
+    FRESH:           age <= CONFIRMATION_INTERVAL_DAYS (7d)
+    ALMOST_EXPIRED:  7d < age <= CONFIRMATION_HIDDEN_AFTER_DAYS (14d)
+    EXPIRED:         age > 14d
+
+`Product.confirmation_status` and the merchant-prompting loop share this same 7-day
+due window. The derived freshness tiers are pure functions of the clock and must
+never be stored.
 """
 
 from datetime import datetime, timedelta
 
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -27,8 +30,26 @@ class Freshness(models.TextChoices):
     EXPIRED = "expired", "Expired"
 
 
-FRESH_WINDOW = timedelta(hours=48)
-ALMOST_EXPIRED_WINDOW = timedelta(days=7)
+def fresh_window() -> timedelta:
+    """The window in which a confirmation is considered fresh (default 7 days)."""
+    return timedelta(days=getattr(settings, "CONFIRMATION_INTERVAL_DAYS", 7))
+
+
+def almost_expired_window() -> timedelta:
+    """The threshold after which an unconfirmed listing is expired/hidden (default 14 days)."""
+    return timedelta(days=getattr(settings, "CONFIRMATION_HIDDEN_AFTER_DAYS", 14))
+
+
+def __getattr__(name: str):
+    if name == "FRESH_WINDOW":
+        return fresh_window()
+    if name == "ALMOST_EXPIRED_WINDOW":
+        return almost_expired_window()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return list(globals().keys()) + ["FRESH_WINDOW", "ALMOST_EXPIRED_WINDOW"]
 
 
 def get_freshness(
@@ -37,15 +58,15 @@ def get_freshness(
     """The label for a single product.
 
     `now` is injectable so a test can sit exactly on a boundary. Reading the
-    clock inside the function makes the 48h and 7d edges unobservable: by the
-    time the subtraction runs, a value set to exactly 48h ago is already past it.
+    clock inside the function makes the 7d and 14d edges unobservable: by the
+    time the subtraction runs, a value set to exactly 7d ago is already past it.
     """
     if last_confirmed_at is None:
         return Freshness.EXPIRED
     age = (now or timezone.now()) - last_confirmed_at
-    if age <= FRESH_WINDOW:
+    if age <= fresh_window():
         return Freshness.FRESH
-    if age <= ALMOST_EXPIRED_WINDOW:
+    if age <= almost_expired_window():
         return Freshness.ALMOST_EXPIRED
     return Freshness.EXPIRED
 
@@ -61,11 +82,11 @@ def freshness_case(now: datetime | None = None) -> models.Case:
     now = now or timezone.now()
     return models.Case(
         models.When(
-            last_confirmed_at__gte=now - FRESH_WINDOW,
+            last_confirmed_at__gte=now - fresh_window(),
             then=models.Value(Freshness.FRESH),
         ),
         models.When(
-            last_confirmed_at__gte=now - ALMOST_EXPIRED_WINDOW,
+            last_confirmed_at__gte=now - almost_expired_window(),
             then=models.Value(Freshness.ALMOST_EXPIRED),
         ),
         default=models.Value(Freshness.EXPIRED),

@@ -201,7 +201,7 @@ def collect_health() -> dict:
     surfaces cannot report different figures for the same instant.
     """
     now = timezone.now()
-    staleness_cutoff = now - timedelta(days=settings.PRODUCT_STALENESS_DAYS)
+    staleness_cutoff = now - timedelta(days=settings.CONFIRMATION_INTERVAL_DAYS)
     expiry_cutoff = now - timedelta(hours=settings.CONFIRMATION_REQUEST_EXPIRY_HOURS)
     rows = _shop_rows()
 
@@ -210,7 +210,7 @@ def collect_health() -> dict:
         # Without this block a page of zeroes is unreadable: you cannot tell
         # "the loop is broken" from "outbound prompts were never switched on".
         "config": {
-            "staleness_days": settings.PRODUCT_STALENESS_DAYS,
+            "staleness_days": settings.CONFIRMATION_INTERVAL_DAYS,
             "expiry_hours": settings.CONFIRMATION_REQUEST_EXPIRY_HOURS,
             "prompts_enabled": getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False),
             "telegram_configured": telegram.is_configured(),

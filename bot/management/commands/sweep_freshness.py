@@ -11,17 +11,20 @@ from catalog.models import ConfirmationStatus, Product
 
 class Command(BaseCommand):
     help = (
-        "Reconciles Product.confirmation_status against the confirmation clock, "
-        "expires stale pending requests, and prompts shop owners over Telegram."
+        "Reconciles Product.confirmation_status against the weekly confirmation clock "
+        "(CONFIRMATION_INTERVAL_DAYS), expires stale pending requests, and prompts "
+        "shop owners over Telegram."
     )
 
     def add_arguments(self, parser):
         parser.add_argument(
+            "--interval-days",
             "--staleness-days",
+            dest="interval_days",
             type=int,
             default=None,
             help=(
-                "Override settings.PRODUCT_STALENESS_DAYS for this run. Changing "
+                "Override settings.CONFIRMATION_INTERVAL_DAYS for this run. Changing "
                 "the threshold rewrites confirmation_status for every product, so "
                 "prefer the setting for anything recurring."
             ),
@@ -39,16 +42,16 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        staleness_days = options["staleness_days"]
-        if staleness_days is None:
-            staleness_days = settings.PRODUCT_STALENESS_DAYS
+        interval_days = options["interval_days"]
+        if interval_days is None:
+            interval_days = settings.CONFIRMATION_INTERVAL_DAYS
         expiry_hours = options["expiry_hours"]
         if expiry_hours is None:
             expiry_hours = settings.CONFIRMATION_REQUEST_EXPIRY_HOURS
 
         dry_run = options["dry_run"]
         now = timezone.now()
-        staleness_cutoff = now - timedelta(days=staleness_days)
+        staleness_cutoff = now - timedelta(days=interval_days)
         expiry_cutoff = now - timedelta(hours=expiry_hours)
 
         # 1. Expire requests the merchant never answered. This has to run first:
@@ -121,7 +124,7 @@ class Command(BaseCommand):
             skipped_count += 0 if sent else 1
 
         summary = (
-            f"Stale products: {len(stale_products)} | "
+            f"Stale products: {len(stale_products)} (interval: {interval_days}d) | "
             f"Newly stale: {len(newly_stale_pks)} | "
             f"Restored to fresh: {len(went_fresh_pks)} | "
             f"Prompts sent: {prompted_count} | "

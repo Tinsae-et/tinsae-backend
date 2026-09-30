@@ -293,17 +293,17 @@ class FreshnessRuleTests(SimpleTestCase):
     def test_well_inside_the_window_is_fresh(self):
         self.assertEqual(self._label(hours=1), Freshness.FRESH)
 
-    def test_exactly_48_hours_is_fresh(self):
-        self.assertEqual(self._label(hours=48), Freshness.FRESH)
+    def test_exactly_7_days_is_fresh(self):
+        self.assertEqual(self._label(days=7), Freshness.FRESH)
 
-    def test_one_second_past_48_hours_is_almost_expired(self):
-        self.assertEqual(self._label(hours=48, seconds=1), Freshness.ALMOST_EXPIRED)
+    def test_one_second_past_7_days_is_almost_expired(self):
+        self.assertEqual(self._label(days=7, seconds=1), Freshness.ALMOST_EXPIRED)
 
-    def test_exactly_7_days_is_almost_expired(self):
-        self.assertEqual(self._label(days=7), Freshness.ALMOST_EXPIRED)
+    def test_exactly_14_days_is_almost_expired(self):
+        self.assertEqual(self._label(days=14), Freshness.ALMOST_EXPIRED)
 
-    def test_one_second_past_7_days_is_expired(self):
-        self.assertEqual(self._label(days=7, seconds=1), Freshness.EXPIRED)
+    def test_one_second_past_14_days_is_expired(self):
+        self.assertEqual(self._label(days=14, seconds=1), Freshness.EXPIRED)
 
     def test_null_is_expired(self):
         self.assertEqual(get_freshness(None, now=self.NOW), Freshness.EXPIRED)
@@ -320,10 +320,10 @@ class FreshnessQuerySetTests(TestCase):
     AGES = [
         ("never", None),
         ("one-hour", timedelta(hours=1)),
-        ("at-48h", FRESH_WINDOW),
-        ("past-48h", FRESH_WINDOW + timedelta(seconds=1)),
-        ("at-7d", ALMOST_EXPIRED_WINDOW),
-        ("past-7d", ALMOST_EXPIRED_WINDOW + timedelta(seconds=1)),
+        ("at-7d", FRESH_WINDOW),
+        ("past-7d", FRESH_WINDOW + timedelta(seconds=1)),
+        ("at-14d", ALMOST_EXPIRED_WINDOW),
+        ("past-14d", ALMOST_EXPIRED_WINDOW + timedelta(seconds=1)),
         ("ancient", timedelta(days=90)),
     ]
 
@@ -362,7 +362,7 @@ class FreshnessQuerySetTests(TestCase):
         self._seed_every_band()
         self.assertEqual(
             sorted(Product.objects.fresh(now=self.now).values_list("name", flat=True)),
-            ["at-48h", "one-hour"],
+            ["at-7d", "one-hour"],
         )
 
     def test_fresh_helper_excludes_never_confirmed(self):
@@ -385,7 +385,7 @@ class FreshnessQuerySetTests(TestCase):
                     "name", flat=True
                 )
             ),
-            ["at-48h", "at-7d", "one-hour", "past-48h"],
+            ["at-14d", "at-7d", "one-hour", "past-7d"],
         )
         # Verify fresh() on buyer_visible works cleanly
         self.assertEqual(
@@ -394,7 +394,7 @@ class FreshnessQuerySetTests(TestCase):
                 .fresh(now=self.now)
                 .values_list("name", flat=True)
             ),
-            ["at-48h", "one-hour"],
+            ["at-7d", "one-hour"],
         )
         # Paused / unavailable product is excluded
         p = self._product("paused", timedelta(hours=1))
@@ -404,3 +404,12 @@ class FreshnessQuerySetTests(TestCase):
             "paused",
             Product.objects.buyer_visible(now=self.now).values_list("name", flat=True),
         )
+
+    def test_buyer_visible_boundaries_13d_and_15d(self):
+        self._product("visible-13d", timedelta(days=13))
+        self._product("hidden-15d", timedelta(days=15))
+        visible_names = list(
+            Product.objects.buyer_visible(now=self.now).values_list("name", flat=True)
+        )
+        self.assertIn("visible-13d", visible_names)
+        self.assertNotIn("hidden-15d", visible_names)

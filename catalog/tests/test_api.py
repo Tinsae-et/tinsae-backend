@@ -127,9 +127,7 @@ class ProductApiTest(TestCase):
             last_confirmed_at=timezone.now(),
         )
 
-        response = APIClient().get(
-            "/api/v1/catalog/products/?brand=Samsung,Apple"
-        )
+        response = APIClient().get("/api/v1/catalog/products/?brand=Samsung,Apple")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 2)
 
@@ -896,7 +894,7 @@ class SimilarProductsApiTest(TestCase):
         self._product(
             "expired-phone",
             price="10500.00",
-            last_confirmed_at=timezone.now() - timedelta(days=8),
+            last_confirmed_at=timezone.now() - timedelta(days=15),
         )
 
         self.assertNotIn("expired-phone", self._slugs())
@@ -962,17 +960,17 @@ class PublicStatsApiTest(TestCase):
 
     def test_counts_exclude_expired_listings(self):
         now = timezone.now()
-        # Fresh listing (within 48h): counts as both buyer-visible and fresh
-        self._product("fresh-product", last_confirmed_at=now - timedelta(hours=1))
-        # Almost expired listing (3 days ago, within 7d): counts as buyer-visible, but NOT fresh
+        # Fresh listing (within 7d): counts as both buyer-visible and fresh
+        self._product("fresh-product", last_confirmed_at=now - timedelta(days=3))
+        # Almost expired listing (10 days ago, within 14d): counts as buyer-visible, but NOT fresh
         self._product(
             "almost-expired-product",
-            last_confirmed_at=now - timedelta(days=3),
+            last_confirmed_at=now - timedelta(days=10),
         )
-        # Expired listing (8 days ago, past 7d): excluded from buyer-visible and fresh
+        # Expired listing (15 days ago, past 14d): excluded from buyer-visible and fresh
         self._product(
             "expired-product",
-            last_confirmed_at=now - timedelta(days=8),
+            last_confirmed_at=now - timedelta(days=15),
         )
         # Never confirmed listing (None): excluded
         self._product("never-confirmed-product", last_confirmed_at=None)

@@ -54,7 +54,7 @@ def listing_for_chat(chat_id) -> tuple[list[Shop], list[Product]]:
     if not shops:
         return [], []
 
-    cutoff = timezone.now() - timedelta(days=settings.PRODUCT_STALENESS_DAYS)
+    cutoff = timezone.now() - timedelta(days=settings.CONFIRMATION_INTERVAL_DAYS)
     products = list(
         Product.objects.needing_confirmation(cutoff)
         .filter(shop__in=shops)

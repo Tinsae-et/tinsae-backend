@@ -17,8 +17,8 @@ from core.models import BaseModel
 from core.slugs import save_with_unique_slug
 
 from .freshness import (
-    ALMOST_EXPIRED_WINDOW,
-    FRESH_WINDOW,
+    almost_expired_window,
+    fresh_window,
     freshness_case,
     get_freshness,
 )
@@ -35,7 +35,7 @@ class ConfirmationStatus(models.TextChoices):
     already asked, and did they answer?) and a workflow cannot be recomputed
     from a timestamp alone. The three values are a ladder, worst last:
 
-        FRESH        answered inside the window
+        FRESH        answered within 7 days (CONFIRMATION_INTERVAL_DAYS)
         STALE        past the window, due to be asked
         UNCONFIRMED  asked, and the merchant never answered
 
@@ -44,10 +44,8 @@ class ConfirmationStatus(models.TextChoices):
     separates them is whether we have evidence the merchant is disengaged, which
     is the difference between "prompt them" and "follow up with them".
 
-    This is the buyer-facing label. `catalog/freshness.py` derives a finer tier
-    from `last_confirmed_at` on a shorter clock, and that one is now kept for
-    ranking only: shipping both to buyers meant one payload could call the same
-    product fresh and expired at once.
+    This is the buyer-facing label. `catalog/freshness.py` derives the
+    corresponding tier from `last_confirmed_at` on the unified clock (7d due / 14d hidden).
     """
 
     FRESH = "fresh", "Fresh"
@@ -270,19 +268,19 @@ class ProductQuerySet(models.QuerySet):
         "fresh but sold out" stays possible.
         """
         now = now or timezone.now()
-        return self.filter(last_confirmed_at__gte=now - FRESH_WINDOW)
+        return self.filter(last_confirmed_at__gte=now - fresh_window())
 
     def buyer_visible(self, now=None):
         """Available, unexpired listings visible to buyers.
 
         Excludes listings that are paused (is_available=False or draft/sold)
-        and listings that have expired past ALMOST_EXPIRED_WINDOW.
+        and listings that have expired past CONFIRMATION_HIDDEN_AFTER_DAYS (14d).
         """
         now = now or timezone.now()
         return self.filter(
             is_available=True,
             status=ProductStatus.LIVE,
-            last_confirmed_at__gte=now - ALMOST_EXPIRED_WINDOW,
+            last_confirmed_at__gte=now - almost_expired_window(),
         )
 
     def with_freshness(self, now=None):

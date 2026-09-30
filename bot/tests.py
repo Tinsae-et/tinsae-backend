@@ -484,13 +484,32 @@ class SweepTests(BotTestCase):
         send.assert_not_called()
 
     def test_staleness_threshold_comes_from_settings(self):
-        with override_settings(PRODUCT_STALENESS_DAYS=90):
+        with override_settings(CONFIRMATION_INTERVAL_DAYS=90):
             with mock.patch(
                 "bot.telegram_api.send_message", return_value={"message_id": 1}
             ):
                 call_command("sweep_freshness", stdout=StringIO())
         self.stale_product.refresh_from_db()
         self.assertEqual(self.stale_product.confirmation_status, "fresh")
+
+    def test_sweep_boundaries_6d_fresh_and_8d_stale(self):
+        now = timezone.now()
+        p_6d = self._product("p-6d", "p-6d", self.shop, now - timedelta(days=6))
+        p_8d = self._product("p-8d", "p-8d", self.shop, now - timedelta(days=8))
+        p_6d.confirmation_status = ConfirmationStatus.FRESH
+        p_6d.save(update_fields=["confirmation_status"])
+        p_8d.confirmation_status = ConfirmationStatus.FRESH
+        p_8d.save(update_fields=["confirmation_status"])
+
+        with mock.patch(
+            "bot.telegram_api.send_message", return_value={"message_id": 1}
+        ):
+            call_command("sweep_freshness", stdout=StringIO())
+
+        p_6d.refresh_from_db()
+        p_8d.refresh_from_db()
+        self.assertEqual(p_6d.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertEqual(p_8d.confirmation_status, ConfirmationStatus.STALE)
 
     def test_dry_run_mutates_nothing(self):
         out = StringIO()
