@@ -203,7 +203,7 @@ class ListingSpecValidationTest(TestCase):
         response = self.client.post(self.url, self._payload(specs=specs), format="json")
         self.assertEqual(response.status_code, 201, response.data)
 
-        specs = {**COMPLETE_PHONE, "storage": "300gb", "sim": "triple"}
+        specs = {**COMPLETE_PHONE, "storage": "300gb", "sim": "quad"}
         response = self.client.post(
             self.url, self._payload(name="Other", specs=specs), format="json"
         )
@@ -332,7 +332,8 @@ class SpecsMigrationTest(TestCase):
         # Processor is typed text now: the exact model is kept as written.
         self.assertEqual(after["processor"], "Apple M3 Pro 11-core")
         self.assertEqual(after["screen_size"], 14.2)
-        self.assertEqual(after["os"], "macOS")
+        # os is pick-or-type text: a valid free-text value is kept as typed.
+        self.assertEqual(after["os"], "macOS Sonoma")
 
     def test_type_decides_which_fields_apply(self):
         before = {"type": "Portable Stereo Speaker", "anc": "Yes", "bluetooth": "5.3"}
