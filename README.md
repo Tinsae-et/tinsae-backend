@@ -316,6 +316,7 @@ status.
 | `OUTBOX_RETENTION_DAYS` | `30` | Terminal outbox rows kept |
 | `TELEGRAM_LINK_CODE_TTL_HOURS` | `24` | How long a link code stays valid |
 | `CELERY_BROKER_URL` | `redis://redis:6379/0` | Celery broker + result backend |
+| `REDIS_URL` | — | Shared cache for throttle counters (Redis DB `/1`). Dev falls back to LocMemCache, which is per-process — set it whenever running more than one worker |
 
 **Outbound needs both `ENABLE_TELEGRAM_BOT_PROMPTS=True` and a valid
 `TELEGRAM_BOT_TOKEN`.** With the flag off — the default — `send_due_digests` and
