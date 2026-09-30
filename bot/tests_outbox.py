@@ -1,6 +1,7 @@
 """Tests for the outbox, rate-limited sender, and transport error classification."""
 
-from datetime import timedelta
+import zoneinfo
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -11,9 +12,10 @@ from django.utils import timezone
 from shops.models import Shop
 
 from . import telegram_api
-from .models import OutboundMessage
+from .models import OutboundMessage, ProcessedUpdate
 from .outbox import enqueue
-from .sender import drain_outbox
+from .sender import drain_outbox, is_quiet_hours
+from .services import prune
 
 User = get_user_model()
 
@@ -355,3 +357,199 @@ class UnconfiguredSenderTests(TestCase):
         self.assertNotEqual(msg.status, "sent")
         self.assertIn("TELEGRAM_BOT_TOKEN", msg.last_error)
         self.assertIsNone(msg.claimed_at)
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="test-token",
+    TELEGRAM_MOCK_SEND=False,
+)
+class QuietHoursTests(TestCase):
+    def setUp(self):
+        self.tz = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
+        self.user = User.objects.create_user(username="u_qh_test", password="pw")
+        self.shop = Shop.objects.create(
+            name="QH Shop",
+            owner=self.user,
+            telegram_chat_id="888111",
+        )
+
+    def test_is_quiet_hours_boundaries(self):
+        # 20:59 False, 21:00 True, 23:30 True, 06:59 True, 07:00 False
+        dt_2059 = datetime(2026, 9, 30, 20, 59, tzinfo=self.tz)
+        dt_2100 = datetime(2026, 9, 30, 21, 0, tzinfo=self.tz)
+        dt_2330 = datetime(2026, 9, 30, 23, 30, tzinfo=self.tz)
+        dt_0659 = datetime(2026, 9, 30, 6, 59, tzinfo=self.tz)
+        dt_0700 = datetime(2026, 9, 30, 7, 0, tzinfo=self.tz)
+
+        self.assertFalse(is_quiet_hours(dt_2059))
+        self.assertTrue(is_quiet_hours(dt_2100))
+        self.assertTrue(is_quiet_hours(dt_2330))
+        self.assertTrue(is_quiet_hours(dt_0659))
+        self.assertFalse(is_quiet_hours(dt_0700))
+
+    def test_drain_outbox_during_quiet_hours_sends_nothing_and_leaves_rows_queued(self):
+        msg = enqueue("888111", "prompt", {"text": "Test"}, "qh-1")
+        dt_night = datetime(2026, 9, 30, 22, 0, tzinfo=self.tz)
+        msg.next_attempt_at = dt_night - timedelta(minutes=1)
+        msg.save()
+
+        with (
+            patch("bot.sender.timezone.now", return_value=dt_night),
+            patch("bot.telegram_api.send_message") as mock_send,
+        ):
+            count = drain_outbox(rate_limit=False, respect_quiet_hours=True)
+
+        self.assertEqual(count, 0)
+        mock_send.assert_not_called()
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, "queued")
+        self.assertIsNone(msg.claimed_at)
+
+    def test_drain_outbox_after_0700_sends_normally(self):
+        msg = enqueue("888111", "prompt", {"text": "Test"}, "qh-2")
+        dt_morning = datetime(2026, 9, 30, 8, 0, tzinfo=self.tz)
+        msg.next_attempt_at = dt_morning - timedelta(minutes=1)
+        msg.save()
+
+        with (
+            patch("bot.sender.timezone.now", return_value=dt_morning),
+            patch(
+                "bot.telegram_api.send_message", return_value={"message_id": 99}
+            ) as mock_send,
+        ):
+            count = drain_outbox(rate_limit=False, respect_quiet_hours=True)
+
+        self.assertEqual(count, 1)
+        mock_send.assert_called_once()
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, "sent")
+
+    def test_drain_outbox_can_override_quiet_hours(self):
+        msg = enqueue("888111", "prompt", {"text": "Test"}, "qh-3")
+        dt_night = datetime(2026, 9, 30, 22, 0, tzinfo=self.tz)
+        msg.next_attempt_at = dt_night - timedelta(minutes=1)
+        msg.save()
+
+        with (
+            patch("bot.sender.timezone.now", return_value=dt_night),
+            patch(
+                "bot.telegram_api.send_message", return_value={"message_id": 100}
+            ) as mock_send,
+        ):
+            count = drain_outbox(rate_limit=False, respect_quiet_hours=False)
+
+        self.assertEqual(count, 1)
+        mock_send.assert_called_once()
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, "sent")
+
+    def test_merchant_initiated_replies_unaffected_by_quiet_hours(self):
+        from bot.models import ConfirmationRequest
+        from bot.services import handle_telegram_callback
+        from catalog.models import Category, Product
+
+        cat = Category.objects.create(name="QH Cat", slug="qh-cat")
+        prod = Product.objects.create(
+            shop=self.shop,
+            category=cat,
+            name="QH Prod",
+            brand="BrandQH",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+        )
+        req = ConfirmationRequest.objects.create(
+            product=prod,
+            shop=self.shop,
+            status="pending",
+        )
+
+        dt_night = datetime(2026, 9, 30, 23, 0, tzinfo=self.tz)
+        with patch("bot.services.timezone.now", return_value=dt_night):
+            outcome = handle_telegram_callback(f"confirm_{req.pk}", chat_id="888111")
+
+        self.assertEqual(outcome, "applied")
+        req.refresh_from_db()
+        self.assertEqual(req.status, "confirmed")
+
+
+class PruneTests(TestCase):
+    def test_prune_deletes_old_updates_and_terminal_outbox_rows(self):
+        now = timezone.now()
+
+        # 1. ProcessedUpdate: old (> 7d) vs recent (<= 7d)
+        up_old = ProcessedUpdate.objects.create(update_id=1001)
+        ProcessedUpdate.objects.filter(pk=up_old.pk).update(
+            created_at=now - timedelta(days=8)
+        )
+        up_recent = ProcessedUpdate.objects.create(update_id=1002)
+        ProcessedUpdate.objects.filter(pk=up_recent.pk).update(
+            created_at=now - timedelta(days=2)
+        )
+
+        # 2. OutboundMessage: terminal old vs terminal recent vs active old
+        # Terminal old (> 30d, should be deleted)
+        m_sent_old = enqueue("111", "prompt", {"text": "1"}, "k1")
+        m_sent_old.status = "sent"
+        m_sent_old.save()
+        OutboundMessage.objects.filter(pk=m_sent_old.pk).update(
+            created_at=now - timedelta(days=35)
+        )
+
+        m_canc_old = enqueue("111", "prompt", {"text": "2"}, "k2")
+        m_canc_old.status = "cancelled"
+        m_canc_old.save()
+        OutboundMessage.objects.filter(pk=m_canc_old.pk).update(
+            created_at=now - timedelta(days=35)
+        )
+
+        m_dead_old = enqueue("111", "prompt", {"text": "3"}, "k3")
+        m_dead_old.status = "dead"
+        m_dead_old.save()
+        OutboundMessage.objects.filter(pk=m_dead_old.pk).update(
+            created_at=now - timedelta(days=35)
+        )
+
+        # Non-terminal old (> 30d, MUST NOT be deleted)
+        m_queued_old = enqueue("111", "prompt", {"text": "4"}, "k4")
+        OutboundMessage.objects.filter(pk=m_queued_old.pk).update(
+            created_at=now - timedelta(days=35)
+        )
+
+        m_sending_old = enqueue("111", "prompt", {"text": "5"}, "k5")
+        m_sending_old.status = "sending"
+        m_sending_old.save()
+        OutboundMessage.objects.filter(pk=m_sending_old.pk).update(
+            created_at=now - timedelta(days=35)
+        )
+
+        # Terminal recent (< 30d, MUST NOT be deleted)
+        m_sent_recent = enqueue("111", "prompt", {"text": "6"}, "k6")
+        m_sent_recent.status = "sent"
+        m_sent_recent.save()
+        OutboundMessage.objects.filter(pk=m_sent_recent.pk).update(
+            created_at=now - timedelta(days=10)
+        )
+
+        summary = prune()
+        self.assertEqual(summary["deleted_updates"], 1)
+        self.assertEqual(summary["deleted_outbound"], 3)
+
+        # Check DB states
+        self.assertFalse(ProcessedUpdate.objects.filter(pk=up_old.pk).exists())
+        self.assertTrue(ProcessedUpdate.objects.filter(pk=up_recent.pk).exists())
+
+        self.assertFalse(OutboundMessage.objects.filter(pk=m_sent_old.pk).exists())
+        self.assertFalse(OutboundMessage.objects.filter(pk=m_canc_old.pk).exists())
+        self.assertFalse(OutboundMessage.objects.filter(pk=m_dead_old.pk).exists())
+
+        self.assertTrue(OutboundMessage.objects.filter(pk=m_queued_old.pk).exists())
+        self.assertTrue(OutboundMessage.objects.filter(pk=m_sending_old.pk).exists())
+        self.assertTrue(OutboundMessage.objects.filter(pk=m_sent_recent.pk).exists())
+
+    def test_prune_task_runs_service(self):
+        from bot.tasks import prune as prune_task
+
+        summary = prune_task()
+        self.assertIn("deleted_updates", summary)
+        self.assertIn("deleted_outbound", summary)

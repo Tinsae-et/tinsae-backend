@@ -106,3 +106,27 @@ class Command(BaseCommand):
             )
         )
 
+        # Prune old dedupe updates and terminal outbox messages: daily at 03:00 Africa/Addis_Ababa
+        prune_crontab, _ = CrontabSchedule.objects.get_or_create(
+            minute="0",
+            hour="3",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone=tz,
+        )
+        prune_task, prune_created = PeriodicTask.objects.update_or_create(
+            name="bot-prune",
+            defaults={
+                "task": "bot.tasks.prune",
+                "crontab": prune_crontab,
+                "interval": None,
+                "enabled": True,
+            },
+        )
+        prune_action = "Created" if prune_created else "Updated"
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{prune_action} PeriodicTask '{prune_task.name}' -> {prune_task.task} (03:00 {tz}, enabled={prune_task.enabled})"
+            )
+        )

@@ -68,11 +68,42 @@ def _throttle(chat_id: str, rate_limit: bool = True) -> None:
         del _last_chat_send_time[stale_chat]
 
 
-def drain_outbox(*, batch_size: int = BATCH_SIZE, rate_limit: bool = True) -> int:
+def is_quiet_hours(now=None) -> bool:
+    """Return True if local time falls within configured quiet hours.
+
+    Quiet hours default to 21:00-07:00 Africa/Addis_Ababa (QUIET_HOURS_START to QUIET_HOURS_END).
+    """
+    if now is None:
+        now = timezone.now()
+    elif timezone.is_naive(now):
+        now = timezone.make_aware(now, timezone.get_current_timezone())
+    local_now = timezone.localtime(now)
+    hour = local_now.hour
+
+    start = getattr(settings, "QUIET_HOURS_START", 21)
+    end = getattr(settings, "QUIET_HOURS_END", 7)
+
+    if start > end:
+        return hour >= start or hour < end
+    elif start < end:
+        return start <= hour < end
+    return False
+
+
+def drain_outbox(
+    *,
+    batch_size: int = BATCH_SIZE,
+    rate_limit: bool = True,
+    respect_quiet_hours: bool = True,
+) -> int:
     """Drain due queued outbound messages and send them via Telegram.
 
     Returns the number of messages processed in this batch.
     """
+    if respect_quiet_hours and is_quiet_hours():
+        logger.info("Quiet hours active; outbox draining deferred.")
+        return 0
+
     now = timezone.now()
 
     # 1. Reclaim: rows stuck in status="sending" whose claim expired

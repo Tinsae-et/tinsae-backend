@@ -11,7 +11,7 @@ from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 
-from bot import digest, keyboards, messages, parsing
+from bot import digest, messages
 from bot.management.commands.run_bot import on_callback, on_text
 from bot.models import ConfirmationDigest, ConfirmationRequest, OutboundMessage
 from bot.parsing import (
@@ -290,17 +290,34 @@ class SetupBotSchedulesTests(TestCase):
     def test_setup_bot_schedules_creates_crontab_and_periodic_tasks(self):
         call_command("setup_bot_schedules")
 
-        drain_task = PeriodicTask.objects.get(name="bot-drain-outbox")
-        self.assertEqual(drain_task.task, "bot.tasks.drain_outbox")
-        self.assertTrue(drain_task.enabled)
+        tasks = {t.name: t.task for t in PeriodicTask.objects.all()}
+        self.assertIn("bot-drain-outbox", tasks)
+        self.assertEqual(tasks["bot-drain-outbox"], "bot.tasks.drain_outbox")
+
+        self.assertIn("bot-send-due-digests", tasks)
+        self.assertEqual(tasks["bot-send-due-digests"], "bot.tasks.send_due_digests")
+
+        self.assertIn("bot-sweep", tasks)
+        self.assertEqual(tasks["bot-sweep"], "bot.tasks.sweep")
+
+        self.assertIn("bot-send-reminders", tasks)
+        self.assertEqual(tasks["bot-send-reminders"], "bot.tasks.send_reminders")
+
+        self.assertIn("bot-prune", tasks)
+        self.assertEqual(tasks["bot-prune"], "bot.tasks.prune")
 
         digest_task = PeriodicTask.objects.get(name="bot-send-due-digests")
-        self.assertEqual(digest_task.task, "bot.tasks.send_due_digests")
         self.assertTrue(digest_task.enabled)
         self.assertIsNotNone(digest_task.crontab)
         self.assertEqual(digest_task.crontab.hour, "8")
         self.assertEqual(digest_task.crontab.minute, "0")
         self.assertEqual(str(digest_task.crontab.timezone), settings.TIME_ZONE)
+
+        # Second call is idempotent (running twice does not duplicate)
+        call_command("setup_bot_schedules")
+        self.assertEqual(
+            PeriodicTask.objects.filter(name__startswith="bot-").count(), 5
+        )
 
 
 class DigestParsingTests(SimpleTestCase):
@@ -322,9 +339,19 @@ class DigestParsingTests(SimpleTestCase):
             "All Available!",
             "ሁሉም!",
         ):
-            self.assertTrue(parse_digest_all(affirmative), f"Expected True for {affirmative!r}")
+            self.assertTrue(
+                parse_digest_all(affirmative), f"Expected True for {affirmative!r}"
+            )
 
-        for negative_or_unparsed in ("no", "sold", "sold out", "random", "", "2 5", "hello"):
+        for negative_or_unparsed in (
+            "no",
+            "sold",
+            "sold out",
+            "random",
+            "",
+            "2 5",
+            "hello",
+        ):
             self.assertFalse(
                 parse_digest_all(negative_or_unparsed),
                 f"Expected False for {negative_or_unparsed!r}",
@@ -404,7 +431,7 @@ class DigestTargetResolutionTests(TestCase):
         self.assertEqual(resolved, digest)
 
     def test_zero_open_digests_returns_none(self):
-        digest = ConfirmationDigest.objects.create(
+        ConfirmationDigest.objects.create(
             shop=self.shop1, for_date=self.today, closed_at=timezone.now()
         )
         self.assertIsNone(resolve_digest_for_chat("999888"))
@@ -414,7 +441,9 @@ class DigestTargetResolutionTests(TestCase):
             name="Shop 2", owner=self.user, telegram_chat_id="999888"
         )
         d1 = ConfirmationDigest.objects.create(
-            shop=self.shop1, for_date=self.today - timedelta(days=7), telegram_message_id="111"
+            shop=self.shop1,
+            for_date=self.today - timedelta(days=7),
+            telegram_message_id="111",
         )
         d2 = ConfirmationDigest.objects.create(
             shop=shop2, for_date=self.today, telegram_message_id="222"
@@ -433,7 +462,9 @@ class DigestTargetResolutionTests(TestCase):
             telegram_message_id="333",
             closed_at=timezone.now(),
         )
-        self.assertEqual(resolve_digest_for_chat("999888", reply_to_message_id=333), digest)
+        self.assertEqual(
+            resolve_digest_for_chat("999888", reply_to_message_id=333), digest
+        )
 
     def test_foreign_or_empty_chat_returns_none(self):
         ConfirmationDigest.objects.create(shop=self.shop1, for_date=self.today)
@@ -543,7 +574,9 @@ class DigestTextReplyTests(TestCase):
         self.assertIsNone(self.digest.closed_at)
 
     def test_answer_digest_selection_confirms_subset(self):
-        res = answer_digest_selection("999888", self.digest.pk, available=True, indices=[1, 2])
+        res = answer_digest_selection(
+            "999888", self.digest.pk, available=True, indices=[1, 2]
+        )
         self.assertEqual(res, ("confirmed", 2))
         self.assertEqual(res.labels, ["BrandA Prod 1", "BrandB Prod 2"])
         self.assertEqual(res.remaining, 1)
@@ -558,8 +591,12 @@ class DigestTextReplyTests(TestCase):
         self.assertIsNone(self.digest.closed_at)
 
     def test_answer_digest_selection_closes_when_all_answered(self):
-        answer_digest_selection("999888", self.digest.pk, available=True, indices=[1, 2])
-        res2 = answer_digest_selection("999888", self.digest.pk, available=False, indices=[3])
+        answer_digest_selection(
+            "999888", self.digest.pk, available=True, indices=[1, 2]
+        )
+        res2 = answer_digest_selection(
+            "999888", self.digest.pk, available=False, indices=[3]
+        )
         self.assertEqual(res2, ("sold_out", 1))
         self.assertEqual(res2.remaining, 0)
 
@@ -600,7 +637,9 @@ class DigestTextReplyTests(TestCase):
 
     def test_foreign_chat_cannot_answer(self):
         self.assertIsNone(handle_digest_text("777777", "all"))
-        res = answer_digest_selection("777777", self.digest.pk, available=True, indices=[1])
+        res = answer_digest_selection(
+            "777777", self.digest.pk, available=True, indices=[1]
+        )
         self.assertEqual(res, ("not_found", 0))
 
 
@@ -1138,29 +1177,3 @@ class SendRemindersTests(TestCase):
         )
         count = send_reminders()
         self.assertEqual(count, 0)
-
-
-class SetupBotSchedulesTests(TestCase):
-    def test_setup_bot_schedules_registers_all_4_tasks(self):
-        call_command("setup_bot_schedules")
-
-        tasks = {t.name: t.task for t in PeriodicTask.objects.all()}
-        self.assertIn("bot-drain-outbox", tasks)
-        self.assertEqual(tasks["bot-drain-outbox"], "bot.tasks.drain_outbox")
-
-        self.assertIn("bot-send-due-digests", tasks)
-        self.assertEqual(tasks["bot-send-due-digests"], "bot.tasks.send_due_digests")
-
-        self.assertIn("bot-sweep", tasks)
-        self.assertEqual(tasks["bot-sweep"], "bot.tasks.sweep")
-
-        self.assertIn("bot-send-reminders", tasks)
-        self.assertEqual(tasks["bot-send-reminders"], "bot.tasks.send_reminders")
-
-        # Second call is idempotent
-        call_command("setup_bot_schedules")
-        self.assertEqual(
-            PeriodicTask.objects.filter(name__startswith="bot-").count(), 4
-        )
-
-

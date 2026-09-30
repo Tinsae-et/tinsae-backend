@@ -45,3 +45,10 @@ def send_reminders() -> int:
 
     return run_send_reminders()
 
+
+@shared_task(name="bot.tasks.prune")
+def prune() -> dict:
+    """Prune old ProcessedUpdate rows and terminal OutboundMessage rows."""
+    from .services import prune as run_prune
+
+    return run_prune()

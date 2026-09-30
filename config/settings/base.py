@@ -257,3 +257,12 @@ CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://redis:6379/0")
 CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://redis:6379/0")
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+
+# Quiet hours during which proactive Telegram sends are paused.
+# Specified in local hours (TIME_ZONE = Africa/Addis_Ababa).
+QUIET_HOURS_START = env.int("QUIET_HOURS_START", default=21)
+QUIET_HOURS_END = env.int("QUIET_HOURS_END", default=7)
+
+# Pruning retention periods
+PROCESSED_UPDATE_RETENTION_DAYS = env.int("PROCESSED_UPDATE_RETENTION_DAYS", default=7)
+OUTBOX_RETENTION_DAYS = env.int("OUTBOX_RETENTION_DAYS", default=30)

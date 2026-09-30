@@ -1,7 +1,6 @@
-from datetime import timedelta
 import logging
 import re
-
+from datetime import timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
@@ -20,6 +19,7 @@ from .models import (
     LINK_CODE_PREFIX,
     ConfirmationDigest,
     ConfirmationRequest,
+    OutboundMessage,
     ProcessedUpdate,
     ShopLinkCode,
 )
@@ -975,9 +975,7 @@ def answer_digest_selection(
         count,
         remaining,
     )
-    return SelectionResult(
-        target_outcome, count, labels=labels, remaining=remaining
-    )
+    return SelectionResult(target_outcome, count, labels=labels, remaining=remaining)
 
 
 def handle_digest_text(
@@ -1241,3 +1239,53 @@ def send_reminders() -> int:
     return reminders_sent
 
 
+def prune(
+    *,
+    processed_retention_days: int | None = None,
+    outbox_retention_days: int | None = None,
+) -> dict:
+    """Prune old ProcessedUpdate and terminal OutboundMessage records.
+
+    - Deletes ProcessedUpdate rows with created_at older than PROCESSED_UPDATE_RETENTION_DAYS (default 7d).
+    - Deletes OutboundMessage rows in terminal states ('sent', 'cancelled', 'dead') with
+      created_at older than OUTBOX_RETENTION_DAYS (default 30d).
+    - NEVER deletes queued or sending rows.
+
+    Returns a summary dict with counts of deleted records.
+    """
+    now = timezone.now()
+    if processed_retention_days is None:
+        processed_retention_days = getattr(
+            settings, "PROCESSED_UPDATE_RETENTION_DAYS", 7
+        )
+    if outbox_retention_days is None:
+        outbox_retention_days = getattr(settings, "OUTBOX_RETENTION_DAYS", 30)
+
+    cutoff_updates = now - timedelta(days=processed_retention_days)
+    cutoff_outbox = now - timedelta(days=outbox_retention_days)
+
+    terminal_statuses = ["sent", "cancelled", "dead"]
+
+    with transaction.atomic():
+        deleted_updates, _ = ProcessedUpdate.objects.filter(
+            created_at__lt=cutoff_updates
+        ).delete()
+        deleted_outbound, _ = OutboundMessage.objects.filter(
+            status__in=terminal_statuses,
+            created_at__lt=cutoff_outbox,
+        ).delete()
+
+    logger.info(
+        "Prune complete: deleted %d updates (< %dd), %d terminal outbound messages (< %dd).",
+        deleted_updates,
+        processed_retention_days,
+        deleted_outbound,
+        outbox_retention_days,
+    )
+
+    return {
+        "deleted_updates": deleted_updates,
+        "deleted_outbound": deleted_outbound,
+        "processed_retention_days": processed_retention_days,
+        "outbox_retention_days": outbox_retention_days,
+    }
