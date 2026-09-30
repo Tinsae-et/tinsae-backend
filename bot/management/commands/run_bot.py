@@ -94,7 +94,10 @@ def _render_listing(shops, products, page: int):
     visible = products[start : start + page_size]
     label_shop = len(shops) > 1
 
-    text = messages.listing_summary(total, page, pages)
+    has_restockable = any(not getattr(p, "is_available", True) for p in visible)
+    text = messages.listing_summary(
+        total, page, pages, has_restockable=has_restockable
+    )
     markup = keyboards.listing_markup(
         visible, page=page, pages=pages, label_shop=label_shop
     )

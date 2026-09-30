@@ -8,7 +8,11 @@ from django.utils import timezone
 
 from catalog.freshness import Freshness, freshness_case
 from catalog.models import ConfirmationStatus, Product, ProductStatus
-from catalog.services import answer_confirmation_request, apply_confirmation
+from catalog.services import (
+    answer_confirmation_request,
+    apply_confirmation,
+    mark_back_in_stock,
+)
 from shops.models import Shop
 
 from . import keyboards, messages, outbox
@@ -43,7 +47,7 @@ logger = logging.getLogger(__name__)
 
 # /myproducts buttons are product-keyed and colon-separated, so they cannot be
 # confused with the underscore-separated `confirm_<request_pk>` prompt callbacks.
-PRODUCT_CALLBACK_ACTIONS = {"pconfirm": True, "pdeny": False}
+PRODUCT_CALLBACK_ACTIONS = {"pconfirm": True, "pdeny": False, "pback": None}
 
 # A well-formed code sitting inside a longer message. The trailing lookahead stops
 # a mistyped, over-long code from matching on its first seven characters and
@@ -190,6 +194,9 @@ def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
         return None
 
     action, product_id, _page = parsed
+    if action not in ("pconfirm", "pdeny", "pback"):
+        logger.warning("Unrecognised product callback action: %r", action)
+        return None
 
     try:
         product = Product.objects.select_related("shop").get(pk=product_id)
@@ -207,11 +214,19 @@ def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
         )
         return None
 
+    if action == "pback":
+        if not product.is_available:
+            mark_back_in_stock(product)
+            logger.info("Restocked product %s via %r.", product.pk, callback_data)
+        else:
+            logger.info("Product %s already available; pback is a no-op.", product.pk)
+        return product
+
+    # For pconfirm / pdeny:
     # The listing only ever offers ✅ for available products, so reaching here
     # means the merchant tapped a button in an older message. Honouring it would
-    # silently republish a product that is marked out of stock -- an undocumented
-    # back door into the re-stock path we deliberately have not built yet.
-    if PRODUCT_CALLBACK_ACTIONS[action] and not product.is_available:
+    # silently republish a product that is marked out of stock.
+    if action == "pconfirm" and not product.is_available:
         logger.info(
             "Ignoring %r: product %s is marked out of stock.",
             callback_data,

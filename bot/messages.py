@@ -72,11 +72,18 @@ def link_ack(outcome: str, shop_name: str | None = None) -> str:
     )
 
 
-def listing_summary(total: int, page: int, pages: int) -> str:
+def listing_summary(
+    total: int, page: int, pages: int, has_restockable: bool = False
+) -> str:
+    action_line = (
+        "Tap ✅ if it is still available, ❌ if it is out of stock, or 🔄 to put back in stock."
+        if has_restockable
+        else "Tap ✅ if it is still available, ❌ if it is out of stock."
+    )
     return (
         f"{total} product{'' if total == 1 else 's'} waiting on you "
         f"(page {page + 1} of {pages}).\n"
-        "Tap ✅ if it is still available, ❌ if it is out of stock."
+        f"{action_line}"
     )
 
 

@@ -13,7 +13,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from bot.models import ConfirmationRequest
-from catalog.models import Category, ConfirmationStatus, Product
+from catalog.models import Category, ConfirmationStatus, Product, ProductStatus
 from catalog.services import (
     answer_confirmation_request,
     apply_confirmation,
@@ -180,6 +180,22 @@ class MarkSoldAndBackInStockTests(TestCase):
         self.assertGreater(
             self.product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
         )
+
+    def test_mark_back_in_stock_republishes_sold_and_draft_products(self):
+        for status in (ProductStatus.SOLD, ProductStatus.DRAFT):
+            self.product.status = status
+            self.product.is_available = False
+            self.product.save(update_fields=["status", "is_available"])
+
+            mark_back_in_stock(self.product)
+
+            self.product.refresh_from_db()
+            self.assertEqual(self.product.status, ProductStatus.LIVE)
+            self.assertTrue(self.product.is_available)
+            self.assertEqual(self.product.confirmation_status, ConfirmationStatus.FRESH)
+            self.assertGreater(
+                self.product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+            )
 
 
 class AnswerConfirmationRequestTests(TestCase):

@@ -32,7 +32,14 @@ from django.utils import timezone
 
 from bot.models import ConfirmationRequest
 
-from .models import Category, ConfirmationStatus, Product, ProductImage, SearchLog
+from .models import (
+    Category,
+    ConfirmationStatus,
+    Product,
+    ProductImage,
+    ProductStatus,
+    SearchLog,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,8 +169,11 @@ def mark_sold(product: Product) -> None:
 
 
 def mark_back_in_stock(product: Product) -> None:
-    """Mark a product back in stock and reset its confirmation clock to now."""
-    apply_confirmation(product, confirmed=True)
+    """Mark a product back in stock, restore it to LIVE, and reset confirmation clock to now."""
+    with transaction.atomic():
+        product.status = ProductStatus.LIVE
+        product.save(update_fields=["status", "updated_at"])
+        apply_confirmation(product, confirmed=True)
 
 
 def pause_listing(product: Product) -> None:

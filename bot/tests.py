@@ -928,12 +928,59 @@ class ListingSelectorTests(BotTestCase):
 
         self.assertEqual([p.pk for p in products], [never.pk, self.stale_product.pk])
 
-    def test_fresh_and_unavailable_products_are_excluded(self):
-        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+    def test_fresh_and_draft_products_are_excluded(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            status=ProductStatus.DRAFT
+        )
 
         _, products = listing_for_chat(CHAT_ID)
 
         self.assertEqual(products, [])
+
+    def test_out_of_stock_products_included_in_restockable_section(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+
+        _, products = listing_for_chat(CHAT_ID)
+
+        self.assertEqual([p.pk for p in products], [self.stale_product.pk])
+
+    def test_due_products_precede_restockable_products(self):
+        sold = self._product("Pixel 8", "pixel-8", self.shop, None)
+        Product.objects.filter(pk=sold.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+
+        _, products = listing_for_chat(CHAT_ID)
+
+        # self.stale_product is due (available=True); sold is restockable (available=False).
+        # Due items must lead so they never get crowded out of page 1.
+        self.assertEqual([p.pk for p in products], [self.stale_product.pk, sold.pk])
+
+    def test_restockable_products_capped_at_limit(self):
+        with override_settings(MYPRODUCTS_RESTOCKABLE_LIMIT=2):
+            extras = [
+                self._product(
+                    f"Extra {i}",
+                    f"extra-{i}",
+                    self.shop,
+                    timezone.now() - timedelta(days=i + 10),
+                )
+                for i in range(4)
+            ]
+            Product.objects.filter(pk__in=[p.pk for p in extras]).update(
+                is_available=False, status=ProductStatus.SOLD
+            )
+
+            _, products = listing_for_chat(CHAT_ID)
+
+            # 1 due (self.stale_product) + 2 restockable extras
+            self.assertEqual(len(products), 3)
+            self.assertEqual(products[0].pk, self.stale_product.pk)
+            restockable_ids = [p.pk for p in products[1:]]
+            self.assertEqual(len(restockable_ids), 2)
+            self.assertEqual(restockable_ids, [extras[0].pk, extras[1].pk])
 
     def test_one_chat_running_two_shops_sees_both(self):
         second = Shop.objects.create(
@@ -1047,6 +1094,46 @@ class ProductCallbackTests(BotTestCase):
         )
         self.stale_product.refresh_from_db()
         self.assertIsNotNone(self.stale_product.last_confirmed_at)
+
+    def test_back_in_stock_republishes_out_of_stock_product(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+
+        res = handle_product_callback(f"pback:{self.stale_product.pk}:0", CHAT_ID)
+        self.assertIsNotNone(res)
+
+        self.stale_product.refresh_from_db()
+        self.assertTrue(self.stale_product.is_available)
+        self.assertEqual(self.stale_product.status, ProductStatus.LIVE)
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.FRESH
+        )
+        self.assertGreater(
+            self.stale_product.last_confirmed_at,
+            timezone.now() - timedelta(minutes=1),
+        )
+
+    def test_back_in_stock_on_available_product_is_noop(self):
+        self.assertTrue(self.stale_product.is_available)
+        before = self.stale_product.last_confirmed_at
+
+        res = handle_product_callback(f"pback:{self.stale_product.pk}:0", CHAT_ID)
+        self.assertIsNotNone(res)
+
+        self.stale_product.refresh_from_db()
+        self.assertTrue(self.stale_product.is_available)
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+
+    def test_back_in_stock_foreign_chat_rejected(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+
+        self.assertIsNone(
+            handle_product_callback(f"pback:{self.stale_product.pk}:0", OTHER_CHAT_ID)
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.stale_product.is_available)
 
 
 class MyProductsHandlerTests(BotTestCase):
@@ -1174,6 +1261,38 @@ class MyProductsHandlerTests(BotTestCase):
         async_to_sync(my_products)(update, None)
 
         self.assertIn("reply_markup", message.reply_text.call_args.kwargs)
+
+    def test_listing_shows_restock_button_for_unavailable_product(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        text = message.reply_text.call_args.args[0]
+        self.assertIn("🔄 to put back in stock", text)
+        markup = message.reply_text.call_args.kwargs["reply_markup"]
+        self.assertEqual(len(markup.inline_keyboard), 1)
+        row = markup.inline_keyboard[0]
+        self.assertEqual(len(row), 1)
+        button = row[0]
+        self.assertTrue(button.text.startswith("🔄"))
+        self.assertEqual(button.callback_data, f"pback:{self.stale_product.pk}:0")
+
+    def test_restock_button_restocks_and_redraws_listing(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+        update, query = self._callback_update(f"pback:{self.stale_product.pk}:0")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with("Recorded")
+        self.stale_product.refresh_from_db()
+        self.assertTrue(self.stale_product.is_available)
+        self.assertEqual(self.stale_product.status, ProductStatus.LIVE)
+        query.edit_message_text.assert_awaited()
 
 
 class TextReplyTests(BotTestCase):
@@ -1859,6 +1978,17 @@ class ParsingTests(SimpleTestCase):
         self.assertEqual(
             parsing.parse_listing_callback(pdeny_data),
             ("pdeny", 202, 0),
+        )
+
+        pback_data = parsing.format_restock_callback(303, 1)
+        self.assertEqual(pback_data, "pback:303:1")
+        self.assertEqual(
+            parsing.parse_restock_callback(pback_data),
+            (303, 1),
+        )
+        self.assertEqual(
+            parsing.parse_listing_callback(pback_data),
+            ("pback", 303, 1),
         )
 
     def test_listing_callback_invalid(self):

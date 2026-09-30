@@ -55,18 +55,28 @@ def listing_markup(
         label = f"{product.brand} {product.name}"
         if label_shop:
             label = f"{product.shop.name} — {label}"
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    f"✅ {label}"[:BUTTON_LABEL_LIMIT],
-                    callback_data=format_listing_callback("pconfirm", product.pk, page),
-                ),
-                InlineKeyboardButton(
-                    "❌",
-                    callback_data=format_listing_callback("pdeny", product.pk, page),
-                ),
-            ]
-        )
+        if getattr(product, "is_available", True):
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"✅ {label}"[:BUTTON_LABEL_LIMIT],
+                        callback_data=format_listing_callback("pconfirm", product.pk, page),
+                    ),
+                    InlineKeyboardButton(
+                        "❌",
+                        callback_data=format_listing_callback("pdeny", product.pk, page),
+                    ),
+                ]
+            )
+        else:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"🔄 {label}"[:BUTTON_LABEL_LIMIT],
+                        callback_data=format_listing_callback("pback", product.pk, page),
+                    ),
+                ]
+            )
 
     nav = []
     if page > 0:
