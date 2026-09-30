@@ -34,6 +34,8 @@ from bot.services import (
     link_shop_to_chat,
     looks_like_link_code,
     record_update,
+    review_next,
+    start_review,
     unlink_chat,
 )
 
@@ -198,6 +200,70 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(messages.digest_ack(count))
         return
 
+    digest_review_id = parsing.parse_digest_review_callback(data)
+    if digest_review_id is not None:
+        outcome, cursor, item, progress = await sync_to_async(
+            start_review, thread_sensitive=True
+        )(chat_id=str(chat_id), digest_id=digest_review_id)
+        if outcome == "not_found":
+            await query.answer(messages.request_inactive())
+            return
+        if outcome == "done":
+            await query.answer(messages.response_recorded())
+            if query.message:
+                confirmed = progress.confirmed if progress else 0
+                sold = progress.sold if progress else 0
+                await query.edit_message_text(messages.review_done(confirmed, sold))
+            return
+        if outcome == "item" and item and progress:
+            await query.answer()
+            if query.message:
+                text = messages.review_item(
+                    progress.index,
+                    progress.total,
+                    item.label,
+                    item.price_str,
+                    item.age_days,
+                )
+                markup = keyboards.review_markup(item.request_id)
+                await query.edit_message_text(text, reply_markup=markup)
+            return
+
+    review_action = parsing.parse_review_action_callback(data)
+    if review_action is not None:
+        request_id, action = review_action
+        outcome, cursor, item, progress = await sync_to_async(
+            review_next, thread_sensitive=True
+        )(chat_id=str(chat_id), digest_id=None, action=action, request_id=request_id)
+        if outcome == "not_found":
+            await query.answer(messages.request_inactive())
+            return
+        if outcome == "paused":
+            await query.answer()
+            if query.message:
+                await query.edit_message_text(messages.review_paused())
+            return
+        if outcome == "done":
+            await query.answer(messages.response_recorded())
+            if query.message:
+                confirmed = progress.confirmed if progress else 0
+                sold = progress.sold if progress else 0
+                await query.edit_message_text(messages.review_done(confirmed, sold))
+            return
+        if outcome == "item" and item and progress:
+            await query.answer()
+            if query.message:
+                text = messages.review_item(
+                    progress.index,
+                    progress.total,
+                    item.label,
+                    item.price_str,
+                    item.age_days,
+                )
+                markup = keyboards.review_markup(item.request_id)
+                await query.edit_message_text(text, reply_markup=markup)
+            return
+
     # /myproducts buttons are colon-separated and product-keyed; the original
     # inline prompts are underscore-separated and request-keyed. Route on that.
     page = parsing.parse_page_callback(data)
@@ -212,13 +278,19 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # The service owns authorisation and the state change. It is handed only the
     # data and the chat: replying to Telegram is PTB's job here, so we withhold
     # callback_query_id/message_id rather than trigger the sync transport too.
-    handled = await sync_to_async(handle_telegram_callback, thread_sensitive=True)(
+    outcome = await sync_to_async(handle_telegram_callback, thread_sensitive=True)(
         callback_data=data,
         chat_id=str(chat_id),
     )
 
-    if not handled:
+    if outcome == "not_found":
         await query.answer(messages.request_inactive())
+        return
+
+    if outcome == "already_answered":
+        await query.answer(messages.response_recorded())
+        if query.message:
+            await query.edit_message_text(messages.already_recorded())
         return
 
     parsed_prompt = parsing.parse_prompt_callback(data)

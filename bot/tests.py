@@ -37,7 +37,9 @@ from bot.services import (
     handle_text_reply,
     parse_answer,
     record_update,
+    review_next,
     send_confirmation_prompt,
+    start_review,
 )
 from catalog.models import Category, ConfirmationStatus, Product
 from catalog.services import apply_confirmation
@@ -272,8 +274,9 @@ class CallbackTests(BotTestCase):
 
     def test_confirm_marks_product_fresh(self):
         request = self._request()
-        self.assertTrue(
-            handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID)
+        self.assertEqual(
+            handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID),
+            "applied",
         )
         request.refresh_from_db()
         self.stale_product.refresh_from_db()
@@ -283,7 +286,10 @@ class CallbackTests(BotTestCase):
 
     def test_deny_marks_product_unavailable(self):
         request = self._request()
-        self.assertTrue(handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID))
+        self.assertEqual(
+            handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID),
+            "applied",
+        )
         request.refresh_from_db()
         self.stale_product.refresh_from_db()
         self.assertEqual(request.status, "sold_out")
@@ -304,8 +310,9 @@ class CallbackTests(BotTestCase):
     def test_callback_from_another_chat_is_rejected(self):
         request = self._request()
         before = self.stale_product.confirmation_status
-        self.assertFalse(
-            handle_telegram_callback(f"confirm_{request.pk}", chat_id=OTHER_CHAT_ID)
+        self.assertEqual(
+            handle_telegram_callback(f"confirm_{request.pk}", chat_id=OTHER_CHAT_ID),
+            "not_found",
         )
         request.refresh_from_db()
         self.stale_product.refresh_from_db()
@@ -314,13 +321,45 @@ class CallbackTests(BotTestCase):
 
     def test_confirmed_request_cannot_be_replayed(self):
         request = self._request(status="confirmed")
-        self.assertFalse(
-            handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID)
+        self.assertEqual(
+            handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID),
+            "already_answered",
         )
 
+    def test_expired_request_applies_answer_and_leaves_request_expired(self):
+        request = self._request(status="expired")
+        before_last_confirmed = self.stale_product.last_confirmed_at
+        outcome = handle_telegram_callback(f"confirm_{request.pk}", chat_id=CHAT_ID)
+        self.assertEqual(outcome, "applied")
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "expired")
+        self.assertIsNone(request.responded_at)
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.confirmation_status, "fresh")
+        self.assertTrue(self.stale_product.is_available)
+        self.assertGreater(self.stale_product.last_confirmed_at, before_last_confirmed)
+
+    def test_already_answered_request_returns_already_answered_and_does_no_write(self):
+        request = self._request(status="confirmed")
+        before_last_confirmed = self.stale_product.last_confirmed_at
+        outcome = handle_telegram_callback(f"deny_{request.pk}", chat_id=CHAT_ID)
+        self.assertEqual(outcome, "already_answered")
+
+        request.refresh_from_db()
+        self.assertEqual(request.status, "confirmed")
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.last_confirmed_at, before_last_confirmed)
+
     def test_malformed_callback_is_rejected(self):
-        self.assertFalse(handle_telegram_callback("nonsense", chat_id=CHAT_ID))
-        self.assertFalse(handle_telegram_callback("confirm_abc", chat_id=CHAT_ID))
+        self.assertEqual(
+            handle_telegram_callback("nonsense", chat_id=CHAT_ID), "not_found"
+        )
+        self.assertEqual(
+            handle_telegram_callback("confirm_abc", chat_id=CHAT_ID), "not_found"
+        )
 
     def test_new_request_is_unanswered_on_the_default_channel(self):
         request = self._request()
@@ -576,6 +615,152 @@ class RunBotCommandTest(SimpleTestCase):
                 call_command("run_bot")
 
 
+class ReviewModeTests(BotTestCase):
+    def setUp(self):
+        super().setUp()
+        self.category = Category.objects.create(
+            name="Review Phones", slug="review-phones"
+        )
+        self.p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="BrandA",
+            name="Phone 1",
+            price="100.00",
+            is_available=True,
+            status="live",
+            last_confirmed_at=timezone.now() - timedelta(days=8),
+        )
+        self.p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="BrandB",
+            name="Phone 2",
+            price="200.00",
+            is_available=True,
+            status="live",
+            last_confirmed_at=timezone.now() - timedelta(days=9),
+        )
+        self.p3 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="BrandC",
+            name="Phone 3",
+            price="300.00",
+            is_available=True,
+            status="live",
+            last_confirmed_at=timezone.now() - timedelta(days=10),
+        )
+        self.digest = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=timezone.now().date(),
+        )
+        self.req1 = ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.p1,
+            digest=self.digest,
+            status="pending",
+        )
+        self.req2 = ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.p2,
+            digest=self.digest,
+            status="pending",
+        )
+        self.req3 = ConfirmationRequest.objects.create(
+            shop=self.shop,
+            product=self.p3,
+            digest=self.digest,
+            status="pending",
+        )
+
+    def test_start_review_shows_first_pending_item(self):
+        outcome, cursor, item, progress = start_review(CHAT_ID, self.digest.pk)
+        self.assertEqual(outcome, "item")
+        self.assertEqual(cursor, 0)
+        self.assertEqual(item.request_id, self.req1.pk)
+        self.assertEqual(progress.index, 1)
+        self.assertEqual(progress.total, 3)
+
+    def test_review_step_y_and_n_answer_and_advance(self):
+        # Answer req1 as available ('y')
+        outcome, cursor, item, progress = review_next(
+            CHAT_ID, self.digest.pk, "y", self.req1.pk
+        )
+        self.assertEqual(outcome, "item")
+        self.assertEqual(cursor, 1)
+        self.assertEqual(item.request_id, self.req2.pk)
+        self.assertEqual(progress.index, 2)
+        self.assertEqual(progress.total, 3)
+
+        self.req1.refresh_from_db()
+        self.assertEqual(self.req1.status, "confirmed")
+        self.p1.refresh_from_db()
+        self.assertEqual(self.p1.confirmation_status, "fresh")
+        self.assertTrue(self.p1.is_available)
+
+        # Answer req2 as sold ('n')
+        outcome, cursor, item, progress = review_next(
+            CHAT_ID, self.digest.pk, "n", self.req2.pk
+        )
+        self.assertEqual(outcome, "item")
+        self.assertEqual(cursor, 2)
+        self.assertEqual(item.request_id, self.req3.pk)
+        self.assertEqual(progress.index, 3)
+
+        self.req2.refresh_from_db()
+        self.assertEqual(self.req2.status, "sold_out")
+        self.p2.refresh_from_db()
+        self.assertFalse(self.p2.is_available)
+
+    def test_review_skip_does_no_write_and_advances(self):
+        outcome, cursor, item, progress = review_next(
+            CHAT_ID, self.digest.pk, "s", self.req1.pk
+        )
+        self.assertEqual(outcome, "item")
+        self.assertEqual(cursor, 1)
+        self.assertEqual(item.request_id, self.req2.pk)
+
+        self.req1.refresh_from_db()
+        self.assertEqual(self.req1.status, "pending")
+
+    def test_review_pause_leaves_digest_open(self):
+        outcome, cursor, item, progress = review_next(
+            CHAT_ID, self.digest.pk, "x", self.req1.pk
+        )
+        self.assertEqual(outcome, "paused")
+        self.digest.refresh_from_db()
+        self.assertIsNone(self.digest.closed_at)
+
+    def test_completing_last_item_sets_closed_at_and_returns_done(self):
+        review_next(CHAT_ID, self.digest.pk, "y", self.req1.pk)
+        review_next(CHAT_ID, self.digest.pk, "y", self.req2.pk)
+        outcome, cursor, item, progress = review_next(
+            CHAT_ID, self.digest.pk, "n", self.req3.pk
+        )
+        self.assertEqual(outcome, "done")
+        self.assertEqual(progress.confirmed, 2)
+        self.assertEqual(progress.sold, 1)
+
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_second_tap_on_old_review_button_is_harmless(self):
+        # First tap
+        outcome1, _, _, _ = review_next(CHAT_ID, self.digest.pk, "y", self.req1.pk)
+        self.assertEqual(outcome1, "item")
+        # Second tap on same request
+        outcome2, _, item2, _ = review_next(CHAT_ID, self.digest.pk, "y", self.req1.pk)
+        self.assertEqual(outcome2, "item")
+        self.assertEqual(item2.request_id, self.req2.pk)
+
+    def test_foreign_chat_returns_not_found(self):
+        outcome, _, _, _ = start_review(OTHER_CHAT_ID, self.digest.pk)
+        self.assertEqual(outcome, "not_found")
+        outcome, _, _, _ = review_next(OTHER_CHAT_ID, self.digest.pk, "y", self.req1.pk)
+        self.assertEqual(outcome, "not_found")
+
+
 class CallbackHandlerTests(BotTestCase):
     """PTB handler wiring only — the state change itself is CallbackTests' job."""
 
@@ -600,14 +785,21 @@ class CallbackHandlerTests(BotTestCase):
         query.edit_message_text.assert_awaited()
 
     def test_handler_reports_an_inactive_request(self):
+        update, query = self._update("confirm_99999999")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with("This request is no longer active.")
+        query.edit_message_text.assert_not_awaited()
+
+    def test_handler_reports_an_already_answered_request(self):
         request = ConfirmationRequest.objects.create(
             product=self.stale_product, shop=self.shop, status="confirmed"
         )
         update, query = self._update(f"confirm_{request.pk}")
         async_to_sync(on_callback)(update, None)
 
-        query.answer.assert_awaited_with("This request is no longer active.")
-        query.edit_message_text.assert_not_awaited()
+        query.answer.assert_awaited_with("Response recorded")
+        query.edit_message_text.assert_awaited_with("Already recorded ✓")
 
     def test_handler_rejects_a_callback_from_another_chat(self):
         request = ConfirmationRequest.objects.create(
@@ -659,6 +851,50 @@ class CallbackHandlerTests(BotTestCase):
         self.assertEqual(request.status, "pending")
         query.answer.assert_awaited_with(messages.request_inactive())
         query.edit_message_text.assert_not_awaited()
+
+    def test_handler_starts_review_mode(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, digest=digest, status="pending"
+        )
+        update, query = self._update(f"drev:{digest.pk}")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited()
+        query.edit_message_text.assert_awaited()
+        call_args = query.edit_message_text.await_args
+        self.assertIn("Checking 1 of 1", call_args[0][0])
+
+    def test_handler_processes_review_action(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        req = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, digest=digest, status="pending"
+        )
+        update, query = self._update(f"cr:{req.pk}:y")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited_with("Response recorded")
+        query.edit_message_text.assert_awaited()
+        call_args = query.edit_message_text.await_args
+        self.assertIn("Review complete!", call_args[0][0])
+        digest.refresh_from_db()
+        self.assertIsNotNone(digest.closed_at)
+
+    def test_handler_pauses_review_mode(self):
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        req = ConfirmationRequest.objects.create(
+            product=self.stale_product, shop=self.shop, digest=digest, status="pending"
+        )
+        update, query = self._update(f"cr:{req.pk}:x")
+        async_to_sync(on_callback)(update, None)
+
+        query.answer.assert_awaited()
+        query.edit_message_text.assert_awaited_with(messages.review_paused())
+        digest.refresh_from_db()
+        self.assertIsNone(digest.closed_at)
 
 
 class ListingSelectorTests(BotTestCase):
@@ -1433,6 +1669,30 @@ class MessagesTests(SimpleTestCase):
             messages.digest_already_done(), "This digest has already been answered. 🎉"
         )
 
+    def test_already_recorded(self):
+        self.assertEqual(messages.already_recorded(), "Already recorded ✓")
+
+    def test_no_longer_listed(self):
+        self.assertEqual(
+            messages.no_longer_listed(), "That product is no longer listed."
+        )
+
+    def test_review_item(self):
+        msg = messages.review_item(1, 3, "Apple iPhone", "10,000.00 ETB", 8)
+        self.assertIn("Checking 1 of 3:", msg)
+        self.assertIn("Apple iPhone", msg)
+        self.assertIn("10,000.00 ETB · last confirmed 8 days ago", msg)
+        self.assertIn("Is this still available?", msg)
+
+    def test_review_done(self):
+        msg = messages.review_done(2, 1)
+        self.assertIn("Review complete! 🎉", msg)
+        self.assertIn("2 products marked in stock.", msg)
+        self.assertIn("1 product marked out of stock.", msg)
+
+    def test_review_paused(self):
+        self.assertIn("Review paused", messages.review_paused())
+
 
 class ParsingTests(SimpleTestCase):
     """Pure unit tests for answer parsing and callback data formatters/parsers."""
@@ -1559,6 +1819,31 @@ class ParsingTests(SimpleTestCase):
         self.assertIsNone(parsing.parse_digest_all_callback("other:123"))
         self.assertIsNone(parsing.parse_digest_all_callback(""))
 
+    def test_digest_review_callback_round_trip(self):
+        callback_data = parsing.format_digest_review_callback(123)
+        self.assertEqual(callback_data, "drev:123")
+        self.assertEqual(parsing.parse_digest_review_callback(callback_data), 123)
+
+    def test_digest_review_callback_invalid(self):
+        self.assertIsNone(parsing.parse_digest_review_callback("drev:abc"))
+        self.assertIsNone(parsing.parse_digest_review_callback("drev:"))
+        self.assertIsNone(parsing.parse_digest_review_callback("drev"))
+        self.assertIsNone(parsing.parse_digest_review_callback("other:123"))
+        self.assertIsNone(parsing.parse_digest_review_callback(""))
+
+    def test_review_action_callback_round_trip(self):
+        for act in ("y", "n", "s", "x"):
+            data = parsing.format_review_action_callback(42, act)
+            self.assertEqual(data, f"cr:42:{act}")
+            self.assertEqual(parsing.parse_review_action_callback(data), (42, act))
+
+    def test_review_action_callback_invalid(self):
+        self.assertIsNone(parsing.parse_review_action_callback("cr:42:z"))
+        self.assertIsNone(parsing.parse_review_action_callback("cr:abc:y"))
+        self.assertIsNone(parsing.parse_review_action_callback("cr:42"))
+        self.assertIsNone(parsing.parse_review_action_callback("other:42:y"))
+        self.assertIsNone(parsing.parse_review_action_callback(""))
+
 
 class KeyboardsTests(SimpleTestCase):
     """Pure unit tests for inline keyboard markup constructors."""
@@ -1576,10 +1861,28 @@ class KeyboardsTests(SimpleTestCase):
     def test_digest_markup(self):
         markup = keyboards.digest_markup(42)
         rows = markup.inline_keyboard
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(len(rows[0]), 1)
         self.assertEqual(rows[0][0].text, "✅ All still available")
         self.assertEqual(rows[0][0].callback_data, "da:42")
+        self.assertEqual(len(rows[1]), 1)
+        self.assertEqual(rows[1][0].text, "✏️ Check one by one")
+        self.assertEqual(rows[1][0].callback_data, "drev:42")
+
+    def test_review_markup(self):
+        markup = keyboards.review_markup(99)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows[0]), 2)
+        self.assertEqual(rows[0][0].text, "✅ Available")
+        self.assertEqual(rows[0][0].callback_data, "cr:99:y")
+        self.assertEqual(rows[0][1].text, "❌ Sold")
+        self.assertEqual(rows[0][1].callback_data, "cr:99:n")
+        self.assertEqual(len(rows[1]), 2)
+        self.assertEqual(rows[1][0].text, "⏭ Skip")
+        self.assertEqual(rows[1][0].callback_data, "cr:99:s")
+        self.assertEqual(rows[1][1].text, "⏹ Stop")
+        self.assertEqual(rows[1][1].callback_data, "cr:99:x")
 
     def test_listing_markup_first_page_has_next_no_prev(self):
         product = types.SimpleNamespace(

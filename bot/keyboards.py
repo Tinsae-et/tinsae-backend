@@ -7,9 +7,11 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.parsing import (
     format_digest_all_callback,
+    format_digest_review_callback,
     format_listing_callback,
     format_page_callback,
     format_prompt_callback,
+    format_review_action_callback,
     format_unlink_callback,
 )
 
@@ -105,7 +107,7 @@ def unlink_confirmation_markup() -> InlineKeyboardMarkup:
 
 
 def digest_markup(digest_id: int) -> InlineKeyboardMarkup:
-    """Build inline keyboard markup with a single 'All still available' button for a digest."""
+    """Build inline keyboard markup for a digest."""
     return InlineKeyboardMarkup(
         [
             [
@@ -113,6 +115,40 @@ def digest_markup(digest_id: int) -> InlineKeyboardMarkup:
                     "✅ All still available",
                     callback_data=format_digest_all_callback(digest_id),
                 )
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    "✏️ Check one by one",
+                    callback_data=format_digest_review_callback(digest_id),
+                )
+            ],
+        ]
+    )
+
+
+def review_markup(request_id: int) -> InlineKeyboardMarkup:
+    """Build inline keyboard markup for stepping through review mode."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Available",
+                    callback_data=format_review_action_callback(request_id, "y"),
+                ),
+                InlineKeyboardButton(
+                    "❌ Sold",
+                    callback_data=format_review_action_callback(request_id, "n"),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "⏭ Skip",
+                    callback_data=format_review_action_callback(request_id, "s"),
+                ),
+                InlineKeyboardButton(
+                    "⏹ Stop",
+                    callback_data=format_review_action_callback(request_id, "x"),
+                ),
+            ],
         ]
     )

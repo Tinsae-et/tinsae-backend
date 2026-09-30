@@ -102,6 +102,14 @@ def response_recorded() -> str:
     return "Response recorded"
 
 
+def already_recorded() -> str:
+    return "Already recorded ✓"
+
+
+def no_longer_listed() -> str:
+    return "That product is no longer listed."
+
+
 def callback_confirm_ack(confirmed: bool) -> str:
     return (
         "✅ Thank you — marked in stock."
@@ -228,3 +236,48 @@ def digest_ack(count: int) -> str:
 
 def digest_already_done() -> str:
     return "This digest has already been answered. 🎉"
+
+
+def review_item(
+    index: int,
+    total: int,
+    label: str,
+    price_str: str,
+    age_days: int,
+) -> str:
+    days_str = (
+        f"last confirmed {age_days} day ago"
+        if age_days == 1
+        else f"last confirmed {age_days} days ago"
+    )
+    return (
+        f"Checking {index} of {total}:\n\n"
+        f"{label}\n"
+        f"{price_str} · {days_str}\n\n"
+        "Is this still available?"
+    )
+
+
+def review_done(confirmed: int, sold: int) -> str:
+    lines = ["Review complete! 🎉", ""]
+    if confirmed:
+        lines.append(
+            f"✅ {confirmed} product marked in stock."
+            if confirmed == 1
+            else f"✅ {confirmed} products marked in stock."
+        )
+    if sold:
+        lines.append(
+            f"❌ {sold} product marked out of stock."
+            if sold == 1
+            else f"❌ {sold} products marked out of stock."
+        )
+    if not confirmed and not sold:
+        lines.append("No changes were recorded.")
+    return "\n".join(lines)
+
+
+def review_paused() -> str:
+    return (
+        "Review paused. Send /myproducts or tap Check one by one anytime to continue."
+    )

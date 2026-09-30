@@ -284,3 +284,23 @@ class AnswerConfirmationRequestTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.last_confirmed_at, before_confirmed_at)
         self.assertTrue(self.product.is_available)
+
+    def test_expired_request_applies_answer_and_leaves_request_expired(self):
+        self.request.status = "expired"
+        self.request.save()
+        before_confirmed_at = self.product.last_confirmed_at
+
+        outcome, product = answer_confirmation_request(
+            chat_id=self.chat_id, request_id=self.request.pk, available=True
+        )
+
+        self.assertEqual(outcome, "confirmed")
+        self.assertEqual(product.pk, self.product.pk)
+        self.request.refresh_from_db()
+        self.assertEqual(self.request.status, "expired")
+        self.assertIsNone(self.request.responded_at)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertTrue(self.product.is_available)
+        self.assertGreater(self.product.last_confirmed_at, before_confirmed_at)

@@ -138,12 +138,22 @@ def answer_confirmation_request(
     if not shop_chat_id or str(shop_chat_id) != str(chat_id):
         return "not_found", None
 
-    if request.status != "pending":
+    if request.status in ("confirmed", "sold_out"):
         return "already_answered", request.product
 
-    apply_confirmation(request.product, confirmed=available, request=request)
-    outcome = "confirmed" if available else "sold_out"
-    return outcome, request.product
+    if request.status == "pending":
+        apply_confirmation(request.product, confirmed=available, request=request)
+        outcome = "confirmed" if available else "sold_out"
+        return outcome, request.product
+
+    if request.status == "expired":
+        # A late answer is still real information. Apply confirmation to the
+        # product, leaving the already-terminal request row as-is.
+        apply_confirmation(request.product, confirmed=available, request=None)
+        outcome = "confirmed" if available else "sold_out"
+        return outcome, request.product
+
+    return "already_answered", request.product
 
 
 def mark_sold(product: Product) -> None:

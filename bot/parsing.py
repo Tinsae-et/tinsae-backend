@@ -149,3 +149,50 @@ def parse_digest_all_callback(callback_data: str) -> int | None:
     if prefix == "da" and raw_id.isdigit():
         return int(raw_id)
     return None
+
+
+# --- Callback family 6: Digest review start (drev:<digest_id>) ---
+
+
+def format_digest_review_callback(digest_id: int) -> str:
+    """Format callback_data for the digest 'Check one by one' button."""
+    return f"drev:{digest_id}"
+
+
+def parse_digest_review_callback(callback_data: str) -> int | None:
+    """Parse drev:<digest_id> callback_data.
+
+    Returns the digest_id (int) or None if malformed.
+    """
+    if not callback_data:
+        return None
+    prefix, sep, raw_id = callback_data.partition(":")
+    if prefix == "drev" and raw_id.isdigit():
+        return int(raw_id)
+    return None
+
+
+# --- Callback family 7: Review action (cr:<request_id>:<action>) ---
+
+
+def format_review_action_callback(request_id: int, action: str) -> str:
+    """Format callback_data for one-by-one review action buttons."""
+    return f"cr:{request_id}:{action}"
+
+
+def parse_review_action_callback(callback_data: str) -> tuple[int, str] | None:
+    """Parse cr:<request_id>:<action> callback_data where action in y|n|s|x.
+
+    Returns (request_id, action) or None if malformed.
+    """
+    if not callback_data:
+        return None
+    parts = callback_data.split(":")
+    if (
+        len(parts) == 3
+        and parts[0] == "cr"
+        and parts[1].isdigit()
+        and parts[2] in ("y", "n", "s", "x")
+    ):
+        return int(parts[1]), parts[2]
+    return None

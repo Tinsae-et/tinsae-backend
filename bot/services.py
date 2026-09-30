@@ -224,16 +224,18 @@ def handle_telegram_callback(
     chat_id: str,
     callback_query_id: str | None = None,
     message_id: str | None = None,
-) -> bool:
+) -> str:
     """Apply a merchant's inline-button response.
 
     `chat_id` is required and must match the shop that owns the product. Without
     it, any Telegram user could mark any product fresh or out of stock.
+
+    Returns "applied" | "already_answered" | "not_found".
     """
     parsed = parse_prompt_callback(callback_data)
     if parsed is None:
         logger.warning("Unrecognised callback data: %r", callback_data)
-        return False
+        return "not_found"
 
     action, request_id = parsed
     available = action == "confirm"
@@ -249,7 +251,7 @@ def handle_telegram_callback(
             chat_id,
             request_id,
         )
-        return False
+        return "not_found"
 
     if outcome == "already_answered":
         logger.info(
@@ -257,7 +259,22 @@ def handle_telegram_callback(
             callback_data,
             request_id,
         )
-        return False
+        if telegram.is_configured():
+            if callback_query_id:
+                try:
+                    telegram.answer_callback(
+                        callback_query_id, messages.response_recorded()
+                    )
+                except telegram.TelegramError as exc:
+                    logger.error("answerCallbackQuery failed: %s", exc)
+            if message_id:
+                try:
+                    telegram.edit_message(
+                        chat_id, message_id, messages.already_recorded()
+                    )
+                except telegram.TelegramError as exc:
+                    logger.error("editMessageText failed: %s", exc)
+        return "already_answered"
 
     response_text = messages.telegram_callback_response(
         product_name=product.name,
@@ -279,7 +296,7 @@ def handle_telegram_callback(
                 logger.error("editMessageText failed: %s", exc)
 
     logger.info("Applied callback %r to product %s.", callback_data, product.pk)
-    return True
+    return "applied"
 
 
 def handle_text_reply(
@@ -583,3 +600,252 @@ def answer_confirmation_digest(
         count,
     )
     return target_outcome, count
+
+
+class ReviewItem(dict):
+    """Review item dict with attribute access."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+class ReviewProgress(dict):
+    """Review progress dict with attribute access."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+def _build_review_item(req: ConfirmationRequest, now: timezone.datetime) -> ReviewItem:
+    product = req.product
+    label = f"{product.brand} {product.name}".strip()
+    price_str = f"{product.price:,.2f} {product.currency}"
+    last_confirmed = product.last_confirmed_at or product.created_at
+    age_days = max(0, (now - last_confirmed).days) if last_confirmed else 0
+    return ReviewItem(
+        request_id=req.pk,
+        label=label,
+        price_str=price_str,
+        age_days=age_days,
+        product_id=product.pk,
+    )
+
+
+def start_review(
+    chat_id: str,
+    digest_id: int,
+) -> tuple[str, int, ReviewItem | None, ReviewProgress | None]:
+    """Begin stepping through confirmation requests for a weekly digest.
+
+    Returns (outcome, cursor, item, progress) where outcome in:
+      "item" | "done" | "not_found"
+    """
+    if chat_id in (None, ""):
+        return "not_found", 0, None, None
+
+    try:
+        digest = ConfirmationDigest.objects.select_related("shop").get(pk=digest_id)
+    except (ConfirmationDigest.DoesNotExist, ValueError):
+        return "not_found", 0, None, None
+
+    shop_chat_id = digest.shop.telegram_chat_id
+    if not shop_chat_id or str(shop_chat_id) != str(chat_id):
+        return "not_found", 0, None, None
+
+    requests = list(digest.requests.select_related("product").order_by("pk"))
+    total = len(requests)
+    now = timezone.now()
+
+    if total == 0:
+        return "done", 0, None, ReviewProgress(index=0, total=0, confirmed=0, sold=0)
+
+    if digest.closed_at is not None:
+        confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+        sold_count = sum(1 for r in requests if r.status == "sold_out")
+        return (
+            "done",
+            digest.review_cursor,
+            None,
+            ReviewProgress(
+                index=total,
+                total=total,
+                confirmed=confirmed_count,
+                sold=sold_count,
+            ),
+        )
+
+    start_index = digest.review_cursor
+    target_idx = None
+    for idx in range(start_index, total):
+        if requests[idx].status == "pending":
+            target_idx = idx
+            break
+
+    if target_idx is None:
+        for idx in range(0, start_index):
+            if requests[idx].status == "pending":
+                target_idx = idx
+                break
+
+    if target_idx is None:
+        if digest.closed_at is None:
+            digest.closed_at = now
+            digest.save(update_fields=["closed_at", "updated_at"])
+        confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+        sold_count = sum(1 for r in requests if r.status == "sold_out")
+        return (
+            "done",
+            total,
+            None,
+            ReviewProgress(
+                index=total,
+                total=total,
+                confirmed=confirmed_count,
+                sold=sold_count,
+            ),
+        )
+
+    if digest.review_cursor != target_idx:
+        digest.review_cursor = target_idx
+        digest.save(update_fields=["review_cursor", "updated_at"])
+
+    req = requests[target_idx]
+    item = _build_review_item(req, now)
+    confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+    sold_count = sum(1 for r in requests if r.status == "sold_out")
+    progress = ReviewProgress(
+        index=target_idx + 1,
+        total=total,
+        confirmed=confirmed_count,
+        sold=sold_count,
+    )
+    return "item", target_idx, item, progress
+
+
+def review_next(
+    chat_id: str,
+    digest_id: int | None = None,
+    action: str = "y",
+    request_id: int = 0,
+) -> tuple[str, int, ReviewItem | None, ReviewProgress | None]:
+    """Process an action on a review item and advance to the next pending item.
+
+    Action in:
+      'y' (available), 'n' (sold out), 's' (skip), 'x' (stop / pause).
+
+    Returns (outcome, cursor, item, progress) where outcome in:
+      "item" | "done" | "paused" | "not_found"
+    """
+    if chat_id in (None, ""):
+        return "not_found", 0, None, None
+
+    digest = None
+    if digest_id is not None:
+        try:
+            digest = ConfirmationDigest.objects.select_related("shop").get(pk=digest_id)
+        except (ConfirmationDigest.DoesNotExist, ValueError):
+            return "not_found", 0, None, None
+    else:
+        try:
+            cr = ConfirmationRequest.objects.select_related("digest__shop").get(
+                pk=request_id
+            )
+            digest = cr.digest
+        except (ConfirmationRequest.DoesNotExist, ValueError):
+            return "not_found", 0, None, None
+
+    if (
+        digest is None
+        or not digest.shop.telegram_chat_id
+        or str(digest.shop.telegram_chat_id) != str(chat_id)
+    ):
+        return "not_found", 0, None, None
+
+    requests = list(digest.requests.select_related("product").order_by("pk"))
+    total = len(requests)
+    now = timezone.now()
+
+    if action == "x":
+        confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+        sold_count = sum(1 for r in requests if r.status == "sold_out")
+        return (
+            "paused",
+            digest.review_cursor,
+            None,
+            ReviewProgress(
+                index=digest.review_cursor + 1,
+                total=total,
+                confirmed=confirmed_count,
+                sold=sold_count,
+            ),
+        )
+
+    req_pos = None
+    for idx, r in enumerate(requests):
+        if r.pk == request_id:
+            req_pos = idx
+            break
+
+    if action in ("y", "n"):
+        available = action == "y"
+        answer_confirmation_request(
+            chat_id=chat_id, request_id=request_id, available=available
+        )
+        if req_pos is not None:
+            requests[req_pos].status = "confirmed" if available else "sold_out"
+
+    if req_pos is not None:
+        next_index = req_pos + 1
+    else:
+        next_index = digest.review_cursor + 1
+
+    target_idx = None
+    for idx in range(next_index, total):
+        if requests[idx].status == "pending":
+            target_idx = idx
+            break
+
+    if target_idx is None:
+        for idx in range(0, next_index):
+            if requests[idx].status == "pending":
+                target_idx = idx
+                break
+
+    if target_idx is None:
+        digest.review_cursor = total
+        digest.closed_at = now
+        digest.save(update_fields=["review_cursor", "closed_at", "updated_at"])
+        confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+        sold_count = sum(1 for r in requests if r.status == "sold_out")
+        return (
+            "done",
+            total,
+            None,
+            ReviewProgress(
+                index=total,
+                total=total,
+                confirmed=confirmed_count,
+                sold=sold_count,
+            ),
+        )
+
+    digest.review_cursor = target_idx
+    digest.save(update_fields=["review_cursor", "updated_at"])
+
+    req = requests[target_idx]
+    item = _build_review_item(req, now)
+    confirmed_count = sum(1 for r in requests if r.status == "confirmed")
+    sold_count = sum(1 for r in requests if r.status == "sold_out")
+    progress = ReviewProgress(
+        index=target_idx + 1,
+        total=total,
+        confirmed=confirmed_count,
+        sold=sold_count,
+    )
+    return "item", target_idx, item, progress

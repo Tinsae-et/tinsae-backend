@@ -55,9 +55,11 @@ class DigestBuildTests(TestCase):
 
         # Check markup
         rows = markup.inline_keyboard
-        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0][0].text, "✅ All still available")
         self.assertEqual(rows[0][0].callback_data, "da:99")
+        self.assertEqual(rows[1][0].text, "✏️ Check one by one")
+        self.assertEqual(rows[1][0].callback_data, "drev:99")
 
 
 class DigestWorkflowTests(TestCase):
