@@ -230,10 +230,47 @@ docker compose exec backend python manage.py createsuperuser # create admin user
 docker compose exec backend python manage.py test -v 2       # run tests
 ```
 
-## Freshness Sweep (TIN-23 / TIN-24 / TIN-25)
+## The confirmation loop
 
-Reconciles `Product.confirmation_status`, expires unanswered confirmation
-requests, and prompts shop owners over Telegram to confirm stock.
+Tinsae keeps listings honest with a weekly check-in: a buyer should only see a
+product whose shop has recently said it is still real. Shop owners live in
+Telegram, so the bot takes the question to them.
+
+- **One clock: 7 days due, 14 days hidden.** A listing unprompted for
+  `CONFIRMATION_INTERVAL_DAYS` (7) is *due*; after `CONFIRMATION_HIDDEN_AFTER_DAYS`
+  (14) without a confirmation it leaves buyer-visible search. Both answers —
+  "still available" and "sold out" — restart the clock: freshness measures
+  engagement, not stock.
+- **One digest per shop, at 08:00 EAT**, listing only the products that are due
+  (up to 15, then "…and N more"). Never one message per product.
+- **Proactive messages go through an outbox** drained by a rate-limited sender, so
+  a restart never loses a digest and Telegram's limits are respected.
+- **Silence costs visibility, gently.** One reminder at 13:00; no answer by the
+  14-day mark hides the listing. Nothing else changes.
+
+### Commands & menu
+
+The bot registers its commands with Telegram, so the client's ☰ / “/” menu lists
+them. `/menu` opens an inline hub that reuses the same handlers.
+
+| Command | Does |
+| --- | --- |
+| `/start` | Welcome, or link via `/start <code>` |
+| `/menu` | Navigation hub (My products · Status · Help · Unlink) |
+| `/myproducts` | The shop's full catalogue, paged |
+| `/status` | Fresh / due / hidden counts + last check-in |
+| `/unlink` | Disconnect this chat from the shop |
+| `/link <code>` | Connect using a one-time code |
+| `/help` | Usage guide |
+
+Free-text replies: `all`, `sold 2 5`, or bare numbers (`1 3` prompts a clarifying
+question rather than guessing).
+
+### The freshness sweep
+
+`sweep_freshness` expires unanswered requests and reconciles
+`Product.confirmation_status` against the clock. It no longer sends anything — the
+digest is the only thing that asks.
 
 ```bash
 # Run manually:
@@ -243,210 +280,186 @@ docker compose exec backend python manage.py sweep_freshness
 docker compose exec backend python manage.py sweep_freshness --dry-run
 ```
 
-The command is idempotent: re-running it changes nothing until the clock moves.
-It prints one summary line.
+The command is idempotent: re-running changes nothing until the clock moves. Run it
+on the Celery Beat schedule (below), not by hand, in production.
 
-```
-[Freshness Sweep Complete] Stale products: 12 | Newly stale: 3 | Restored to fresh: 0 |
-Prompts sent: 2 | Expired requests: 1 | Skipped: 10
+### Preview a digest
+
+See exactly what a shop would receive before anything sends:
+
+```bash
+docker compose exec backend python manage.py preview_digest <shop-slug>
+docker compose exec backend python manage.py preview_digest --all
 ```
 
-- **Stale products** — total currently past the window.
-- **Newly stale / Restored to fresh** — transitions on this run. Both should be `0`
-  on a repeat run; anything else means the reconcile is flapping.
-- **Skipped** — stale, but not prompted: no `telegram_chat_id`, a prompt already
-  pending, or prompts disabled.
+Read-only: it prints the exact message and a `WOULD SEND` / `WOULD SKIP (<reason>)`
+verdict, writing nothing.
+
 
 ### Configuration
 
-Thresholds are settings, not flags, because `confirmation_status` is a stored
-column — two runs at different thresholds would leave it disagreeing with itself
-and with the buyer-facing freshness status.
+Thresholds are settings, not flags: `confirmation_status` is a stored column, and
+two runs at different thresholds would leave it disagreeing with the buyer-facing
+status.
 
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `CONFIRMATION_INTERVAL_DAYS` | `7` | Days without a signal before a product is stale / due |
-| `CONFIRMATION_HIDDEN_AFTER_DAYS` | `14` | Days after which an unconfirmed listing is hidden |
-| `CONFIRMATION_REQUEST_EXPIRY_HOURS` | `48` | Hours before an unanswered prompt expires |
-| `ENABLE_TELEGRAM_BOT_PROMPTS` | `False` | Master switch for **outbound** prompts |
+| `CONFIRMATION_INTERVAL_DAYS` | `7` | Days until a listing is due (the "fresh" window) |
+| `CONFIRMATION_HIDDEN_AFTER_DAYS` | `14` | Days until an unconfirmed listing is hidden |
+| `CONFIRMATION_REQUEST_EXPIRY_HOURS` | `48` | Ops: hours before an unanswered request is overdue |
 | `TELEGRAM_BOT_TOKEN` | — | Required to reach Telegram at all |
-| `MYPRODUCTS_PAGE_SIZE` | `5` | Products per page in the bot's `/myproducts` listing |
+| `TELEGRAM_BOT_USERNAME` | — | Bot handle (no `@`) for the deep link |
+| `ENABLE_TELEGRAM_BOT_PROMPTS` | `False` | Master switch for **outbound** (digest + reminders) |
+| `TELEGRAM_MOCK_SEND` | `False` | Log outbound instead of sending (plumbing tests) |
+| `MYPRODUCTS_PAGE_SIZE` | `8` | Products per page in `/myproducts` |
+| `QUIET_HOURS_START` / `QUIET_HOURS_END` | `21` / `7` | EAT hours when proactive sends pause |
+| `PROCESSED_UPDATE_RETENTION_DAYS` | `7` | Update-dedupe rows kept |
+| `OUTBOX_RETENTION_DAYS` | `30` | Terminal outbox rows kept |
+| `TELEGRAM_LINK_CODE_TTL_HOURS` | `24` | How long a link code stays valid |
+| `CELERY_BROKER_URL` | `redis://redis:6379/0` | Celery broker + result backend |
 
-**Prompts need both `ENABLE_TELEGRAM_BOT_PROMPTS=True` and a valid
-`TELEGRAM_BOT_TOKEN`.** With the flag off — the default — the sweep still
-reconciles statuses and expires requests, and reports every stale product under
-`Skipped`. If you see `Prompts sent: 0` and expected otherwise, check the flag
-first.
-
-`--staleness-days` and `--expiry-hours` override the settings for a single run.
-Useful for inspection; avoid them in anything recurring, since a run at a
-different threshold rewrites `confirmation_status` for every product. The sweep
-reconciles in both directions, so the next normal run corrects it.
-
-```bash
-docker compose exec backend python manage.py sweep_freshness --staleness-days 14
-```
+**Outbound needs both `ENABLE_TELEGRAM_BOT_PROMPTS=True` and a valid
+`TELEGRAM_BOT_TOKEN`.** With the flag off — the default — `send_due_digests` and
+`send_reminders` do nothing; the sweep still reconciles statuses and expires
+requests. If no digest goes out and you expected one, check the flag first.
 
 ### What counts as stale
 
-A product is stale when it is still listed as available **and** either:
+A listing is **due** when it is available **and** either `last_confirmed_at` is
+older than `CONFIRMATION_INTERVAL_DAYS` or it has never been confirmed. A
+never-confirmed listing is due from creation — the age of the listing is not
+evidence its stock claim still holds.
 
-- `last_confirmed_at` is older than `CONFIRMATION_INTERVAL_DAYS`, or
-- it has never been confirmed at all (`last_confirmed_at` is `NULL`).
-
-A never-confirmed listing is stale from the moment it is created — the age of the
-listing is not evidence that its stock claim still holds.
-
-Products with `is_available = False` are outside the sweep entirely: they are
-neither marked stale nor restored to fresh, and they are never prompted. **A
-merchant who answers "No, out of stock" therefore takes that product out of the
-loop permanently** — nothing re-prompts it, so there is no automated path back to
-available. A re-stock flow is follow-up work, not part of this command.
+Answered, paused and sold listings are outside confirmation: paused and sold are
+`is_available = False`, so the digest never asks about them. "Sold out" is an
+answer and restarts the clock; a paused listing makes no stock claim, so its clock
+is left alone. A sold listing comes back with **🔄 Back in stock** (which restarts
+the clock) and a paused one with **▶️ Resume** (which does not).
 
 ### Two switches, and what each one turns off
 
-The bot has an outbound half and an inbound half, and they are controlled
-separately. Conflating them is the easiest way to misread this system.
+The bot has an outbound half and an inbound half, controlled separately.
 
 | | Controls | Turned off by |
 | --- | --- | --- |
-| **Outbound** | `sweep_freshness` sending unsolicited prompts | `ENABLE_TELEGRAM_BOT_PROMPTS=False` (the default) |
-| **Inbound** | `/start`, `/help`, `/myproducts`, button callbacks | not running `run_bot` (it also refuses to start without a token) |
+| **Outbound** | `send_due_digests` and `send_reminders` (the weekly digest + one reminder) | `ENABLE_TELEGRAM_BOT_PROMPTS=False` (the default) |
+| **Inbound** | `/start`, `/menu`, `/myproducts`, `/status`, button callbacks, text replies | not running `run_bot` (it refuses to start without a token) |
 
-`/myproducts` and the button callbacks are **not** gated on
-`ENABLE_TELEGRAM_BOT_PROMPTS`. That flag is outbound policy — "should we ping
-merchants?" — and a merchant who opened the listing themselves is already talking
-to us. Silently ignoring them would not be "disabled", it would be broken.
+`/myproducts`, `/status`, `/menu` and the button callbacks are **not** gated on the
+flag. It is outbound policy — "should we ping merchants?" — and a merchant who
+opened the listing themselves is already talking to us.
 
-That makes three sensible configurations:
+Three sensible configurations:
 
 | Bot process | Prompts flag | What you get |
 | --- | --- | --- |
-| not running | off | **Current default.** Nothing sends, nothing listens. The API, sweep and admin are unaffected. |
-| running | off | No unsolicited pings, but merchants can self-serve via `/myproducts`. Freshness data stays real. |
-| running | on | The full loop: the sweep prompts, merchants answer inline or via `/myproducts`. |
+| not running | off | **Default.** Nothing sends, nothing listens. API, sweep and admin are unaffected. |
+| running | off | No unsolicited digests, but merchants self-serve via `/myproducts`. Freshness data stays real. |
+| running | on | The full loop: the digest prompts, merchants answer by button or text. |
 
 ### Running with the bot fully off
 
-The default state, and a safe one — but the sweep should stay **unscheduled**
-while it lasts.
+The default state, and a safe one — but keep the bot schedules unapplied while it
+lasts.
 
-Nothing runs on its own. The `bot` app just holds an empty `ConfirmationRequest`
-table, and the dependency arrow points `bot → catalog`, never back, so the public
-API never reaches this code.
+Nothing runs on its own until you apply the schedules. The `bot` app just holds an
+empty `ConfirmationRequest` table, and the dependency arrow points `bot → catalog`,
+never back, so the public API never reaches this code.
 
-**Do not add the cron entry below while the bot is fully off.** With nothing
-inbound, nothing writes `last_confirmed_at` — the Telegram callbacks are the only
-code paths that do, apart from `seed_shop_data` and manual admin edits. Because a
-NULL `last_confirmed_at` counts as stale, a scheduled sweep would walk the whole
-catalog to `stale` within `CONFIRMATION_INTERVAL_DAYS` of the last seed, and anything
-added through the admin would be stale on creation. A confirmation-status-based filter
-would then return an empty list.
+**Do not apply the schedules while the bot is fully off.** With nothing inbound,
+nothing writes `last_confirmed_at` apart from `seed_shop_data` and manual admin
+edits. Because a NULL `last_confirmed_at` counts as due, a scheduled sweep would
+walk the whole catalogue to `stale` within `CONFIRMATION_INTERVAL_DAYS` of the last
+seed, and anything added through the admin would be stale on creation.
 
-Leave it unscheduled and `confirmation_status` stays at its `fresh` default,
-and product ranking degrades to plain recency.
-Two things follow:
+To make freshness mean something without outbound prompts, run the bot (it starts
+as its own compose service) with the flag off and point merchants at `/myproducts`
+— the middle row above.
 
-- The frontend should not ship a default-on "fresh only" filter in this state —
-  it would be filtering on a column nobody maintains.
-- Keep `python-telegram-bot` installed even if the bot is idle. `bot/tests.py`
-  imports `run_bot`, so dropping it breaks the test suite, not just the bot.
+- The frontend should not ship a default-on "fresh only" filter while
+  `confirmation_status` is nobody's to maintain.
+- Keep `python-telegram-bot` installed even if the bot is idle — `bot/tests.py`
+  imports `run_bot`, so dropping it breaks the test suite.
 
-To make freshness mean something without enabling outbound prompts, run `run_bot`
-with the flag left off and point merchants at `/myproducts`. That is the middle
-row of the table above.
+### Bot schedules (Celery Beat)
 
-### Local Cron Scheduling
-
-Only once prompts are enabled — see the section above.
-*(Note: `sweep_freshness` is not scheduled on Celery yet — A0 is scaffolding only — so host cron remains the runner for now.)*
-
-To run the sweep daily at midnight on your host machine:
+`run_bot` registers the commands; proactive work and schedules live on Celery. Once
+the bot is live, apply the periodic tasks (idempotent):
 
 ```bash
-crontab -e
+docker compose exec backend python manage.py setup_bot_schedules
 ```
 
-Add the following (update the path to your checkout):
+That registers, all in `Africa/Addis_Ababa`:
 
-```cron
-0 0 * * * cd /path/to/tinsae-backend && /usr/bin/docker compose exec -T backend python manage.py sweep_freshness >> /tmp/freshness_sweep.log 2>&1
-```
+| Task | When |
+| --- | --- |
+| `bot.tasks.drain_outbox` | every 15s |
+| `bot.tasks.send_due_digests` | 08:00 |
+| `bot.tasks.send_reminders` | 13:00 |
+| `bot.tasks.sweep` | hourly |
+| `bot.tasks.prune` | 03:00 |
 
-`-T` is required — cron has no TTY and `docker compose exec` fails without it.
-Because the command is idempotent, a missed run costs nothing and a doubled run
-is harmless.
-
-### Telegram Bot Listener (`run_bot`)
-
-The single inbound process. Telegram allows only one `getUpdates` consumer per
-token, so onboarding (`/start`, `/help`), the `/myproducts` listing, and stock
-callbacks all live here.
+To re-register the client command menu (the ☰ button):
 
 ```bash
-docker compose exec backend python manage.py run_bot
+docker compose exec backend python manage.py sync_bot_commands
 ```
 
-It long-polls until you stop it, and exits with a `CommandError` if
-`TELEGRAM_BOT_TOKEN` is unset.
+### Telegram bot processes
 
-### `/myproducts` — merchant-initiated confirmation
+Three long-running services, all started by `docker compose up`:
 
-A merchant sends `/myproducts` and gets one message listing every product of
-theirs waiting on an answer, with a ✅ and ❌ button per row:
+- **`bot`** (`manage.py run_bot`) — inbound: long-polling, commands, buttons.
+  **Exactly one instance per token**; a second gets `409 Conflict`.
+- **`celery-worker`** — drains the outbox and runs the scheduled tasks.
+- **`celery-beat`** — the schedule.
 
-```
-3 products waiting on you (page 1 of 1).
-Tap ✅ if it is still available, ❌ if it is out of stock.
+`run_bot` exits with a `CommandError` if `TELEGRAM_BOT_TOKEN` is unset.
 
-[ ✅ Samsung Galaxy A15 ] [ ❌ ]
-[ ✅ Tecno Camon 20     ] [ ❌ ]
-[ ✅ Nokia 105 Classic  ] [ ❌ ]
-```
+### `/myproducts` — the catalogue
 
-The point is to answer several products in one sitting instead of waiting for a
-separate ping per product. **There is deliberately no "confirm everything"
-button** — one tap writing forty fresh timestamps produces confirmations the
-merchant never actually thought about, and freshness data that is wrong but looks
-right cannot be told apart from the real thing later. Each ✅ stays a per-product
-decision.
+A merchant sends `/myproducts` and gets their whole catalogue (drafts excluded),
+paged `MYPRODUCTS_PAGE_SIZE` at a time, ordered **due → fresh → paused → sold**.
+Buttons follow each product's state:
 
-Details worth knowing:
+| State | Buttons |
+| --- | --- |
+| live and available (due or fresh) | ✅ Confirm · ❌ Sold · ⏸ Pause |
+| paused (`LIVE`, unavailable) | ▶️ Resume · ❌ Sold |
+| sold (`SOLD`) | 🔄 Back in stock |
 
-- **Which products appear** is the same predicate the sweep uses —
-  `ProductQuerySet.needing_confirmation()` in `catalog/models.py`. One definition,
-  so the bot and `sweep_freshness` cannot drift apart about who needs asking.
-- **Ordering** is never-confirmed first, then oldest, with `pk` breaking ties so
-  paging cannot drop or repeat a row.
-- **Paging** kicks in past `MYPRODUCTS_PAGE_SIZE` rows and edits the existing
-  message rather than sending new ones.
+- **Paused ≠ sold.** Pausing hides a listing without a stock claim, so the clock is
+  left untouched — and resuming leaves it untouched too, so a pause/resume round
+  trip cannot launder a stale listing fresh. "Sold out" is an answer and restarts
+  the clock; "Back in stock" republishes a sold item and restarts it.
+- **Ordering** is due first (never-confirmed leading), then fresh, paused, sold,
+  with `pk` breaking ties so paging cannot drop or repeat a row.
+- **Paging** edits the existing message rather than sending new ones.
 - **Scoping** is derived from the inbound chat id only, never from button data —
   otherwise paging would become a way to read another merchant's catalogue. One
   chat may own several shops; all of them are listed, prefixed by shop name.
-- **Answering resolves any outstanding prompt** for that product, so the sweep
-  will not ask again once the old request expires.
-- **✅ on an out-of-stock product is refused.** The listing never offers it, so
-  reaching that state means tapping a button in an older message. Honouring it
-  would quietly republish the product — a back door into the re-stock path that
-  does not exist yet. ❌ is always honoured; re-denying is idempotent.
+- **Stale buttons are no-ops.** Each action only applies from the state its button
+  is offered in; a ✅ tapped on an out-of-stock product does nothing rather than
+  silently republishing it.
 
-Callback payloads are namespaced: `pconfirm:<product_pk>:<page>` and
-`pdeny:<product_pk>:<page>` for the listing, `page:<n>` for navigation, versus the
-older `confirm_<request_pk>` / `deny_<request_pk>` for inline prompts. Telegram
-caps `callback_data` at 64 bytes, which is why the target is a single id rather
-than a list.
+Callback payloads are namespaced: `pconfirm` / `pdeny` / `pback` / `ppause` /
+`presume`, each `<action>:<product_pk>:<page>`, plus `page:<n>` for navigation,
+`menu:*` for the hub, and the digest/review families. Telegram caps
+`callback_data` at 64 bytes, which is why the target is a single id rather than a
+list.
 
-The listener keeps its update offset in memory only. After a restart Telegram may
-re-deliver up to 24 hours of queued updates; callbacks against an already-answered
-request are rejected rather than reapplied. Every callback — inline prompt or
-`/myproducts` button — is checked against the `telegram_chat_id` of the shop that
-owns the product, so one merchant cannot answer another's.
+Every callback is re-checked against the `telegram_chat_id` of the shop that owns
+the product, so one merchant cannot act on another's. The listener keeps its
+update offset in memory only; after a restart Telegram may re-deliver up to 24
+hours of queued updates, and `ProcessedUpdate` drops duplicates before any handler
+runs.
 
 ### Celery & Redis Background Processing
 
 Celery handles background processing and periodic tasks with Redis as the broker and result backend. Periodic task schedules are stored in the database via `django-celery-beat`.
 
-In Docker Compose, `redis`, `celery-worker`, and `celery-beat` run as services alongside `backend` and `db`:
+In Docker Compose, `redis`, `celery-worker`, `celery-beat`, and `bot` run as services alongside `backend` and `db`:
 
 ```bash
 docker compose up -d redis celery-worker celery-beat
@@ -471,26 +484,24 @@ CELERY_BROKER_URL=redis://localhost:6380/0 CELERY_RESULT_BACKEND=redis://localho
 CELERY_BROKER_URL=redis://localhost:6380/0 CELERY_RESULT_BACKEND=redis://localhost:6380/0 celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
 ```
 
-#### Bot Periodic Schedules
+#### Bot periodic schedules
 
-To configure periodic schedules in `django-celery-beat` (e.g. running `bot.tasks.drain_outbox` every 15 seconds):
+The bot's schedules (digest, reminder, sweep, prune, outbox drain) are registered
+by:
 
 ```bash
 docker compose exec backend python manage.py setup_bot_schedules
 ```
 
-#### Verifying Celery Locally
+See *Bot schedules (Celery Beat)* above for the full table.
 
+#### Verifying Celery locally
 
-1. **Direct smoke task execution**:
-   ```bash
-   docker compose exec backend python manage.py shell -c "from bot.tasks import smoke_heartbeat; res = smoke_heartbeat.delay(); print('Result:', res.get(timeout=5))"
-   ```
-2. **PeriodicTask schedule (manual verification)**:
-   - Navigate to Django Admin at `http://localhost:8000/admin/django_celery_beat/periodictask/`.
-   - Add a test periodic task pointing to `bot.tasks.smoke_heartbeat` with an interval.
-   - Watch `docker compose logs -f celery-worker` to see the task executed by the scheduler.
-   - Delete the test task after verifying (do not commit test periodic tasks to code/migrations).
+```bash
+docker compose exec backend python manage.py shell -c \
+"from bot.tasks import smoke_heartbeat; print(smoke_heartbeat.delay().get(timeout=5))"
+docker compose logs -f celery-worker
+```
 
 
 ## Loop health check (TIN-32)
@@ -568,20 +579,12 @@ docker compose exec backend python manage.py seed_shop_data
 docker compose exec backend python manage.py sweep_freshness
 ```
 
-Expected on a clean seed — pinned by `ops/tests.py::SeedReconciliationTests`:
-
-| | Before sweep | After sweep |
-| --- | --- | --- |
-| Available products | 31 | 31 |
-| Fresh | 31 | 28 (90.3%) |
-| Stale | 0 | 3 |
-| Stale by clock | 3 | 3 |
-| Sweep drift | 3 | 0 |
-| Confirmation requests | 0 | 0 |
-
-The three stale products are the ones the seeder labels `expired` (Nokia 105
-Classic, Mi Band 8, Nokia G22) at 45 days, past the 30-day window. `almost_expired`
-is 25 days and stays fresh.
+Expected on a clean seed is pinned by `ops/tests.py::SeedReconciliationTests` —
+the exact counts depend on `CONFIRMATION_INTERVAL_DAYS`. The shape is what matters:
+before the first sweep the page shows **`0` stale** (the seeder writes
+`last_confirmed_at` but never touches `confirmation_status`, and the page reports
+what buyers actually get), while `stale_by_clock` shows what a sweep right now
+would produce. The gap between them is `sweep_drift`.
 
 **Before the sweep the page shows 0 stale, not 3.** That is correct, not a bug:
 the seeder writes `last_confirmed_at` but never touches `confirmation_status`,
@@ -609,7 +612,7 @@ health/            liveness + database check
 users/             custom User model
 shops/             Shop domain (CRUD API)
 catalog/           categories + products (read-only API)
-bot/               Telegram prompts, /myproducts, sweep_freshness + run_bot
+bot/               Telegram bot: digest, listing management, /menu, run_bot + Celery tasks
 ops/               internal loop-health page + endpoint (no models)
 tests/             project-level tests
 ```
