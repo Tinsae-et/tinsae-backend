@@ -17,7 +17,7 @@ EAT = zoneinfo.ZoneInfo("Africa/Addis_Ababa")
 BOT_COMMANDS = [
     ("start", "Start or connect your shop"),
     ("menu", "Open the menu"),
-    ("myproducts", "Products waiting on your confirmation"),
+    ("myproducts", "View and manage your products"),
     ("status", "Listing freshness and last check-in"),
     ("unlink", "Disconnect this chat from your shop"),
     ("link", "Connect using a shop code"),
@@ -89,18 +89,11 @@ def link_ack(outcome: str, shop_name: str | None = None) -> str:
     )
 
 
-def listing_summary(
-    total: int, page: int, pages: int, has_restockable: bool = False
-) -> str:
-    action_line = (
-        "Tap ✅ if it is still available, ❌ if it is out of stock, or 🔄 to put back in stock."
-        if has_restockable
-        else "Tap ✅ if it is still available, ❌ if it is out of stock."
-    )
+def listing_summary(total: int, page: int, pages: int) -> str:
+    noun = "product" if total == 1 else "products"
     return (
-        f"{total} product{'' if total == 1 else 's'} waiting on you "
-        f"(page {page + 1} of {pages}).\n"
-        f"{action_line}"
+        f"Your {noun} — {total} (page {page + 1} of {pages}).\n"
+        "Tap a button to update a product."
     )
 
 
@@ -111,8 +104,8 @@ def not_linked() -> str:
     )
 
 
-def nothing_needs_confirming() -> str:
-    return "Nothing needs confirming right now. 🎉"
+def no_products() -> str:
+    return "You have no products yet. Add one from the dashboard."
 
 
 def nothing_left_to_confirm() -> str:

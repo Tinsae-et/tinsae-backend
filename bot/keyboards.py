@@ -5,6 +5,7 @@ Pure constructors: no database queries, no ORM, no network I/O.
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot.listing_states import LISTING_PAUSED, LISTING_SOLD
 from bot.parsing import (
     format_digest_all_callback,
     format_digest_review_callback,
@@ -50,13 +51,48 @@ def listing_markup(
     pages: int,
     label_shop: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Build the inline keyboard markup for a /myproducts listing page."""
+    """Build the inline keyboard markup for a /myproducts listing page.
+
+    Buttons follow each product's state (`listing_rank`): due/fresh (live and
+    available) offer Confirm · Sold · Pause; paused offers Resume · Sold; sold
+    offers Back in stock.
+    """
     rows = []
     for product in products:
         label = f"{product.brand} {product.name}"
         if label_shop:
             label = f"{product.shop.name} — {label}"
-        if getattr(product, "is_available", True):
+        rank = getattr(product, "listing_rank", None)
+        if rank == LISTING_SOLD:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"🔄 {label}"[:BUTTON_LABEL_LIMIT],
+                        callback_data=format_listing_callback(
+                            "pback", product.pk, page
+                        ),
+                    ),
+                ]
+            )
+        elif rank == LISTING_PAUSED:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        f"▶️ {label}"[:BUTTON_LABEL_LIMIT],
+                        callback_data=format_listing_callback(
+                            "presume", product.pk, page
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        "❌",
+                        callback_data=format_listing_callback(
+                            "pdeny", product.pk, page
+                        ),
+                    ),
+                ]
+            )
+        else:
+            # Live and available (due if rank 0, fresh otherwise).
             rows.append(
                 [
                     InlineKeyboardButton(
@@ -71,15 +107,10 @@ def listing_markup(
                             "pdeny", product.pk, page
                         ),
                     ),
-                ]
-            )
-        else:
-            rows.append(
-                [
                     InlineKeyboardButton(
-                        f"🔄 {label}"[:BUTTON_LABEL_LIMIT],
+                        "⏸",
                         callback_data=format_listing_callback(
-                            "pback", product.pk, page
+                            "ppause", product.pk, page
                         ),
                     ),
                 ]

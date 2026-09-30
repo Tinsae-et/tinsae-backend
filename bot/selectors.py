@@ -7,19 +7,14 @@ audit. Nothing here mutates.
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import F
+from django.db.models import Case, F, IntegerField, Q, Value, When
 from django.utils import timezone
 
 from catalog.models import Product, ProductStatus
 from shops.models import Shop
 
+from .listing_states import LISTING_DUE, LISTING_FRESH, LISTING_PAUSED, LISTING_SOLD
 from .models import ConfirmationDigest, ConfirmationRequest, OutboundMessage
-
-# Limit the number of restockable (out-of-stock) products loaded into /myproducts.
-# Due-for-confirmation products always precede restockable products, so restockable
-# items never crowd out due items on page 1. Capping restockable products (default 24,
-# or 3 pages of 8 items) prevents historical sold listings from creating unbounded pages.
-MYPRODUCTS_RESTOCKABLE_LIMIT = 24
 
 
 def shops_for_chat(chat_id) -> list[Shop]:
@@ -51,45 +46,40 @@ def due_products_for_shop(shop: Shop, cutoff) -> list[Product]:
 
 
 def listing_for_chat(chat_id) -> tuple[list[Shop], list[Product]]:
-    """Everything /myproducts needs, derived only from the inbound chat.
+    """Everything /myproducts needs: the chat's shops and their full catalogue.
 
-    Returns (shops, products), where products contains, in stable order:
-      1. due-for-confirmation: is_available=True, status=LIVE, needing_confirmation
-         (never-confirmed first, then oldest, pk tiebreak).
-      2. restockable: is_available=False, status in (LIVE, SOLD) (most recently confirmed/
-         updated first, capped at MYPRODUCTS_RESTOCKABLE_LIMIT).
-
-    DRAFT products are excluded from both sections. Due items always lead so they are
-    never crowded out on page 1.
+    Returns the shops and their non-DRAFT products, each annotated with
+    `listing_rank` and ordered due → fresh → paused → sold (never-confirmed first,
+    oldest first, pk tiebreak so paging cannot drop or repeat a row). Drafts are
+    excluded: a draft is not published yet and cannot be managed from the bot.
     """
     shops = shops_for_chat(chat_id)
     if not shops:
         return [], []
 
     cutoff = timezone.now() - timedelta(days=settings.CONFIRMATION_INTERVAL_DAYS)
-    due_products = list(
-        Product.objects.needing_confirmation(cutoff)
-        .filter(shop__in=shops, status=ProductStatus.LIVE)
-        .select_related("shop")
-        # Never-confirmed first, then oldest: lead with what we know least about.
-        # pk breaks ties so paging cannot drop or repeat a row between pages.
-        .order_by(F("last_confirmed_at").asc(nulls_first=True), "pk")
+    listing_rank = Case(
+        When(status=ProductStatus.SOLD, then=Value(LISTING_SOLD)),
+        When(is_available=False, then=Value(LISTING_PAUSED)),
+        When(
+            Q(last_confirmed_at__isnull=True) | Q(last_confirmed_at__lt=cutoff),
+            then=Value(LISTING_DUE),
+        ),
+        default=Value(LISTING_FRESH),
+        output_field=IntegerField(),
     )
-
-    limit = getattr(settings, "MYPRODUCTS_RESTOCKABLE_LIMIT", MYPRODUCTS_RESTOCKABLE_LIMIT)
-    restockable_products = list(
-        Product.objects.filter(
-            shop__in=shops,
-            is_available=False,
-            status__in=[ProductStatus.LIVE, ProductStatus.SOLD],
+    products = list(
+        Product.objects.filter(shop__in=shops)
+        .exclude(status=ProductStatus.DRAFT)
+        .select_related("shop")
+        .annotate(listing_rank=listing_rank)
+        .order_by(
+            "listing_rank",
+            F("last_confirmed_at").asc(nulls_first=True),
+            "pk",
         )
-        .select_related("shop")
-        .order_by(F("last_confirmed_at").desc(nulls_last=True), "-updated_at", "pk")[
-            :limit
-        ]
     )
-
-    return shops, due_products + restockable_products
+    return shops, products
 
 
 def pending_request_for_chat(chat_id, reply_to_message_id=None):

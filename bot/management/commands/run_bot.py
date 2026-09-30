@@ -110,8 +110,7 @@ def _render_listing(shops, products, page: int):
     visible = products[start : start + page_size]
     label_shop = len(shops) > 1
 
-    has_restockable = any(not getattr(p, "is_available", True) for p in visible)
-    text = messages.listing_summary(total, page, pages, has_restockable=has_restockable)
+    text = messages.listing_summary(total, page, pages)
     markup = keyboards.listing_markup(
         visible, page=page, pages=pages, label_shop=label_shop
     )
@@ -126,7 +125,7 @@ async def _products_content(chat_id):
     if not shops:
         return messages.not_linked(), None
     if not products:
-        return messages.nothing_needs_confirming(), None
+        return messages.no_products(), None
     return _render_listing(shops, products, page=0)
 
 

@@ -142,7 +142,7 @@ def parse_prompt_callback(callback_data: str) -> tuple[str, int] | None:
     return None
 
 
-# --- Callback family 2: Listing confirm/deny/restock (pconfirm:<pk>:<page> / pdeny:<pk>:<page> / pback:<pk>:<page>) ---
+# --- Callback family 2: Listing actions (pconfirm/pdeny/pback/ppause/presume:<pk>:<page>) ---
 
 
 def format_listing_callback(action: str, product_id: int, page: int) -> str:
@@ -151,14 +151,15 @@ def format_listing_callback(action: str, product_id: int, page: int) -> str:
 
 
 def parse_listing_callback(callback_data: str) -> tuple[str, int, int] | None:
-    """Parse pconfirm:<pk>:<page>, pdeny:<pk>:<page>, or pback:<pk>:<page> callback_data.
+    """Parse a /myproducts action callback: <action>:<pk>:<page>.
 
+    action is one of pconfirm, pdeny, pback, ppause, presume.
     Returns (action, product_id, page) or None if malformed.
     """
     parts = callback_data.split(":")
     if (
         len(parts) >= 2
-        and parts[0] in ("pconfirm", "pdeny", "pback")
+        and parts[0] in ("pconfirm", "pdeny", "pback", "ppause", "presume")
         and parts[1].isdigit()
     ):
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0

@@ -12,6 +12,8 @@ from catalog.services import (
     answer_confirmation_request,
     apply_confirmation,
     mark_back_in_stock,
+    pause_listing,
+    resume_listing,
 )
 from shops.models import Shop
 
@@ -194,7 +196,7 @@ def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
         return None
 
     action, product_id, _page = parsed
-    if action not in ("pconfirm", "pdeny", "pback"):
+    if action not in ("pconfirm", "pdeny", "pback", "ppause", "presume"):
         logger.warning("Unrecognised product callback action: %r", action)
         return None
 
@@ -214,18 +216,34 @@ def handle_product_callback(callback_data: str, chat_id: str) -> Product | None:
         )
         return None
 
-    if action == "pback":
+    # Each action only applies from the state its button is offered in; anything
+    # else is a stale button from an older message, so it is a no-op (None).
+    if action == "ppause":
         if not product.is_available:
-            mark_back_in_stock(product)
-            logger.info("Restocked product %s via %r.", product.pk, callback_data)
-        else:
-            logger.info("Product %s already available; pback is a no-op.", product.pk)
+            return None
+        pause_listing(product)
+        logger.info("Paused product %s via %r.", product.pk, callback_data)
         return product
 
-    # For pconfirm / pdeny:
-    # The listing only ever offers ✅ for available products, so reaching here
-    # means the merchant tapped a button in an older message. Honouring it would
-    # silently republish a product that is marked out of stock.
+    if action == "presume":
+        # Resume restores a paused listing (LIVE + unavailable) without a stock
+        # claim. A sold item is restored with Back in stock, which resets the clock.
+        if product.is_available or product.status == ProductStatus.SOLD:
+            return None
+        resume_listing(product)
+        logger.info("Resumed product %s via %r.", product.pk, callback_data)
+        return product
+
+    if action == "pback":
+        # Back in stock is only for a sold item; it is an answer, so the clock resets.
+        if product.status != ProductStatus.SOLD:
+            return None
+        mark_back_in_stock(product)
+        logger.info("Restocked product %s via %r.", product.pk, callback_data)
+        return product
+
+    # pconfirm / pdeny. The listing only offers ✅ for available products, so a
+    # stale ✅ on an out-of-stock item must not silently republish it.
     if action == "pconfirm" and not product.is_available:
         logger.info(
             "Ignoring %r: product %s is marked out of stock.",

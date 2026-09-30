@@ -17,6 +17,7 @@ from telegram.ext import ApplicationHandlerStop
 
 from bot import keyboards, messages, parsing
 from bot import telegram_api as telegram
+from bot.listing_states import LISTING_DUE, LISTING_SOLD
 from bot.management.commands.run_bot import (
     dedupe,
     help,
@@ -909,79 +910,55 @@ class CallbackHandlerTests(BotTestCase):
 
 
 class ListingSelectorTests(BotTestCase):
-    """What /myproducts shows, and who it shows it to."""
+    """The full catalogue /myproducts shows, scoped to the calling chat."""
 
     def test_listing_is_scoped_to_the_calling_chat(self):
         shops, products = listing_for_chat(CHAT_ID)
 
         self.assertEqual([s.pk for s in shops], [self.shop.pk])
-        self.assertEqual([p.pk for p in products], [self.stale_product.pk])
+        # Due leads, then fresh.
+        self.assertEqual(
+            [p.pk for p in products],
+            [self.stale_product.pk, self.fresh_product.pk],
+        )
 
     def test_an_unlinked_chat_gets_nothing(self):
         self.assertEqual(listing_for_chat(OTHER_CHAT_ID), ([], []))
         self.assertEqual(shops_for_chat(""), [])
         self.assertEqual(shops_for_chat(None), [])
 
-    def test_never_confirmed_products_lead_the_list(self):
+    def test_never_confirmed_leads_and_drafts_are_excluded(self):
         never = self._product("Pixel 9", "pixel-9", self.shop, None)
+        draft = self._product("Draft Item", "draft-item", self.shop, None)
+        Product.objects.filter(pk=draft.pk).update(status=ProductStatus.DRAFT)
 
         _, products = listing_for_chat(CHAT_ID)
 
-        self.assertEqual([p.pk for p in products], [never.pk, self.stale_product.pk])
+        pks = [p.pk for p in products]
+        self.assertNotIn(draft.pk, pks)
+        # Never-confirmed (due, NULL first) leads the due band.
+        self.assertEqual(pks[0], never.pk)
 
-    def test_fresh_and_draft_products_are_excluded(self):
-        Product.objects.filter(pk=self.stale_product.pk).update(
-            status=ProductStatus.DRAFT
+    def test_states_are_ordered_due_fresh_paused_sold(self):
+        paused = self._product(
+            "Paused", "paused-1", self.shop, timezone.now() - timedelta(days=40)
         )
-
-        _, products = listing_for_chat(CHAT_ID)
-
-        self.assertEqual(products, [])
-
-    def test_out_of_stock_products_included_in_restockable_section(self):
-        Product.objects.filter(pk=self.stale_product.pk).update(
-            is_available=False, status=ProductStatus.SOLD
+        Product.objects.filter(pk=paused.pk).update(
+            is_available=False, status=ProductStatus.LIVE
         )
-
-        _, products = listing_for_chat(CHAT_ID)
-
-        self.assertEqual([p.pk for p in products], [self.stale_product.pk])
-
-    def test_due_products_precede_restockable_products(self):
-        sold = self._product("Pixel 8", "pixel-8", self.shop, None)
+        sold = self._product(
+            "Sold", "sold-1", self.shop, timezone.now() - timedelta(days=40)
+        )
         Product.objects.filter(pk=sold.pk).update(
             is_available=False, status=ProductStatus.SOLD
         )
 
         _, products = listing_for_chat(CHAT_ID)
 
-        # self.stale_product is due (available=True); sold is restockable (available=False).
-        # Due items must lead so they never get crowded out of page 1.
-        self.assertEqual([p.pk for p in products], [self.stale_product.pk, sold.pk])
-
-    def test_restockable_products_capped_at_limit(self):
-        with override_settings(MYPRODUCTS_RESTOCKABLE_LIMIT=2):
-            extras = [
-                self._product(
-                    f"Extra {i}",
-                    f"extra-{i}",
-                    self.shop,
-                    timezone.now() - timedelta(days=i + 10),
-                )
-                for i in range(4)
-            ]
-            Product.objects.filter(pk__in=[p.pk for p in extras]).update(
-                is_available=False, status=ProductStatus.SOLD
-            )
-
-            _, products = listing_for_chat(CHAT_ID)
-
-            # 1 due (self.stale_product) + 2 restockable extras
-            self.assertEqual(len(products), 3)
-            self.assertEqual(products[0].pk, self.stale_product.pk)
-            restockable_ids = [p.pk for p in products[1:]]
-            self.assertEqual(len(restockable_ids), 2)
-            self.assertEqual(restockable_ids, [extras[0].pk, extras[1].pk])
+        ranks = [p.listing_rank for p in products]
+        self.assertEqual(ranks, sorted(ranks))
+        self.assertEqual(ranks[0], LISTING_DUE)
+        self.assertEqual(ranks[-1], LISTING_SOLD)
 
     def test_one_chat_running_two_shops_sees_both(self):
         second = Shop.objects.create(
@@ -995,7 +972,8 @@ class ListingSelectorTests(BotTestCase):
 
         self.assertEqual(len(shops), 2)
         self.assertCountEqual(
-            [p.pk for p in products], [self.stale_product.pk, other.pk]
+            [p.pk for p in products],
+            [self.stale_product.pk, self.fresh_product.pk, other.pk],
         )
 
 
@@ -1120,7 +1098,9 @@ class ProductCallbackTests(BotTestCase):
         before = self.stale_product.last_confirmed_at
 
         res = handle_product_callback(f"pback:{self.stale_product.pk}:0", CHAT_ID)
-        self.assertIsNotNone(res)
+        # Back in stock is only offered for a SOLD item, so on a live one it is a
+        # no-op (None), and nothing changes.
+        self.assertIsNone(res)
 
         self.stale_product.refresh_from_db()
         self.assertTrue(self.stale_product.is_available)
@@ -1165,17 +1145,18 @@ class MyProductsHandlerTests(BotTestCase):
             for i in range(count)
         ]
 
-    def test_listing_offers_a_button_per_product(self):
+    def test_listing_offers_buttons_per_product(self):
         update, message = self._message_update()
 
         async_to_sync(my_products)(update, None)
 
         markup = message.reply_text.call_args.kwargs["reply_markup"]
-        # One row per product, then the ☰ Menu row.
-        self.assertEqual(len(markup.inline_keyboard), 2)
-        confirm, deny = markup.inline_keyboard[0]
+        # Due row, fresh row, then the ☰ Menu row.
+        self.assertEqual(len(markup.inline_keyboard), 3)
+        confirm, deny, pause = markup.inline_keyboard[0]
         self.assertEqual(confirm.callback_data, f"pconfirm:{self.stale_product.pk}:0")
         self.assertEqual(deny.callback_data, f"pdeny:{self.stale_product.pk}:0")
+        self.assertEqual(pause.callback_data, f"ppause:{self.stale_product.pk}:0")
         self.assertEqual(markup.inline_keyboard[-1][0].callback_data, "menu:home")
 
     def test_an_unlinked_chat_is_told_how_to_link(self):
@@ -1185,7 +1166,7 @@ class MyProductsHandlerTests(BotTestCase):
 
         self.assertIn("/link", message.reply_text.call_args.args[0])
 
-    def test_an_up_to_date_shop_is_told_there_is_nothing_to_do(self):
+    def test_an_up_to_date_shop_still_lists_its_products(self):
         Product.objects.filter(pk=self.stale_product.pk).update(
             last_confirmed_at=timezone.now()
         )
@@ -1193,7 +1174,17 @@ class MyProductsHandlerTests(BotTestCase):
 
         async_to_sync(my_products)(update, None)
 
-        self.assertIn("Nothing needs confirming", message.reply_text.call_args.args[0])
+        self.assertIn("Your products", message.reply_text.call_args.args[0])
+
+    def test_a_shop_with_no_products_is_told_so(self):
+        Shop.objects.create(
+            name="Empty Shop", owner=self.user, telegram_chat_id="555000"
+        )
+        update, message = self._message_update(chat_id="555000")
+
+        async_to_sync(my_products)(update, None)
+
+        self.assertIn("no products yet", message.reply_text.call_args.args[0])
 
     def test_a_long_list_is_capped_and_paged(self):
         self._stale_extras(settings.MYPRODUCTS_PAGE_SIZE + 2)
@@ -1238,13 +1229,14 @@ class MyProductsHandlerTests(BotTestCase):
         self.fresh_product.refresh_from_db()
         self.assertEqual(self.fresh_product.last_confirmed_at, untouched_at)
 
-    def test_the_last_answer_clears_the_listing(self):
+    def test_answering_one_redraws_the_rest_of_the_list(self):
         update, query = self._callback_update(f"pconfirm:{self.stale_product.pk}:0")
 
         async_to_sync(on_callback)(update, None)
 
         query.answer.assert_awaited_with("Recorded")
-        self.assertIn("Nothing left", query.edit_message_text.call_args.args[0])
+        # The catalogue persists, so the listing is redrawn, not cleared.
+        self.assertIn("Your products", query.edit_message_text.call_args.args[0])
 
     def test_a_callback_from_another_chat_changes_nothing(self):
         before = self.stale_product.last_confirmed_at
@@ -1266,7 +1258,7 @@ class MyProductsHandlerTests(BotTestCase):
 
         self.assertIn("reply_markup", message.reply_text.call_args.kwargs)
 
-    def test_listing_shows_restock_button_for_unavailable_product(self):
+    def test_sold_product_offers_back_in_stock(self):
         Product.objects.filter(pk=self.stale_product.pk).update(
             is_available=False, status=ProductStatus.SOLD
         )
@@ -1274,16 +1266,29 @@ class MyProductsHandlerTests(BotTestCase):
 
         async_to_sync(my_products)(update, None)
 
-        text = message.reply_text.call_args.args[0]
-        self.assertIn("🔄 to put back in stock", text)
         markup = message.reply_text.call_args.kwargs["reply_markup"]
-        # Restock row, then the ☰ Menu row.
-        self.assertEqual(len(markup.inline_keyboard), 2)
-        row = markup.inline_keyboard[0]
-        self.assertEqual(len(row), 1)
-        button = row[0]
-        self.assertTrue(button.text.startswith("🔄"))
-        self.assertEqual(button.callback_data, f"pback:{self.stale_product.pk}:0")
+        back = next(
+            row[0]
+            for row in markup.inline_keyboard
+            if row[0].callback_data == f"pback:{self.stale_product.pk}:0"
+        )
+        self.assertTrue(back.text.startswith("🔄"))
+
+    def test_paused_product_offers_resume(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.LIVE
+        )
+        update, message = self._message_update()
+
+        async_to_sync(my_products)(update, None)
+
+        markup = message.reply_text.call_args.kwargs["reply_markup"]
+        resume = next(
+            row[0]
+            for row in markup.inline_keyboard
+            if row[0].callback_data == f"presume:{self.stale_product.pk}:0"
+        )
+        self.assertTrue(resume.text.startswith("▶️"))
 
     def test_restock_button_restocks_and_redraws_listing(self):
         Product.objects.filter(pk=self.stale_product.pk).update(
@@ -2186,11 +2191,12 @@ class KeyboardsTests(SimpleTestCase):
         self.assertEqual(len(rows), 3)
 
         product_row = rows[0]
-        self.assertEqual(len(product_row), 2)
+        self.assertEqual(len(product_row), 3)
         self.assertEqual(product_row[0].text, "✅ TechZone — Sony WH-1000XM5")
         self.assertEqual(product_row[0].callback_data, "pconfirm:10:0")
         self.assertEqual(product_row[1].text, "❌")
         self.assertEqual(product_row[1].callback_data, "pdeny:10:0")
+        self.assertEqual(product_row[2].callback_data, "ppause:10:0")
 
         nav_row = rows[1]
         self.assertEqual(len(nav_row), 1)
@@ -2531,3 +2537,68 @@ class SyncBotCommandsTests(SimpleTestCase):
                 call_command("sync_bot_commands", stdout=StringIO())
 
         set_commands.assert_called_once_with(messages.BOT_COMMANDS)
+
+
+class ProductPauseResumeTests(BotTestCase):
+    """L3: pause/resume from /myproducts, and their state guards."""
+
+    def test_pause_pauses_and_leaves_the_clock(self):
+        before = self.stale_product.last_confirmed_at
+
+        res = handle_product_callback(f"ppause:{self.stale_product.pk}:0", CHAT_ID)
+
+        self.assertIsNotNone(res)
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.stale_product.is_available)
+        self.assertEqual(self.stale_product.status, ProductStatus.LIVE)
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+
+    def test_pause_on_an_unavailable_product_is_noop(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+
+        self.assertIsNone(
+            handle_product_callback(f"ppause:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+    def test_resume_resumes_a_paused_product_and_leaves_the_clock(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(is_available=False)
+        self.stale_product.refresh_from_db()
+        before = self.stale_product.last_confirmed_at
+
+        res = handle_product_callback(f"presume:{self.stale_product.pk}:0", CHAT_ID)
+
+        self.assertIsNotNone(res)
+        self.stale_product.refresh_from_db()
+        self.assertTrue(self.stale_product.is_available)
+        self.assertEqual(self.stale_product.status, ProductStatus.LIVE)
+        self.assertEqual(self.stale_product.last_confirmed_at, before)
+
+    def test_resume_on_a_sold_product_is_noop(self):
+        Product.objects.filter(pk=self.stale_product.pk).update(
+            is_available=False, status=ProductStatus.SOLD
+        )
+
+        self.assertIsNone(
+            handle_product_callback(f"presume:{self.stale_product.pk}:0", CHAT_ID)
+        )
+
+    def test_pause_from_a_foreign_chat_is_rejected(self):
+        before = self.stale_product.is_available
+
+        self.assertIsNone(
+            handle_product_callback(f"ppause:{self.stale_product.pk}:0", OTHER_CHAT_ID)
+        )
+
+        self.stale_product.refresh_from_db()
+        self.assertEqual(self.stale_product.is_available, before)
+
+
+class ListingCallbackParsingTests(SimpleTestCase):
+    def test_listing_actions_round_trip(self):
+        for action in ("pconfirm", "pdeny", "pback", "ppause", "presume"):
+            data = parsing.format_listing_callback(action, 7, 2)
+            self.assertEqual(data, f"{action}:7:2")
+            self.assertEqual(parsing.parse_listing_callback(data), (action, 7, 2))
+
+    def test_unknown_action_is_rejected(self):
+        self.assertIsNone(parsing.parse_listing_callback("pfrobnicate:7:0"))
