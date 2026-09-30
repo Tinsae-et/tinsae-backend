@@ -109,11 +109,16 @@ def apply_confirmation(
         product.last_confirmed_at = timezone.now()
         product.confirmation_status = ConfirmationStatus.FRESH
         product.is_available = confirmed
+        # Status follows the answer: an answer of "available" is LIVE, "sold out"
+        # is SOLD. A draft is not published by being answered, so it keeps DRAFT.
+        if product.status != ProductStatus.DRAFT:
+            product.status = ProductStatus.LIVE if confirmed else ProductStatus.SOLD
         product.save(
             update_fields=[
                 "last_confirmed_at",
                 "confirmation_status",
                 "is_available",
+                "status",
                 "updated_at",
             ]
         )
@@ -189,7 +194,10 @@ def pause_listing(product: Product) -> None:
     So the clock is left exactly where it was, and a paused listing keeps ageing.
     """
     product.is_available = False
-    product.save(update_fields=["is_available", "updated_at"])
+    # Paused is "live but hidden": distinguishable from SOLD, which is an answer.
+    if product.status != ProductStatus.DRAFT:
+        product.status = ProductStatus.LIVE
+    product.save(update_fields=["is_available", "status", "updated_at"])
 
 
 def resume_listing(product: Product) -> None:
@@ -208,7 +216,9 @@ def resume_listing(product: Product) -> None:
     act -- which is the property that makes the confirmation clock mean anything.
     """
     product.is_available = True
-    product.save(update_fields=["is_available", "updated_at"])
+    if product.status != ProductStatus.DRAFT:
+        product.status = ProductStatus.LIVE
+    product.save(update_fields=["is_available", "status", "updated_at"])
 
 
 # Provisional, and deliberately small. Every entry here is a guess about what

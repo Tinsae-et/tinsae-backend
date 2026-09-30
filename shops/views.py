@@ -155,10 +155,7 @@ class ShopProductViewSet(viewsets.ModelViewSet):
         if status_param == "live":
             qs = qs.filter(status=ProductStatus.LIVE, is_available=True)
         elif status_param == "sold":
-            qs = qs.filter(
-                Q(status=ProductStatus.SOLD)
-                | (Q(is_available=False) & ~Q(status=ProductStatus.DRAFT))
-            )
+            qs = qs.filter(status=ProductStatus.SOLD)
         elif status_param == "draft":
             qs = qs.filter(status=ProductStatus.DRAFT)
         elif status_param == "paused":

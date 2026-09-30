@@ -19,7 +19,9 @@ from catalog.services import (
     apply_confirmation,
     mark_back_in_stock,
     mark_sold,
+    pause_listing,
     resolve_request,
+    resume_listing,
 )
 from shops.models import Shop
 
@@ -320,3 +322,97 @@ class AnswerConfirmationRequestTests(TestCase):
         self.assertEqual(self.product.confirmation_status, ConfirmationStatus.FRESH)
         self.assertTrue(self.product.is_available)
         self.assertGreater(self.product.last_confirmed_at, before_confirmed_at)
+
+
+class ProductStatusAlignmentTests(TestCase):
+    """L1: `status` follows the merchant's action, and paused != sold."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="statusmerchant", password="pw123456"
+        )
+        self.shop = Shop.objects.create(name="Status Shop", owner=self.user)
+        self.category = Category.objects.create(name="Devices", slug="devices")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Brand",
+            name="Device",
+            price="1000.00",
+            is_available=True,
+            status=ProductStatus.LIVE,
+            last_confirmed_at=timezone.now() - timedelta(days=40),
+            confirmation_status=ConfirmationStatus.STALE,
+        )
+
+    def test_mark_sold_sets_status_sold(self):
+        mark_sold(self.product)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.SOLD)
+        self.assertFalse(self.product.is_available)
+        # Sold is an answer, so the clock restarts.
+        self.assertGreater(
+            self.product.last_confirmed_at, timezone.now() - timedelta(minutes=1)
+        )
+
+    def test_confirm_sets_status_live(self):
+        Product.objects.filter(pk=self.product.pk).update(status=ProductStatus.SOLD)
+        self.product.refresh_from_db()
+
+        apply_confirmation(self.product, confirmed=True)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.LIVE)
+        self.assertTrue(self.product.is_available)
+
+    def test_back_in_stock_sets_status_live_and_resets_clock(self):
+        Product.objects.filter(pk=self.product.pk).update(status=ProductStatus.SOLD)
+        self.product.refresh_from_db()
+
+        mark_back_in_stock(self.product)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.LIVE)
+        self.assertTrue(self.product.is_available)
+
+    def test_pause_is_live_unavailable_and_leaves_the_clock(self):
+        before = self.product.last_confirmed_at
+
+        pause_listing(self.product)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.LIVE)
+        self.assertFalse(self.product.is_available)
+        self.assertEqual(self.product.last_confirmed_at, before)
+
+    def test_resume_is_live_available_and_leaves_the_clock(self):
+        pause_listing(self.product)
+        before = self.product.last_confirmed_at
+
+        resume_listing(self.product)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.LIVE)
+        self.assertTrue(self.product.is_available)
+        self.assertEqual(self.product.last_confirmed_at, before)
+
+    def test_pause_resume_round_trip_does_not_launder_freshness(self):
+        """The clock must survive a pause/unpause untouched."""
+        before = self.product.last_confirmed_at
+
+        pause_listing(self.product)
+        resume_listing(self.product)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.last_confirmed_at, before)
+        self.assertEqual(self.product.confirmation_status, ConfirmationStatus.STALE)
+
+    def test_a_draft_is_not_published_by_an_answer(self):
+        Product.objects.filter(pk=self.product.pk).update(status=ProductStatus.DRAFT)
+        self.product.refresh_from_db()
+
+        apply_confirmation(self.product, confirmed=True)
+
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.status, ProductStatus.DRAFT)

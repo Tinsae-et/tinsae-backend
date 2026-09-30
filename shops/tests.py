@@ -9,7 +9,13 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from catalog.freshness import Freshness
-from catalog.models import Category, ConfirmationStatus, Product, ProductCondition
+from catalog.models import (
+    Category,
+    ConfirmationStatus,
+    Product,
+    ProductCondition,
+    ProductStatus,
+)
 from core.slugs import available_slug
 from users.models import User
 
@@ -1190,3 +1196,57 @@ class ShopDirectoryApiTest(TestCase):
         res = self.client.get(f"/api/v1/catalog/products/{self.p1.slug}/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["shop_slug"], self.verified_shop.slug)
+
+
+class ProductStatusFilterTests(TestCase):
+    """L1: the ?status= filter distinguishes live / paused / sold / draft."""
+
+    def setUp(self):
+        self.owner = User.objects.create_user(username="statusfilter", password="pass")
+        self.shop = Shop.objects.create(name="Filter Shop", owner=self.owner)
+        self.category = Category.objects.create(name="Cat", slug="cat")
+        self.client = APIClient()
+        self.client.force_authenticate(self.owner)
+
+        self.live = self._make(ProductStatus.LIVE, True, "Live Item")
+        self.paused = self._make(ProductStatus.LIVE, False, "Paused Item")
+        self.sold = self._make(ProductStatus.SOLD, False, "Sold Item")
+        self.draft = self._make(ProductStatus.DRAFT, False, "Draft Item")
+
+    def _make(self, status, is_available, name):
+        product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="B",
+            name=name,
+            price="1.00",
+        )
+        # Bypass save()'s status/is_available coupling to plant an exact state.
+        Product.objects.filter(pk=product.pk).update(
+            status=status, is_available=is_available
+        )
+        return product
+
+    def _url(self):
+        return f"/api/v1/shops/{self.shop.slug}/products/"
+
+    def _names(self, **params):
+        response = self.client.get(self._url(), params)
+        self.assertEqual(response.status_code, 200)
+        return {row["name"] for row in response.data["results"]}
+
+    def test_sold_includes_only_sold(self):
+        names = self._names(status="sold")
+        self.assertEqual(names, {"Sold Item"})
+
+    def test_paused_is_live_unavailable_only(self):
+        names = self._names(status="paused")
+        self.assertEqual(names, {"Paused Item"})
+
+    def test_live_is_available_only(self):
+        names = self._names(status="live")
+        self.assertEqual(names, {"Live Item"})
+
+    def test_draft_is_draft_only(self):
+        names = self._names(status="draft")
+        self.assertEqual(names, {"Draft Item"})
