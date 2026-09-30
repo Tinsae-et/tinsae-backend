@@ -343,5 +343,3 @@ def reminder(shop_name: str, count: int = 0) -> str:
 
 
 digest_reminder = reminder
-
-

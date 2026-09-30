@@ -453,7 +453,7 @@ class SweepTests(BotTestCase):
         product step 1 just marked and would set it to STALE on the very same
         run -- losing the one piece of evidence the timeout produced.
         """
-        old = ConfirmationRequest.objects.create(
+        ConfirmationRequest.objects.create(
             product=self.stale_product,
             shop=self.shop,
             status="pending",
@@ -583,7 +583,6 @@ class SweepTests(BotTestCase):
         self.assertIn("Prompts sent: 0", out.getvalue())
         old.refresh_from_db()
         self.assertEqual(old.status, "pending")
-
 
 
 class DashboardAnswersCloseOutstandingPrompts(BotTestCase):

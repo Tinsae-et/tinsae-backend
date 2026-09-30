@@ -87,9 +87,7 @@ def send_due_digests() -> int:
                 try:
                     with transaction.atomic():
                         base_time = (
-                            product.last_confirmed_at
-                            or product.created_at
-                            or now
+                            product.last_confirmed_at or product.created_at or now
                         )
                         expires_at = base_time + timedelta(
                             days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS

@@ -123,7 +123,6 @@ def parse_sold_indices(
     return None, []
 
 
-
 # --- Callback family 1: Prompt confirm/deny (confirm_<pk> / deny_<pk>) ---
 
 
@@ -303,4 +302,3 @@ def parse_numeric_selection_callback(
         if raw_indices and all(idx.isdigit() for idx in raw_indices):
             return int(parts[1]), parts[2], [int(idx) for idx in raw_indices]
     return None
-

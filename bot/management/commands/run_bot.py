@@ -270,9 +270,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if numeric_sel is not None:
         digest_id, action, indices = numeric_sel
         available = action == "a"
-        result = await sync_to_async(
-            answer_digest_selection, thread_sensitive=True
-        )(
+        result = await sync_to_async(answer_digest_selection, thread_sensitive=True)(
             chat_id=str(chat_id),
             digest_id=digest_id,
             available=available,

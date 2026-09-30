@@ -155,9 +155,7 @@ def review_markup(request_id: int) -> InlineKeyboardMarkup:
     )
 
 
-def digest_ambiguous_markup(
-    digest_id: int, indices: list[int]
-) -> InlineKeyboardMarkup:
+def digest_ambiguous_markup(digest_id: int, indices: list[int]) -> InlineKeyboardMarkup:
     """Build inline keyboard markup for ambiguous numeric reply."""
     return InlineKeyboardMarkup(
         [
@@ -177,4 +175,3 @@ def digest_ambiguous_markup(
             ]
         ]
     )
-

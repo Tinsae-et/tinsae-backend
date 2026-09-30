@@ -6,16 +6,16 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('bot', '0008_confirmationdigest_confirmationrequest_digest_and_more'),
+        ("bot", "0008_confirmationdigest_confirmationrequest_digest_and_more"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='confirmationrequest',
-            name='expires_at',
+            model_name="confirmationrequest",
+            name="expires_at",
             field=models.DateTimeField(
                 blank=True,
-                help_text='The instant a pending request stops being actionable.',
+                help_text="The instant a pending request stops being actionable.",
                 null=True,
             ),
         ),
