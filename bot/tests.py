@@ -380,7 +380,7 @@ class CallbackTests(BotTestCase):
 
 
 class SweepTests(BotTestCase):
-    def test_sweep_marks_stale_and_prompts_once(self):
+    def test_sweep_marks_stale_and_prompts_zero(self):
         out = StringIO()
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 1}
@@ -390,7 +390,7 @@ class SweepTests(BotTestCase):
 
         self.assertIn("[Freshness Sweep Complete]", output)
         self.assertIn("Stale products: 2", output)
-        self.assertIn("Prompts sent: 1", output)
+        self.assertIn("Prompts sent: 0", output)
 
         self.fresh_product.refresh_from_db()
         self.stale_product.refresh_from_db()
@@ -406,7 +406,7 @@ class SweepTests(BotTestCase):
             call_command("sweep_freshness", stdout=StringIO())
         new_product.refresh_from_db()
         self.assertEqual(new_product.confirmation_status, "stale")
-        self.assertTrue(
+        self.assertFalse(
             ConfirmationRequest.objects.filter(product=new_product).exists()
         )
 
@@ -419,15 +419,15 @@ class SweepTests(BotTestCase):
             call_command("sweep_freshness", stdout=out)
         self.assertIn("Prompts sent: 0", out.getvalue())
         self.assertEqual(
-            ConfirmationRequest.objects.filter(product=self.stale_product).count(), 1
+            ConfirmationRequest.objects.filter(product=self.stale_product).count(), 0
         )
 
     def test_expires_old_pending_requests(self):
         old = ConfirmationRequest.objects.create(
-            product=self.stale_product, shop=self.shop, status="pending"
-        )
-        ConfirmationRequest.objects.filter(pk=old.pk).update(
-            created_at=timezone.now() - timedelta(hours=50)
+            product=self.stale_product,
+            shop=self.shop,
+            status="pending",
+            expires_at=timezone.now() - timedelta(hours=1),
         )
         out = StringIO()
         with mock.patch(
@@ -454,10 +454,10 @@ class SweepTests(BotTestCase):
         run -- losing the one piece of evidence the timeout produced.
         """
         old = ConfirmationRequest.objects.create(
-            product=self.stale_product, shop=self.shop, status="pending"
-        )
-        ConfirmationRequest.objects.filter(pk=old.pk).update(
-            created_at=timezone.now() - timedelta(hours=50)
+            product=self.stale_product,
+            shop=self.shop,
+            status="pending",
+            expires_at=timezone.now() - timedelta(hours=1),
         )
         with mock.patch(
             "bot.telegram_api.send_message", return_value={"message_id": 1}
@@ -484,8 +484,8 @@ class SweepTests(BotTestCase):
             self.stale_product.confirmation_status, ConfirmationStatus.FRESH
         )
 
-    def test_an_unconfirmed_product_is_still_prompted(self):
-        """Going silent must not remove a merchant from the loop for good."""
+    def test_an_unconfirmed_product_is_not_prompted_by_sweep(self):
+        """The weekly digest asks; sweep only reconciles and sends zero prompts."""
         Product.objects.filter(pk=self.stale_product.pk).update(
             confirmation_status=ConfirmationStatus.UNCONFIRMED
         )
@@ -495,7 +495,11 @@ class SweepTests(BotTestCase):
         ):
             call_command("sweep_freshness", stdout=out)
 
-        self.assertIn("Prompts sent: 1", out.getvalue())
+        self.assertIn("Prompts sent: 0", out.getvalue())
+        self.stale_product.refresh_from_db()
+        self.assertEqual(
+            self.stale_product.confirmation_status, ConfirmationStatus.UNCONFIRMED
+        )
 
     def test_sweep_restores_a_product_that_is_no_longer_stale(self):
         """The reconcile runs both ways, so a threshold change self-corrects."""
@@ -560,23 +564,26 @@ class SweepTests(BotTestCase):
 
     @override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=False)
     def test_dry_run_reports_no_prompts_when_sending_is_disabled(self):
-        """The dry run must apply the same policy gate as the real send path."""
+        """The dry run must report zero prompts."""
         out = StringIO()
         call_command("sweep_freshness", "--dry-run", stdout=out)
         self.assertIn("Prompts sent: 0", out.getvalue())
 
-    def test_dry_run_counts_a_prompt_the_expiry_pass_would_unblock(self):
-        """A real run expires first, so a doomed pending row must not mask it."""
+    def test_dry_run_counts_an_expiry(self):
+        """A dry run reports expired requests without mutating."""
         old = ConfirmationRequest.objects.create(
-            product=self.stale_product, shop=self.shop, status="pending"
-        )
-        ConfirmationRequest.objects.filter(pk=old.pk).update(
-            created_at=timezone.now() - timedelta(hours=50)
+            product=self.stale_product,
+            shop=self.shop,
+            status="pending",
+            expires_at=timezone.now() - timedelta(hours=1),
         )
         out = StringIO()
         call_command("sweep_freshness", "--dry-run", stdout=out)
         self.assertIn("Expired requests: 1", out.getvalue())
-        self.assertIn("Prompts sent: 1", out.getvalue())
+        self.assertIn("Prompts sent: 0", out.getvalue())
+        old.refresh_from_db()
+        self.assertEqual(old.status, "pending")
+
 
 
 class DashboardAnswersCloseOutstandingPrompts(BotTestCase):

@@ -13,7 +13,7 @@ from django.utils import timezone
 from catalog.models import Product
 from shops.models import Shop
 
-from .models import ConfirmationDigest, ConfirmationRequest
+from .models import ConfirmationDigest, ConfirmationRequest, OutboundMessage
 
 
 def shops_for_chat(chat_id) -> list[Shop]:
@@ -123,7 +123,8 @@ def resolve_digest_for_chat(
         return None
 
     if reply_to_message_id is not None:
-        return (
+        # The digest's own message id is the primary match.
+        digest = (
             ConfirmationDigest.objects.filter(
                 shop__in=shops,
                 telegram_message_id=str(reply_to_message_id),
@@ -131,6 +132,28 @@ def resolve_digest_for_chat(
             .select_related("shop")
             .first()
         )
+        if digest is not None:
+            return digest
+
+        # A reminder (or any resend) is a separate OutboundMessage carrying the
+        # same digest_id; resolve it too so replying to the latest message works.
+        sent = (
+            OutboundMessage.objects.filter(
+                telegram_message_id=str(reply_to_message_id),
+                payload__has_key="digest_id",
+            )
+            .only("payload")
+            .first()
+        )
+        if sent is not None:
+            digest_id = sent.payload.get("digest_id")
+            if digest_id:
+                return (
+                    ConfirmationDigest.objects.filter(pk=digest_id, shop__in=shops)
+                    .select_related("shop")
+                    .first()
+                )
+        return None
 
     open_digests = list(
         ConfirmationDigest.objects.filter(
@@ -141,4 +164,3 @@ def resolve_digest_for_chat(
     if len(open_digests) == 1:
         return open_digests[0]
     return None
-

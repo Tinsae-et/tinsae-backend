@@ -173,8 +173,10 @@ def drain_outbox(*, batch_size: int = BATCH_SIZE, rate_limit: bool = True) -> in
                     )
                 digest_id = message.payload.get("digest_id")
                 if digest_id:
+                    # Only the digest's own message id is authoritative; a
+                    # reminder carries the same digest_id and must not overwrite it.
                     ConfirmationDigest.objects.filter(
-                        pk=digest_id
+                        pk=digest_id, telegram_message_id__isnull=True
                     ).update(
                         telegram_message_id=str(msg_id),
                         updated_at=timezone.now(),

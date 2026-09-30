@@ -28,3 +28,20 @@ def send_due_digests() -> int:
     from .digest import send_due_digests as run_send_due_digests
 
     return run_send_due_digests()
+
+
+@shared_task(name="bot.tasks.sweep")
+def sweep() -> dict:
+    """Run hourly freshness reconciliation and expiry sweep."""
+    from .services import sweep as run_sweep
+
+    return run_sweep()
+
+
+@shared_task(name="bot.tasks.send_reminders")
+def send_reminders() -> int:
+    """Send reminders for unanswered open weekly digests."""
+    from .services import send_reminders as run_send_reminders
+
+    return run_send_reminders()
+

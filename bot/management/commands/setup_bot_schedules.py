@@ -55,3 +55,54 @@ class Command(BaseCommand):
                 f"{digest_action} PeriodicTask '{digest_task.name}' -> {digest_task.task} (08:00 {tz}, enabled={digest_task.enabled})"
             )
         )
+
+        # Hourly freshness reconciliation and expiry sweep: every hour at minute 0
+        sweep_crontab, _ = CrontabSchedule.objects.get_or_create(
+            minute="0",
+            hour="*",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone=tz,
+        )
+        sweep_task, sweep_created = PeriodicTask.objects.update_or_create(
+            name="bot-sweep",
+            defaults={
+                "task": "bot.tasks.sweep",
+                "crontab": sweep_crontab,
+                "interval": None,
+                "enabled": True,
+            },
+        )
+        sweep_action = "Created" if sweep_created else "Updated"
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{sweep_action} PeriodicTask '{sweep_task.name}' -> {sweep_task.task} (hourly at :00 {tz}, enabled={sweep_task.enabled})"
+            )
+        )
+
+        # Daily reminder for unanswered open digests: daily at 13:00 Africa/Addis_Ababa
+        reminder_crontab, _ = CrontabSchedule.objects.get_or_create(
+            minute="0",
+            hour="13",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone=tz,
+        )
+        reminder_task, reminder_created = PeriodicTask.objects.update_or_create(
+            name="bot-send-reminders",
+            defaults={
+                "task": "bot.tasks.send_reminders",
+                "crontab": reminder_crontab,
+                "interval": None,
+                "enabled": True,
+            },
+        )
+        reminder_action = "Created" if reminder_created else "Updated"
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{reminder_action} PeriodicTask '{reminder_task.name}' -> {reminder_task.task} (13:00 {tz}, enabled={reminder_task.enabled})"
+            )
+        )
+

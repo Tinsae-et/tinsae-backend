@@ -160,6 +160,11 @@ class ConfirmationRequest(BaseModel):
             "expiry is the absence of an answer, not an answer."
         ),
     )
+    expires_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="The instant a pending request stops being actionable.",
+    )
     channel = models.CharField(max_length=20, default="telegram")
     telegram_message_id = models.CharField(
         max_length=100,

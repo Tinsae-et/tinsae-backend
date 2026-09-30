@@ -1,15 +1,17 @@
+from datetime import timedelta
 import logging
 import re
+
 
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from catalog.models import Product
+from catalog.models import ConfirmationStatus, Product
 from catalog.services import answer_confirmation_request, apply_confirmation
 from shops.models import Shop
 
-from . import messages, outbox
+from . import keyboards, messages, outbox
 from . import telegram_api as telegram
 from .keyboards import prompt_markup
 from .models import (
@@ -137,8 +139,17 @@ def send_confirmation_prompt(
     # the real guard; this catches losing that race.
     try:
         with transaction.atomic():
+            base_time = (
+                product.last_confirmed_at or product.created_at or timezone.now()
+            )
+            expires_at = base_time + timedelta(
+                days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS
+            )
             confirmation_request = ConfirmationRequest.objects.create(
-                product=product, shop=shop, status="pending"
+                product=product,
+                shop=shop,
+                status="pending",
+                expires_at=expires_at,
             )
             outbox.enqueue(
                 chat_id=shop.telegram_chat_id,
@@ -1048,4 +1059,185 @@ def handle_digest_text(
         return ("ambiguous", digest.pk, valid_indices)
 
     return ("unparsed", digest.pk)
+
+
+def sweep(*, interval_days: int | None = None, dry_run: bool = False) -> dict:
+    """Run confirmation request expiry and confirmation_status reconciliation.
+
+    1. Expire past-deadline pending requests (expires_at <= now):
+       - status = "expired" (responded_at stays NULL)
+       - product confirmation_status = UNCONFIRMED
+       - related digests closed_at = now
+    2. Reconcile Product.confirmation_status in both directions on interval_days
+       (defaults to settings.CONFIRMATION_INTERVAL_DAYS). Does NOT prompt.
+
+    Returns a summary dict of changes.
+    """
+    now = timezone.now()
+    if interval_days is None:
+        interval_days = getattr(settings, "CONFIRMATION_INTERVAL_DAYS", 7)
+
+    # 1. Expire pending requests whose deadline has passed
+    expired_qs = ConfirmationRequest.objects.filter(
+        status="pending", expires_at__lte=now
+    )
+    expired_pks = list(expired_qs.values_list("pk", flat=True))
+    unanswered_product_pks = list(
+        expired_qs.values_list("product_id", flat=True).distinct()
+    )
+    digest_pks = list(
+        expired_qs.filter(digest__isnull=False)
+        .values_list("digest_id", flat=True)
+        .distinct()
+    )
+    expired_count = len(expired_pks)
+
+    # A digest is closed only if ALL its requests are non-pending (none pending remaining).
+    digests_with_pending_remaining = set(
+        ConfirmationRequest.objects.filter(
+            digest_id__in=digest_pks,
+            status="pending",
+        )
+        .exclude(pk__in=expired_pks)
+        .values_list("digest_id", flat=True)
+    )
+    digests_to_close_pks = [
+        dpk for dpk in digest_pks if dpk not in digests_with_pending_remaining
+    ]
+
+    if not dry_run:
+        with transaction.atomic():
+            expired_qs.update(status="expired", updated_at=now)
+            if unanswered_product_pks:
+                Product.objects.filter(pk__in=unanswered_product_pks).update(
+                    confirmation_status=ConfirmationStatus.UNCONFIRMED,
+                    updated_at=now,
+                )
+            if digests_to_close_pks:
+                ConfirmationDigest.objects.filter(
+                    pk__in=digests_to_close_pks, closed_at__isnull=True
+                ).update(closed_at=now, updated_at=now)
+
+    # 2. Reconcile confirmation_status both directions
+    staleness_cutoff = now - timedelta(days=interval_days)
+    stale_products = list(
+        Product.objects.needing_confirmation(staleness_cutoff).select_related("shop")
+    )
+    held_back = (ConfirmationStatus.STALE, ConfirmationStatus.UNCONFIRMED)
+    newly_stale_pks = [
+        p.pk for p in stale_products if p.confirmation_status not in held_back
+    ]
+    went_fresh_pks = list(
+        Product.objects.confirmed_since(staleness_cutoff)
+        .exclude(confirmation_status=ConfirmationStatus.FRESH)
+        .values_list("pk", flat=True)
+    )
+
+    if not dry_run:
+        with transaction.atomic():
+            if newly_stale_pks:
+                Product.objects.filter(pk__in=newly_stale_pks).update(
+                    confirmation_status=ConfirmationStatus.STALE,
+                    updated_at=now,
+                )
+            if went_fresh_pks:
+                Product.objects.filter(pk__in=went_fresh_pks).update(
+                    confirmation_status=ConfirmationStatus.FRESH,
+                    updated_at=now,
+                )
+
+    summary = {
+        "expired_requests": expired_count,
+        "unconfirmed_products": len(unanswered_product_pks),
+        "closed_digests": len(digests_to_close_pks),
+        "stale_products": len(stale_products),
+        "newly_stale": len(newly_stale_pks),
+        "restored_fresh": len(went_fresh_pks),
+        "interval_days": interval_days,
+        "prompts_sent": 0,
+        "dry_run": dry_run,
+    }
+    logger.info(
+        "Freshness sweep complete: %d expired requests, %d unconfirmed products, "
+        "%d newly stale, %d restored to fresh (interval=%dd).",
+        expired_count,
+        len(unanswered_product_pks),
+        len(newly_stale_pks),
+        len(went_fresh_pks),
+        interval_days,
+    )
+    return summary
+
+
+def send_reminders() -> int:
+    """Send reminder messages for unanswered open digests in the current period.
+
+    For each OPEN digest (closed_at is null) with reminded_at is null where:
+      - the shop is linked and unblocked
+      - the digest was issued within the current period: 0 <= (today - digest.for_date).days < CONFIRMATION_INTERVAL_DAYS
+      - every request is still pending (nothing answered, requests exist)
+    Enqueues ONE reminder OutboundMessage (kind="reminder", dedupe_key=f"reminder:{digest.pk}:{digest.for_date}",
+    with the same items + digest buttons) and sets reminded_at=now.
+
+    Returns the number of reminders enqueued.
+    """
+    now = timezone.now()
+    today = timezone.localtime(now).date()
+    interval_days = getattr(settings, "CONFIRMATION_INTERVAL_DAYS", 7)
+
+    reminders_sent = 0
+    candidate_digests = (
+        ConfirmationDigest.objects.filter(
+            closed_at__isnull=True,
+            reminded_at__isnull=True,
+        )
+        .select_related("shop")
+        .order_by("pk")
+    )
+
+    for digest in candidate_digests:
+        shop = digest.shop
+        if not shop.telegram_chat_id or shop.blocked_at is not None:
+            continue
+
+        # Check that the digest is within the current period
+        age_days = (today - digest.for_date).days
+        if not (0 <= age_days < interval_days):
+            continue
+
+        # Check that every request in this digest is still pending
+        requests = list(digest.requests.select_related("product").order_by("pk"))
+        if not requests:
+            continue
+        if any(r.status != "pending" for r in requests):
+            continue
+
+        text = messages.reminder(shop.name, len(requests))
+        markup = keyboards.digest_markup(digest.pk)
+        payload_markup = markup.to_dict() if hasattr(markup, "to_dict") else markup
+
+        with transaction.atomic():
+            outbox.enqueue(
+                chat_id=shop.telegram_chat_id,
+                kind="reminder",
+                payload={
+                    "text": text,
+                    "reply_markup": payload_markup,
+                    "digest_id": digest.pk,
+                },
+                dedupe_key=f"reminder:{digest.pk}:{digest.for_date}",
+            )
+            digest.reminded_at = now
+            digest.save(update_fields=["reminded_at", "updated_at"])
+
+        reminders_sent += 1
+        logger.info(
+            "Enqueued reminder for digest %s (shop %s, for_date=%s).",
+            digest.pk,
+            shop.pk,
+            digest.for_date,
+        )
+
+    return reminders_sent
+
 

@@ -323,3 +323,25 @@ def digest_unparsed() -> str:
         '"sold 2 5" to mark specific items sold, or tap a button below.'
     )
 
+
+def reminder(shop_name: str, count: int = 0) -> str:
+    """Friendly nudge pointing back to the open digest."""
+    if count == 1:
+        return (
+            f"Friendly reminder for {shop_name}: 1 product is still waiting for "
+            "your confirmation. Tap below or reply 'all' if everything is available."
+        )
+    if count > 1:
+        return (
+            f"Friendly reminder for {shop_name}: {count} products are still waiting for "
+            "your confirmation. Tap below or reply 'all' if everything is available."
+        )
+    return (
+        f"Friendly reminder for {shop_name}: you have products waiting for "
+        "your confirmation. Tap below or reply 'all' if everything is available."
+    )
+
+
+digest_reminder = reminder
+
+

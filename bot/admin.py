@@ -37,10 +37,11 @@ class ConfirmationRequestAdmin(admin.ModelAdmin):
         "digest",
         "status",
         "channel",
+        "expires_at",
         "created_at",
         "responded_at",
     ]
-    list_filter = ["status", "shop", "channel", "created_at"]
+    list_filter = ["status", "shop", "channel", "created_at", "expires_at"]
     search_fields = ["product__name", "shop__name", "telegram_message_id"]
     raw_id_fields = ["product", "shop", "digest"]
     readonly_fields = ["created_at", "updated_at", "responded_at"]

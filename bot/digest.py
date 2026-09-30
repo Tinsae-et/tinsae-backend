@@ -86,11 +86,20 @@ def send_due_digests() -> int:
             for product in due:
                 try:
                     with transaction.atomic():
+                        base_time = (
+                            product.last_confirmed_at
+                            or product.created_at
+                            or now
+                        )
+                        expires_at = base_time + timedelta(
+                            days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS
+                        )
                         ConfirmationRequest.objects.create(
                             product=product,
                             shop=shop,
                             digest=digest,
                             status="pending",
+                            expires_at=expires_at,
                         )
                 except IntegrityError:
                     continue

@@ -25,6 +25,9 @@ from bot.services import (
     answer_confirmation_digest,
     answer_digest_selection,
     handle_digest_text,
+    send_confirmation_prompt,
+    send_reminders,
+    sweep,
 )
 from catalog.models import Category, ConfirmationStatus, Product
 from shops.models import Shop
@@ -732,4 +735,432 @@ class DigestRunBotTests(TestCase):
         self.assertEqual(self.r1.status, "sold_out")
         self.digest.refresh_from_db()
         self.assertIsNone(self.digest.closed_at)
+
+
+class ConfirmationRequestExpiresAtTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_exp", password="pw")
+        self.shop = Shop.objects.create(
+            name="Expiry Shop",
+            owner=self.user,
+            telegram_chat_id="111222",
+        )
+        self.category = Category.objects.create(name="Phones", slug="phones")
+        self.now = timezone.now()
+
+    def test_expires_at_set_on_creation_via_send_due_digests(self):
+        p = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Phone 1",
+            brand="Samsung",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+        )
+        count = digest.send_due_digests()
+        self.assertEqual(count, 1)
+        req = ConfirmationRequest.objects.get(product=p)
+        expected_expiry = p.last_confirmed_at + timedelta(
+            days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS
+        )
+        self.assertEqual(req.expires_at, expected_expiry)
+
+    def test_expires_at_set_on_creation_via_send_confirmation_prompt(self):
+        p = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Phone 2",
+            brand="Apple",
+            price=800.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=8),
+        )
+        req = send_confirmation_prompt(p, force=True)
+        self.assertIsNotNone(req)
+        expected_expiry = p.last_confirmed_at + timedelta(
+            days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS
+        )
+        self.assertEqual(req.expires_at, expected_expiry)
+
+    def test_expires_at_falls_back_to_created_at_if_never_confirmed(self):
+        p = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Phone 3",
+            brand="Google",
+            price=700.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=None,
+        )
+        req = send_confirmation_prompt(p, force=True)
+        self.assertIsNotNone(req)
+        expected_expiry = p.created_at + timedelta(
+            days=settings.CONFIRMATION_HIDDEN_AFTER_DAYS
+        )
+        self.assertEqual(req.expires_at, expected_expiry)
+
+
+class SweepServicesTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_swp", password="pw")
+        self.shop = Shop.objects.create(
+            name="Sweep Shop",
+            owner=self.user,
+            telegram_chat_id="333444",
+        )
+        self.category = Category.objects.create(name="Tech", slug="tech")
+        self.now = timezone.now()
+
+    def test_sweep_expires_past_deadline_and_leaves_future_alone(self):
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 1",
+            brand="BrandA",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=15),
+            confirmation_status=ConfirmationStatus.STALE,
+        )
+        p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 2",
+            brand="BrandB",
+            price=200.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=8),
+            confirmation_status=ConfirmationStatus.STALE,
+        )
+        dig = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=timezone.localtime(self.now).date(),
+        )
+        req_expired = ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=dig,
+            status="pending",
+            expires_at=self.now - timedelta(hours=1),
+        )
+        req_future = ConfirmationRequest.objects.create(
+            product=p2,
+            shop=self.shop,
+            digest=dig,
+            status="pending",
+            expires_at=self.now + timedelta(days=5),
+        )
+
+        summary = sweep()
+        self.assertEqual(summary["expired_requests"], 1)
+        self.assertEqual(summary["prompts_sent"], 0)
+        self.assertEqual(summary["closed_digests"], 0)
+
+        req_expired.refresh_from_db()
+        self.assertEqual(req_expired.status, "expired")
+        self.assertIsNone(req_expired.responded_at)
+
+        req_future.refresh_from_db()
+        self.assertEqual(req_future.status, "pending")
+
+        p1.refresh_from_db()
+        self.assertEqual(p1.confirmation_status, ConfirmationStatus.UNCONFIRMED)
+
+        dig.refresh_from_db()
+        self.assertIsNone(dig.closed_at)
+
+    def test_sweep_closes_digest_when_all_requests_non_pending(self):
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 3",
+            brand="BrandC",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=15),
+        )
+        dig = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=timezone.localtime(self.now).date(),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=dig,
+            status="pending",
+            expires_at=self.now - timedelta(hours=1),
+        )
+        summary = sweep()
+        self.assertEqual(summary["expired_requests"], 1)
+        self.assertEqual(summary["closed_digests"], 1)
+
+        dig.refresh_from_db()
+        self.assertIsNotNone(dig.closed_at)
+
+    def test_sweep_reconciles_status_both_directions(self):
+        # Product 1: 8 days old, currently FRESH -> should become STALE
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 4",
+            brand="BrandD",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=8),
+            confirmation_status=ConfirmationStatus.FRESH,
+        )
+        # Product 2: 2 days old, currently STALE -> should become FRESH
+        p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 5",
+            brand="BrandE",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=2),
+            confirmation_status=ConfirmationStatus.STALE,
+        )
+        # Product 3: 2 days old, currently UNCONFIRMED -> should become FRESH
+        p3 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 6",
+            brand="BrandF",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=2),
+            confirmation_status=ConfirmationStatus.UNCONFIRMED,
+        )
+
+        summary = sweep()
+        self.assertEqual(summary["newly_stale"], 1)
+        self.assertEqual(summary["restored_fresh"], 2)
+
+        p1.refresh_from_db()
+        p2.refresh_from_db()
+        p3.refresh_from_db()
+        self.assertEqual(p1.confirmation_status, ConfirmationStatus.STALE)
+        self.assertEqual(p2.confirmation_status, ConfirmationStatus.FRESH)
+        self.assertEqual(p3.confirmation_status, ConfirmationStatus.FRESH)
+
+    def test_sweep_sends_zero_prompts(self):
+        Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Tech 7",
+            brand="BrandG",
+            price=100.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+            confirmation_status=ConfirmationStatus.STALE,
+        )
+        summary = sweep()
+        self.assertEqual(summary["prompts_sent"], 0)
+        self.assertEqual(OutboundMessage.objects.count(), 0)
+
+
+class SendRemindersTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_rem", password="pw")
+        self.shop = Shop.objects.create(
+            name="Reminder Shop",
+            owner=self.user,
+            telegram_chat_id="555666",
+        )
+        self.category = Category.objects.create(name="Bags", slug="bags")
+        self.now = timezone.now()
+        self.today = timezone.localtime(self.now).date()
+
+    def test_send_reminders_queues_one_reminder_for_unanswered_open_digest(self):
+        digest_obj = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=2),
+        )
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 1",
+            brand="Gucci",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=9),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=digest_obj,
+            status="pending",
+        )
+
+        count = send_reminders()
+        self.assertEqual(count, 1)
+
+        digest_obj.refresh_from_db()
+        self.assertIsNotNone(digest_obj.reminded_at)
+
+        outbox_msg = OutboundMessage.objects.get(
+            dedupe_key=f"reminder:{digest_obj.pk}:{digest_obj.for_date}"
+        )
+        self.assertEqual(outbox_msg.kind, "reminder")
+        self.assertEqual(outbox_msg.chat_id, "555666")
+        self.assertEqual(outbox_msg.payload["digest_id"], digest_obj.pk)
+        self.assertIn("Friendly reminder for Reminder Shop", outbox_msg.payload["text"])
+
+        # Second run is a no-op (idempotent)
+        second_count = send_reminders()
+        self.assertEqual(second_count, 0)
+
+    def test_send_reminders_ignores_answered_digests(self):
+        digest_obj = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=2),
+        )
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 2",
+            brand="Gucci",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=9),
+        )
+        p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 3",
+            brand="Gucci",
+            price=600.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=9),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=digest_obj,
+            status="confirmed",
+        )
+        ConfirmationRequest.objects.create(
+            product=p2,
+            shop=self.shop,
+            digest=digest_obj,
+            status="pending",
+        )
+
+        count = send_reminders()
+        self.assertEqual(count, 0)
+
+    def test_send_reminders_ignores_closed_digests(self):
+        digest_obj = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=2),
+            closed_at=self.now,
+        )
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 4",
+            brand="Prada",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=9),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=digest_obj,
+            status="pending",
+        )
+        count = send_reminders()
+        self.assertEqual(count, 0)
+
+    def test_send_reminders_ignores_outside_window_digests(self):
+        digest_obj = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=10),
+        )
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 5",
+            brand="Chanel",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=17),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=digest_obj,
+            status="pending",
+        )
+        count = send_reminders()
+        self.assertEqual(count, 0)
+
+    def test_send_reminders_ignores_blocked_or_unlinked_shops(self):
+        self.shop.blocked_at = self.now
+        self.shop.save(update_fields=["blocked_at"])
+
+        digest_obj = ConfirmationDigest.objects.create(
+            shop=self.shop,
+            for_date=self.today - timedelta(days=2),
+        )
+        p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Bag 6",
+            brand="Dior",
+            price=500.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=9),
+        )
+        ConfirmationRequest.objects.create(
+            product=p1,
+            shop=self.shop,
+            digest=digest_obj,
+            status="pending",
+        )
+        count = send_reminders()
+        self.assertEqual(count, 0)
+
+
+class SetupBotSchedulesTests(TestCase):
+    def test_setup_bot_schedules_registers_all_4_tasks(self):
+        call_command("setup_bot_schedules")
+
+        tasks = {t.name: t.task for t in PeriodicTask.objects.all()}
+        self.assertIn("bot-drain-outbox", tasks)
+        self.assertEqual(tasks["bot-drain-outbox"], "bot.tasks.drain_outbox")
+
+        self.assertIn("bot-send-due-digests", tasks)
+        self.assertEqual(tasks["bot-send-due-digests"], "bot.tasks.send_due_digests")
+
+        self.assertIn("bot-sweep", tasks)
+        self.assertEqual(tasks["bot-sweep"], "bot.tasks.sweep")
+
+        self.assertIn("bot-send-reminders", tasks)
+        self.assertEqual(tasks["bot-send-reminders"], "bot.tasks.send_reminders")
+
+        # Second call is idempotent
+        call_command("setup_bot_schedules")
+        self.assertEqual(
+            PeriodicTask.objects.filter(name__startswith="bot-").count(), 4
+        )
+
 
