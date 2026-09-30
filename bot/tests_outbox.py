@@ -136,6 +136,31 @@ class SenderDrainTests(TestCase):
         )
 
     @patch("bot.telegram_api.send_message")
+    def test_drain_success_sets_digest_telegram_message_id(self, mock_send):
+        from bot.models import ConfirmationDigest
+
+        mock_send.return_value = {"message_id": 5566}
+
+        today = timezone.localtime(timezone.now()).date()
+        digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+
+        msg = enqueue(
+            "999888",
+            "digest",
+            {"text": "Digest text", "digest_id": digest.pk},
+            "k-digest",
+        )
+        count = drain_outbox(rate_limit=False)
+
+        self.assertEqual(count, 1)
+        msg.refresh_from_db()
+        self.assertEqual(msg.status, "sent")
+        self.assertEqual(msg.telegram_message_id, "5566")
+
+        digest.refresh_from_db()
+        self.assertEqual(digest.telegram_message_id, "5566")
+
+    @patch("bot.telegram_api.send_message")
     def test_drain_skips_blocked_chat_and_marks_cancelled(self, mock_send):
         self.shop.blocked_at = timezone.now()
         self.shop.save(update_fields=["blocked_at"])

@@ -53,6 +53,77 @@ def parse_answer(text: str) -> bool | None:
     return None
 
 
+DIGEST_ALL_EXTRA = {
+    "all",
+    "everything",
+    "all available",
+    "all of them",
+    "all still available",
+    "ሁሉም",
+    "ሁሉም አሉ",
+}
+
+
+def parse_digest_all(text: str) -> bool:
+    """Read a free-text message as a confirmation of all items in a digest."""
+    if not text:
+        return False
+    normalised = " ".join(_PUNCTUATION.sub(" ", text.strip().lower()).split())
+    if normalised in DIGEST_ALL_EXTRA:
+        return True
+    if normalised in AFFIRMATIVE:
+        return True
+    return False
+
+
+ALLOWED_SOLD_WORDS = {"sold", "soldout", "out", "and", "of", "stock", "የለም"}
+SOLD_MARKERS = {"sold", "soldout", "የለም", "out"}
+
+
+def parse_sold_indices(
+    text: str,
+) -> tuple[str | None, list[int]]:
+    """Extract 1-based integer indices and classification ("sold" or "numbers").
+
+    Returns ("sold" | "numbers" | None, list[int]).
+    Disregards punctuation, dedupes preserving order, ignores indices > 50 or < 1.
+    """
+    if not text:
+        return None, []
+
+    cleaned = _PUNCTUATION.sub(" ", text.strip().lower())
+    tokens = cleaned.split()
+    if not tokens:
+        return None, []
+
+    seen = set()
+    indices: list[int] = []
+    words: list[str] = []
+
+    for token in tokens:
+        if token.isdigit():
+            val = int(token)
+            if 1 <= val <= 50 and val not in seen:
+                seen.add(val)
+                indices.append(val)
+        else:
+            words.append(token)
+
+    if not indices:
+        return None, []
+
+    if not words:
+        return "numbers", indices
+
+    if set(words).issubset(ALLOWED_SOLD_WORDS) and any(
+        w in SOLD_MARKERS for w in words
+    ):
+        return "sold", indices
+
+    return None, []
+
+
+
 # --- Callback family 1: Prompt confirm/deny (confirm_<pk> / deny_<pk>) ---
 
 
@@ -196,3 +267,40 @@ def parse_review_action_callback(callback_data: str) -> tuple[int, str] | None:
     ):
         return int(parts[1]), parts[2]
     return None
+
+
+# --- Callback family 8: Digest numeric selection (ni:<digest_id>:<a|s>:<i.j.k...>) ---
+
+
+def format_numeric_selection_callback(
+    digest_id: int, action: str, indices: list[int]
+) -> str:
+    """Format callback_data for ambiguous numeric reply buttons.
+
+    action: 'a' (available) or 's' (sold).
+    """
+    joined = ".".join(str(i) for i in indices)
+    return f"ni:{digest_id}:{action}:{joined}"
+
+
+def parse_numeric_selection_callback(
+    callback_data: str,
+) -> tuple[int, str, list[int]] | None:
+    """Parse ni:<digest_id>:<a|s>:<i.j.k...> callback_data.
+
+    Returns (digest_id, action, indices) or None if malformed.
+    """
+    if not callback_data:
+        return None
+    parts = callback_data.split(":")
+    if (
+        len(parts) == 4
+        and parts[0] == "ni"
+        and parts[1].isdigit()
+        and parts[2] in ("a", "s")
+    ):
+        raw_indices = parts[3].split(".")
+        if raw_indices and all(idx.isdigit() for idx in raw_indices):
+            return int(parts[1]), parts[2], [int(idx) for idx in raw_indices]
+    return None
+

@@ -13,7 +13,7 @@ from django.utils import timezone
 from catalog.models import Product
 from shops.models import Shop
 
-from .models import ConfirmationRequest
+from .models import ConfirmationDigest, ConfirmationRequest
 
 
 def shops_for_chat(chat_id) -> list[Shop]:
@@ -100,3 +100,45 @@ def pending_request_for_chat(chat_id, reply_to_message_id=None):
     if len(pending) > 1:
         return None, "ambiguous"
     return pending[0], None
+
+
+def resolve_digest_for_chat(
+    chat_id, reply_to_message_id=None
+) -> ConfirmationDigest | None:
+    """Find the ConfirmationDigest a text reply belongs to.
+
+    - If reply_to_message_id is given, match a ConfirmationDigest whose
+      telegram_message_id == str(reply_to_message_id) and whose shop is linked
+      to the chat.
+    - Else select open digest(s) (closed_at__isnull=True) for shops linked to
+      this chat:
+      - Exactly one open digest across the chat's shops -> return it.
+      - Zero, or more than one -> return None.
+    """
+    if chat_id in (None, ""):
+        return None
+
+    shops = shops_for_chat(chat_id)
+    if not shops:
+        return None
+
+    if reply_to_message_id is not None:
+        return (
+            ConfirmationDigest.objects.filter(
+                shop__in=shops,
+                telegram_message_id=str(reply_to_message_id),
+            )
+            .select_related("shop")
+            .first()
+        )
+
+    open_digests = list(
+        ConfirmationDigest.objects.filter(
+            shop__in=shops,
+            closed_at__isnull=True,
+        ).select_related("shop")[:2]
+    )
+    if len(open_digests) == 1:
+        return open_digests[0]
+    return None
+

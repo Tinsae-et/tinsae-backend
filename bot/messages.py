@@ -281,3 +281,45 @@ def review_paused() -> str:
     return (
         "Review paused. Send /myproducts or tap Check one by one anytime to continue."
     )
+
+
+def digest_sold_ack(labels: list[str], remaining_count: int) -> str:
+    if not labels:
+        items_text = "Selected items"
+    elif len(labels) == 1:
+        items_text = f"'{labels[0]}'"
+    else:
+        items_text = ", ".join(f"'{label}'" for label in labels)
+    verb = "is" if len(labels) == 1 else "are"
+
+    if remaining_count == 0:
+        return (
+            f"❌ Got it — {items_text} {verb} marked out of stock.\n"
+            "Nothing left to confirm. 🎉"
+        )
+    rem_label = (
+        "1 product is" if remaining_count == 1 else f"{remaining_count} products are"
+    )
+    return (
+        f"❌ Got it — {items_text} {verb} marked out of stock.\n"
+        f"{rem_label} still waiting on you."
+    )
+
+
+def digest_ambiguous(indices: list[int]) -> str:
+    if not indices:
+        return "Are these products available, or sold?"
+    if len(indices) == 1:
+        return f"Is {indices[0]} available, or sold?"
+    if len(indices) == 2:
+        return f"Are {indices[0]} and {indices[1]} available, or sold?"
+    joined = ", ".join(str(i) for i in indices[:-1])
+    return f"Are {joined} and {indices[-1]} available, or sold?"
+
+
+def digest_unparsed() -> str:
+    return (
+        'I didn\'t catch that. Reply "all" if everything is available, '
+        '"sold 2 5" to mark specific items sold, or tap a button below.'
+    )
+

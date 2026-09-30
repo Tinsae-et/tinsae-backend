@@ -29,10 +29,12 @@ from .parsing import (
 )
 from .parsing import (
     parse_answer,
+    parse_digest_all,
     parse_listing_callback,
     parse_prompt_callback,
+    parse_sold_indices,
 )
-from .selectors import pending_request_for_chat
+from .selectors import pending_request_for_chat, resolve_digest_for_chat
 
 logger = logging.getLogger(__name__)
 
@@ -849,3 +851,201 @@ def review_next(
         sold=sold_count,
     )
     return "item", target_idx, item, progress
+
+
+def _requests_for_indices(
+    digest: ConfirmationDigest, indices: list[int]
+) -> list[tuple[int, ConfirmationRequest]]:
+    """Map 1-based indices (1..15) to digest ConfirmationRequests ordered by pk.
+
+    Returns a list of (index, ConfirmationRequest) pairs for valid, in-range indices,
+    preserving the order in `indices` and omitting duplicates / out-of-range indices.
+    """
+    all_requests = list(digest.requests.select_related("product").order_by("pk"))
+    max_idx = min(15, len(all_requests))
+    seen = set()
+    result = []
+    for i in indices:
+        if 1 <= i <= max_idx and i not in seen:
+            seen.add(i)
+            result.append((i, all_requests[i - 1]))
+    return result
+
+
+class SelectionResult(tuple):
+    """Result of answer_digest_selection, unpackable as (outcome, count)."""
+
+    outcome: str
+    count: int
+    labels: list[str]
+    remaining: int
+
+    def __new__(
+        cls,
+        outcome: str,
+        count: int,
+        labels: list[str] | None = None,
+        remaining: int = 0,
+    ):
+        instance = super().__new__(cls, (outcome, count))
+        instance.outcome = outcome
+        instance.count = count
+        instance.labels = labels or []
+        instance.remaining = remaining
+        return instance
+
+
+def answer_digest_selection(
+    chat_id: str | int | None,
+    digest_id: int,
+    available: bool,
+    indices: list[int],
+) -> SelectionResult:
+    """Apply the merchant's choice to the given indices of this digest.
+
+    Outcomes:
+        SelectionResult("confirmed", count)
+        SelectionResult("sold_out", count)
+        SelectionResult("already_answered", 0)
+        SelectionResult("not_found", 0)
+    Re-checks chat ownership. Closes digest if no pending items remain.
+    """
+    if chat_id in (None, ""):
+        return SelectionResult("not_found", 0)
+
+    try:
+        digest = ConfirmationDigest.objects.select_related("shop").get(pk=digest_id)
+    except (ConfirmationDigest.DoesNotExist, ValueError):
+        return SelectionResult("not_found", 0)
+
+    shop_chat_id = digest.shop.telegram_chat_id
+    if not shop_chat_id or str(shop_chat_id) != str(chat_id):
+        return SelectionResult("not_found", 0)
+
+    if digest.closed_at is not None:
+        return SelectionResult("already_answered", 0)
+
+    target_outcome = "confirmed" if available else "sold_out"
+    mapped = _requests_for_indices(digest, indices)
+    if not mapped:
+        return SelectionResult("already_answered", 0)
+
+    count = 0
+    labels = []
+    with transaction.atomic():
+        for _, req in mapped:
+            outcome, product = answer_confirmation_request(
+                chat_id=chat_id,
+                request_id=req.pk,
+                available=available,
+            )
+            if outcome == target_outcome:
+                count += 1
+                name = (
+                    f"{product.brand} {product.name}".strip()
+                    if product
+                    else f"{req.product.brand} {req.product.name}".strip()
+                )
+                labels.append(name)
+
+        remaining = digest.requests.filter(status="pending").count()
+        if remaining == 0:
+            digest.closed_at = timezone.now()
+            digest.save(update_fields=["closed_at", "updated_at"])
+
+    if count == 0 and not labels:
+        return SelectionResult("already_answered", 0)
+
+    logger.info(
+        "Chat %s answered digest %s selection (%s, %d items, %d remaining).",
+        chat_id,
+        digest_id,
+        target_outcome,
+        count,
+        remaining,
+    )
+    return SelectionResult(
+        target_outcome, count, labels=labels, remaining=remaining
+    )
+
+
+def handle_digest_text(
+    chat_id: str | int | None,
+    text: str,
+    reply_to_message_id: str | int | None = None,
+) -> tuple | None:
+    """Handle free-text reply against an open digest.
+
+    Returns:
+        None -> fall back to handle_text_reply
+        ("all_available", digest_id, count)
+        ("sold", marked_product_names, remaining_count)
+        ("ambiguous", digest_id, valid_indices)
+        ("already_answered", digest_id)
+        ("unparsed", digest_id)
+    """
+    if chat_id in (None, "") or not text:
+        return None
+
+    digest = resolve_digest_for_chat(chat_id, reply_to_message_id=reply_to_message_id)
+    if digest is None:
+        return None
+
+    # If digest is already closed
+    if digest.closed_at is not None:
+        if parse_digest_all(text):
+            return ("already_answered", digest.pk)
+        kind, _ = parse_sold_indices(text)
+        if kind in ("sold", "numbers"):
+            return ("already_answered", digest.pk)
+        return None
+
+    if parse_digest_all(text):
+        outcome, count = answer_confirmation_digest(chat_id, digest.pk, available=True)
+        if outcome == "already_answered":
+            return ("already_answered", digest.pk)
+        if outcome == "not_found":
+            return None
+        return ("all_available", digest.pk, count)
+
+    kind, indices = parse_sold_indices(text)
+    if kind == "sold":
+        mapped = _requests_for_indices(digest, indices)
+        if not mapped:
+            return ("unparsed", digest.pk)
+
+        marked_product_names = []
+        with transaction.atomic():
+            for _, req in mapped:
+                outcome, product = answer_confirmation_request(
+                    chat_id=chat_id,
+                    request_id=req.pk,
+                    available=False,
+                )
+                if outcome == "sold_out":
+                    name = (
+                        f"{product.brand} {product.name}".strip()
+                        if product
+                        else f"{req.product.brand} {req.product.name}".strip()
+                    )
+                    marked_product_names.append(name)
+
+            if not marked_product_names:
+                return ("unparsed", digest.pk)
+
+            remaining_count = digest.requests.filter(status="pending").count()
+            if remaining_count == 0:
+                digest.closed_at = timezone.now()
+                digest.save(update_fields=["closed_at", "updated_at"])
+
+        return ("sold", marked_product_names, remaining_count)
+
+    if kind == "numbers":
+        mapped = _requests_for_indices(digest, indices)
+        if not mapped:
+            return ("unparsed", digest.pk)
+        valid_indices = [idx for idx, _ in mapped]
+        return ("ambiguous", digest.pk, valid_indices)
+
+    return ("unparsed", digest.pk)
+

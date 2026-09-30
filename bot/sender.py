@@ -19,7 +19,7 @@ from django.utils import timezone
 from shops.models import Shop
 
 from . import telegram_api
-from .models import ConfirmationRequest, OutboundMessage
+from .models import ConfirmationDigest, ConfirmationRequest, OutboundMessage
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +167,14 @@ def drain_outbox(*, batch_size: int = BATCH_SIZE, rate_limit: bool = True) -> in
                 if confirmation_request_id:
                     ConfirmationRequest.objects.filter(
                         pk=confirmation_request_id
+                    ).update(
+                        telegram_message_id=str(msg_id),
+                        updated_at=timezone.now(),
+                    )
+                digest_id = message.payload.get("digest_id")
+                if digest_id:
+                    ConfirmationDigest.objects.filter(
+                        pk=digest_id
                     ).update(
                         telegram_message_id=str(msg_id),
                         updated_at=timezone.now(),

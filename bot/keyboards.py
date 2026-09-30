@@ -9,6 +9,7 @@ from bot.parsing import (
     format_digest_all_callback,
     format_digest_review_callback,
     format_listing_callback,
+    format_numeric_selection_callback,
     format_page_callback,
     format_prompt_callback,
     format_review_action_callback,
@@ -152,3 +153,28 @@ def review_markup(request_id: int) -> InlineKeyboardMarkup:
             ],
         ]
     )
+
+
+def digest_ambiguous_markup(
+    digest_id: int, indices: list[int]
+) -> InlineKeyboardMarkup:
+    """Build inline keyboard markup for ambiguous numeric reply."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Still available",
+                    callback_data=format_numeric_selection_callback(
+                        digest_id, "a", indices
+                    ),
+                ),
+                InlineKeyboardButton(
+                    "❌ Sold out",
+                    callback_data=format_numeric_selection_callback(
+                        digest_id, "s", indices
+                    ),
+                ),
+            ]
+        ]
+    )
+

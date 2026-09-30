@@ -28,6 +28,8 @@ from bot import keyboards, messages, parsing
 from bot.selectors import listing_for_chat, shops_for_chat
 from bot.services import (
     answer_confirmation_digest,
+    answer_digest_selection,
+    handle_digest_text,
     handle_product_callback,
     handle_telegram_callback,
     handle_text_reply,
@@ -264,6 +266,46 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(text, reply_markup=markup)
             return
 
+    numeric_sel = parsing.parse_numeric_selection_callback(data)
+    if numeric_sel is not None:
+        digest_id, action, indices = numeric_sel
+        available = action == "a"
+        result = await sync_to_async(
+            answer_digest_selection, thread_sensitive=True
+        )(
+            chat_id=str(chat_id),
+            digest_id=digest_id,
+            available=available,
+            indices=indices,
+        )
+        outcome, count = result[0], result[1]
+        if outcome == "not_found":
+            await query.answer(messages.request_inactive())
+            return
+        if outcome == "already_answered":
+            await query.answer(messages.response_recorded())
+            if query.message:
+                await query.edit_message_text(messages.already_recorded())
+            return
+
+        await query.answer(messages.response_recorded())
+        if query.message:
+            if available:
+                if result.remaining == 0:
+                    text = messages.digest_ack(count)
+                else:
+                    p_str = "1 product is" if count == 1 else f"{count} products are"
+                    rem_str = (
+                        "1 product is"
+                        if result.remaining == 1
+                        else f"{result.remaining} products are"
+                    )
+                    text = f"✅ Thanks! {p_str} confirmed in stock.\n{rem_str} still waiting on you."
+            else:
+                text = messages.digest_sold_ack(result.labels, result.remaining)
+            await query.edit_message_text(text)
+        return
+
     # /myproducts buttons are colon-separated and product-keyed; the original
     # inline prompts are underscore-separated and request-keyed. Route on that.
     page = parsing.parse_page_callback(data)
@@ -372,6 +414,39 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(
         "Inbound text %r from chat %s (reply_to=%s)", message.text, chat_id, reply_to
     )
+
+    digest_res = await sync_to_async(handle_digest_text, thread_sensitive=True)(
+        chat_id=str(chat_id),
+        text=message.text,
+        reply_to_message_id=reply_to,
+    )
+    if digest_res is not None:
+        res_type = digest_res[0]
+        if res_type == "all_available":
+            _type, _digest_id, count = digest_res
+            await message.reply_text(messages.digest_ack(count))
+            return
+        if res_type == "sold":
+            _type, names, remaining = digest_res
+            await message.reply_text(messages.digest_sold_ack(names, remaining))
+            return
+        if res_type == "ambiguous":
+            _type, digest_id, indices = digest_res
+            await message.reply_text(
+                messages.digest_ambiguous(indices),
+                reply_markup=keyboards.digest_ambiguous_markup(digest_id, indices),
+            )
+            return
+        if res_type == "already_answered":
+            await message.reply_text(messages.already_recorded())
+            return
+        if res_type == "unparsed":
+            _type, digest_id = digest_res
+            await message.reply_text(
+                messages.digest_unparsed(),
+                reply_markup=keyboards.digest_markup(digest_id),
+            )
+            return
 
     outcome, product = await sync_to_async(handle_text_reply, thread_sensitive=True)(
         text=message.text,

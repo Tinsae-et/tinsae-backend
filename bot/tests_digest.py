@@ -1,17 +1,31 @@
 """Tests for the weekly confirmation digest and digest-level confirmation."""
 
 from datetime import timedelta
+from unittest import mock
 
+from asgiref.sync import async_to_sync
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 
-from bot import digest
+from bot import digest, keyboards, messages, parsing
+from bot.management.commands.run_bot import on_callback, on_text
 from bot.models import ConfirmationDigest, ConfirmationRequest, OutboundMessage
-from bot.services import answer_confirmation_digest
+from bot.parsing import (
+    format_numeric_selection_callback,
+    parse_digest_all,
+    parse_numeric_selection_callback,
+    parse_sold_indices,
+)
+from bot.selectors import resolve_digest_for_chat
+from bot.services import (
+    answer_confirmation_digest,
+    answer_digest_selection,
+    handle_digest_text,
+)
 from catalog.models import Category, ConfirmationStatus, Product
 from shops.models import Shop
 
@@ -284,3 +298,438 @@ class SetupBotSchedulesTests(TestCase):
         self.assertEqual(digest_task.crontab.hour, "8")
         self.assertEqual(digest_task.crontab.minute, "0")
         self.assertEqual(str(digest_task.crontab.timezone), settings.TIME_ZONE)
+
+
+class DigestParsingTests(SimpleTestCase):
+    def test_parse_digest_all(self):
+        for affirmative in (
+            "all",
+            "everything",
+            "all available",
+            "all of them",
+            "all still available",
+            "ሁሉም",
+            "ሁሉም አሉ",
+            "yes",
+            "y",
+            "ok",
+            "sure",
+            "available",
+            "ALL",
+            "All Available!",
+            "ሁሉም!",
+        ):
+            self.assertTrue(parse_digest_all(affirmative), f"Expected True for {affirmative!r}")
+
+        for negative_or_unparsed in ("no", "sold", "sold out", "random", "", "2 5", "hello"):
+            self.assertFalse(
+                parse_digest_all(negative_or_unparsed),
+                f"Expected False for {negative_or_unparsed!r}",
+            )
+
+    def test_parse_sold_indices(self):
+        sold_cases = [
+            ("sold 2 5", [2, 5]),
+            ("sold 2, 5", [2, 5]),
+            ("2 5 sold", [2, 5]),
+            ("sold: 2, 5", [2, 5]),
+            ("2,5 sold out", [2, 5]),
+            ("2 and 5 sold", [2, 5]),
+            ("2 5 የለም", [2, 5]),
+            ("sold 2 5 2", [2, 5]),
+            ("sold 5 2", [5, 2]),
+            ("sold 2 99", [2]),
+            ("sold out 3", [3]),
+        ]
+        for text, expected_indices in sold_cases:
+            kind, indices = parse_sold_indices(text)
+            self.assertEqual(kind, "sold", f"Failed kind for {text!r}")
+            self.assertEqual(indices, expected_indices, f"Failed indices for {text!r}")
+
+        numbers_cases = [
+            ("2 5", [2, 5]),
+            ("2, 5", [2, 5]),
+            ("2,5", [2, 5]),
+            ("2", [2]),
+        ]
+        for text, expected_indices in numbers_cases:
+            kind, indices = parse_sold_indices(text)
+            self.assertEqual(kind, "numbers", f"Failed kind for {text!r}")
+            self.assertEqual(indices, expected_indices, f"Failed indices for {text!r}")
+
+        unparsed_cases = [
+            "sold 99",
+            "sold 0",
+            "hello 2 5",
+            "",
+            "random text",
+        ]
+        for text in unparsed_cases:
+            kind, indices = parse_sold_indices(text)
+            self.assertIsNone(kind, f"Expected None kind for {text!r}")
+            self.assertEqual(indices, [], f"Expected empty indices for {text!r}")
+
+    def test_numeric_selection_callback(self):
+        cb_avail = format_numeric_selection_callback(42, "a", [1, 3])
+        self.assertEqual(cb_avail, "ni:42:a:1.3")
+        self.assertEqual(parse_numeric_selection_callback(cb_avail), (42, "a", [1, 3]))
+
+        cb_sold = format_numeric_selection_callback(42, "s", [2, 5])
+        self.assertEqual(cb_sold, "ni:42:s:2.5")
+        self.assertEqual(parse_numeric_selection_callback(cb_sold), (42, "s", [2, 5]))
+
+        for malformed in ("ni:42:x:1.3", "ni:abc:a:1.3", "ni:42:a:", "invalid", ""):
+            self.assertIsNone(parse_numeric_selection_callback(malformed))
+
+    def test_numeric_selection_callback_worst_case_byte_length(self):
+        indices_15 = list(range(1, 16))
+        cb = format_numeric_selection_callback(999999, "s", indices_15)
+        self.assertLessEqual(len(cb.encode("utf-8")), 64)
+
+
+class DigestTargetResolutionTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_res", password="pw")
+        self.shop1 = Shop.objects.create(
+            name="Shop 1", owner=self.user, telegram_chat_id="999888"
+        )
+        self.today = timezone.localtime(timezone.now()).date()
+
+    def test_single_open_digest_resolves(self):
+        digest = ConfirmationDigest.objects.create(shop=self.shop1, for_date=self.today)
+        resolved = resolve_digest_for_chat("999888")
+        self.assertEqual(resolved, digest)
+
+    def test_zero_open_digests_returns_none(self):
+        digest = ConfirmationDigest.objects.create(
+            shop=self.shop1, for_date=self.today, closed_at=timezone.now()
+        )
+        self.assertIsNone(resolve_digest_for_chat("999888"))
+
+    def test_multiple_open_digests_without_reply_to_returns_none(self):
+        shop2 = Shop.objects.create(
+            name="Shop 2", owner=self.user, telegram_chat_id="999888"
+        )
+        d1 = ConfirmationDigest.objects.create(
+            shop=self.shop1, for_date=self.today - timedelta(days=7), telegram_message_id="111"
+        )
+        d2 = ConfirmationDigest.objects.create(
+            shop=shop2, for_date=self.today, telegram_message_id="222"
+        )
+        # Without reply_to -> None
+        self.assertIsNone(resolve_digest_for_chat("999888"))
+
+        # With reply_to -> precise match
+        self.assertEqual(resolve_digest_for_chat("999888", reply_to_message_id=222), d2)
+        self.assertEqual(resolve_digest_for_chat("999888", reply_to_message_id=111), d1)
+
+    def test_reply_to_matches_closed_digest(self):
+        digest = ConfirmationDigest.objects.create(
+            shop=self.shop1,
+            for_date=self.today,
+            telegram_message_id="333",
+            closed_at=timezone.now(),
+        )
+        self.assertEqual(resolve_digest_for_chat("999888", reply_to_message_id=333), digest)
+
+    def test_foreign_or_empty_chat_returns_none(self):
+        ConfirmationDigest.objects.create(shop=self.shop1, for_date=self.today)
+        self.assertIsNone(resolve_digest_for_chat("777777"))
+        self.assertIsNone(resolve_digest_for_chat(""))
+        self.assertIsNone(resolve_digest_for_chat(None))
+
+
+class DigestTextReplyTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_txt", password="pw")
+        self.shop = Shop.objects.create(
+            name="Text Shop", owner=self.user, telegram_chat_id="999888"
+        )
+        self.category = Category.objects.create(name="Items", slug="items")
+        self.now = timezone.now()
+        self.p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Prod 1",
+            brand="BrandA",
+            price=10.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+        )
+        self.p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Prod 2",
+            brand="BrandB",
+            price=20.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+        )
+        self.p3 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Prod 3",
+            brand="BrandC",
+            price=30.0,
+            currency="ETB",
+            is_available=True,
+            last_confirmed_at=self.now - timedelta(days=10),
+        )
+        today = timezone.localtime(timezone.now()).date()
+        self.digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        self.r1 = ConfirmationRequest.objects.create(
+            product=self.p1, shop=self.shop, digest=self.digest, status="pending"
+        )
+        self.r2 = ConfirmationRequest.objects.create(
+            product=self.p2, shop=self.shop, digest=self.digest, status="pending"
+        )
+        self.r3 = ConfirmationRequest.objects.create(
+            product=self.p3, shop=self.shop, digest=self.digest, status="pending"
+        )
+
+    def test_all_confirms_open_digest(self):
+        outcome = handle_digest_text("999888", "all")
+        self.assertEqual(outcome, ("all_available", self.digest.pk, 3))
+
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.r3.refresh_from_db()
+        self.assertEqual(self.r1.status, "confirmed")
+        self.assertEqual(self.r2.status, "confirmed")
+        self.assertEqual(self.r3.status, "confirmed")
+
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_sold_indices_marks_sold_and_reports_remaining(self):
+        outcome = handle_digest_text("999888", "sold 1 3")
+        self.assertEqual(outcome[0], "sold")
+        self.assertEqual(outcome[1], ["BrandA Prod 1", "BrandC Prod 3"])
+        self.assertEqual(outcome[2], 1)
+
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.r3.refresh_from_db()
+        self.assertEqual(self.r1.status, "sold_out")
+        self.assertEqual(self.r2.status, "pending")
+        self.assertEqual(self.r3.status, "sold_out")
+
+        self.digest.refresh_from_db()
+        self.assertIsNone(self.digest.closed_at)
+
+        # Mark remaining item sold
+        outcome2 = handle_digest_text("999888", "sold 2")
+        self.assertEqual(outcome2[0], "sold")
+        self.assertEqual(outcome2[1], ["BrandB Prod 2"])
+        self.assertEqual(outcome2[2], 0)
+
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_numeric_only_is_ambiguous_without_mutating(self):
+        outcome = handle_digest_text("999888", "1 2")
+        self.assertEqual(outcome, ("ambiguous", self.digest.pk, [1, 2]))
+
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.assertEqual(self.r1.status, "pending")
+        self.assertEqual(self.r2.status, "pending")
+        self.digest.refresh_from_db()
+        self.assertIsNone(self.digest.closed_at)
+
+    def test_answer_digest_selection_confirms_subset(self):
+        res = answer_digest_selection("999888", self.digest.pk, available=True, indices=[1, 2])
+        self.assertEqual(res, ("confirmed", 2))
+        self.assertEqual(res.labels, ["BrandA Prod 1", "BrandB Prod 2"])
+        self.assertEqual(res.remaining, 1)
+
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.r3.refresh_from_db()
+        self.assertEqual(self.r1.status, "confirmed")
+        self.assertEqual(self.r2.status, "confirmed")
+        self.assertEqual(self.r3.status, "pending")
+        self.digest.refresh_from_db()
+        self.assertIsNone(self.digest.closed_at)
+
+    def test_answer_digest_selection_closes_when_all_answered(self):
+        answer_digest_selection("999888", self.digest.pk, available=True, indices=[1, 2])
+        res2 = answer_digest_selection("999888", self.digest.pk, available=False, indices=[3])
+        self.assertEqual(res2, ("sold_out", 1))
+        self.assertEqual(res2.remaining, 0)
+
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_out_of_range_indices(self):
+        outcome1 = handle_digest_text("999888", "sold 99")
+        self.assertEqual(outcome1, ("unparsed", self.digest.pk))
+
+        outcome2 = handle_digest_text("999888", "sold 10")
+        self.assertEqual(outcome2, ("unparsed", self.digest.pk))
+
+        # Mixed valid and out-of-range: marks valid, ignores out-of-range
+        outcome3 = handle_digest_text("999888", "sold 1 10")
+        self.assertEqual(outcome3[0], "sold")
+        self.assertEqual(outcome3[1], ["BrandA Prod 1"])
+        self.assertEqual(outcome3[2], 2)
+
+    def test_closed_digest_handling(self):
+        self.digest.closed_at = timezone.now()
+        self.digest.telegram_message_id = "999"
+        self.digest.save()
+
+        # Reply targeting closed digest with answer attempt -> already_answered
+        outcome = handle_digest_text("999888", "all", reply_to_message_id=999)
+        self.assertEqual(outcome, ("already_answered", self.digest.pk))
+
+        outcome = handle_digest_text("999888", "sold 1", reply_to_message_id=999)
+        self.assertEqual(outcome, ("already_answered", self.digest.pk))
+
+        outcome = handle_digest_text("999888", "1 2", reply_to_message_id=999)
+        self.assertEqual(outcome, ("already_answered", self.digest.pk))
+
+        # Non-answer attempt against closed digest -> None (falls through)
+        outcome = handle_digest_text("999888", "hello", reply_to_message_id=999)
+        self.assertIsNone(outcome)
+
+    def test_foreign_chat_cannot_answer(self):
+        self.assertIsNone(handle_digest_text("777777", "all"))
+        res = answer_digest_selection("777777", self.digest.pk, available=True, indices=[1])
+        self.assertEqual(res, ("not_found", 0))
+
+
+class DigestRunBotTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="u_bot", password="pw")
+        self.shop = Shop.objects.create(
+            name="Bot Shop",
+            owner=self.user,
+            telegram_chat_id="888999",
+        )
+        self.category = Category.objects.create(name="Items", slug="items")
+        self.p1 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Prod 1",
+            brand="BrandA",
+            price=10.0,
+            currency="ETB",
+            is_available=True,
+        )
+        self.p2 = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="Prod 2",
+            brand="BrandB",
+            price=20.0,
+            currency="ETB",
+            is_available=True,
+        )
+        today = timezone.localtime(timezone.now()).date()
+        self.digest = ConfirmationDigest.objects.create(shop=self.shop, for_date=today)
+        self.r1 = ConfirmationRequest.objects.create(
+            product=self.p1, shop=self.shop, digest=self.digest, status="pending"
+        )
+        self.r2 = ConfirmationRequest.objects.create(
+            product=self.p2, shop=self.shop, digest=self.digest, status="pending"
+        )
+
+    def _message_update(self, text, chat_id="888999", reply_to_message_id=None):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.message.text = text
+        update.message.reply_to_message = (
+            mock.Mock(message_id=reply_to_message_id)
+            if reply_to_message_id is not None
+            else None
+        )
+        update.effective_chat.id = int(chat_id)
+        return update, update.message
+
+    def _callback_update(self, data, chat_id="888999"):
+        update = mock.Mock()
+        query = mock.Mock()
+        query.data = data
+        query.message = mock.AsyncMock()
+        query.message.chat.id = int(chat_id)
+        query.answer = mock.AsyncMock()
+        query.edit_message_text = mock.AsyncMock()
+        update.callback_query = query
+        update.effective_chat.id = int(chat_id)
+        return update, query
+
+    def test_on_text_all_confirms_open_digest(self):
+        update, message = self._message_update("all")
+        context = mock.Mock()
+        async_to_sync(on_text)(update, context)
+
+        message.reply_text.assert_called_once_with(messages.digest_ack(2))
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_on_text_sold_marks_items_sold(self):
+        update, message = self._message_update("sold 1")
+        context = mock.Mock()
+        async_to_sync(on_text)(update, context)
+
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.status, "sold_out")
+        message.reply_text.assert_called_once_with(
+            messages.digest_sold_ack(["BrandA Prod 1"], 1)
+        )
+
+    def test_on_text_numbers_prompts_ambiguous(self):
+        update, message = self._message_update("1 2")
+        context = mock.Mock()
+        async_to_sync(on_text)(update, context)
+
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.status, "pending")
+        message.reply_text.assert_called_once()
+        args, kwargs = message.reply_text.call_args
+        self.assertEqual(args[0], messages.digest_ambiguous([1, 2]))
+        self.assertIn("reply_markup", kwargs)
+
+    def test_on_text_unparsed_shows_digest_markup(self):
+        update, message = self._message_update("sold 99")
+        context = mock.Mock()
+        async_to_sync(on_text)(update, context)
+
+        message.reply_text.assert_called_once()
+        args, kwargs = message.reply_text.call_args
+        self.assertEqual(args[0], messages.digest_unparsed())
+        self.assertIn("reply_markup", kwargs)
+
+    def test_on_callback_numeric_selection_available(self):
+        cb_data = format_numeric_selection_callback(self.digest.pk, "a", [1, 2])
+        update, query = self._callback_update(cb_data)
+        context = mock.Mock()
+        async_to_sync(on_callback)(update, context)
+
+        query.answer.assert_called_once_with(messages.response_recorded())
+        query.edit_message_text.assert_called_once_with(messages.digest_ack(2))
+        self.r1.refresh_from_db()
+        self.r2.refresh_from_db()
+        self.assertEqual(self.r1.status, "confirmed")
+        self.assertEqual(self.r2.status, "confirmed")
+        self.digest.refresh_from_db()
+        self.assertIsNotNone(self.digest.closed_at)
+
+    def test_on_callback_numeric_selection_sold(self):
+        cb_data = format_numeric_selection_callback(self.digest.pk, "s", [1])
+        update, query = self._callback_update(cb_data)
+        context = mock.Mock()
+        async_to_sync(on_callback)(update, context)
+
+        query.answer.assert_called_once_with(messages.response_recorded())
+        query.edit_message_text.assert_called_once_with(
+            messages.digest_sold_ack(["BrandA Prod 1"], 1)
+        )
+        self.r1.refresh_from_db()
+        self.assertEqual(self.r1.status, "sold_out")
+        self.digest.refresh_from_db()
+        self.assertIsNone(self.digest.closed_at)
+
