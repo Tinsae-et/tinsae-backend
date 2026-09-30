@@ -219,14 +219,9 @@ ENABLE_TELEGRAM_BOT_PROMPTS = env.bool("ENABLE_TELEGRAM_BOT_PROMPTS", default=Fa
 TELEGRAM_MOCK_SEND = env.bool("TELEGRAM_MOCK_SEND", default=False)
 
 
-# Hours a ConfirmationRequest may sit unanswered before the sweep expires it and
-# allows a fresh prompt to be sent.
-CONFIRMATION_REQUEST_EXPIRY_HOURS = env.int(
-    "CONFIRMATION_REQUEST_EXPIRY_HOURS", default=48
-)
-
 # Weekly confirmation digest interval in days, and period after which unconfirmed
-# listings are hidden from buyer-facing views.
+# listings are hidden from buyer-facing views. These are the single confirmation
+# clock: a request's own `expires_at` is derived from them.
 CONFIRMATION_INTERVAL_DAYS = env.int("CONFIRMATION_INTERVAL_DAYS", default=7)
 CONFIRMATION_HIDDEN_AFTER_DAYS = env.int("CONFIRMATION_HIDDEN_AFTER_DAYS", default=14)
 

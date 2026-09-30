@@ -306,7 +306,6 @@ status.
 | --- | --- | --- |
 | `CONFIRMATION_INTERVAL_DAYS` | `7` | Days until a listing is due (the "fresh" window) |
 | `CONFIRMATION_HIDDEN_AFTER_DAYS` | `14` | Days until an unconfirmed listing is hidden |
-| `CONFIRMATION_REQUEST_EXPIRY_HOURS` | `48` | Ops: hours before an unanswered request is overdue |
 | `TELEGRAM_BOT_TOKEN` | — | Required to reach Telegram at all |
 | `TELEGRAM_BOT_USERNAME` | — | Bot handle (no `@`) for the deep link |
 | `ENABLE_TELEGRAM_BOT_PROMPTS` | `False` | Master switch for **outbound** (digest + reminders) |

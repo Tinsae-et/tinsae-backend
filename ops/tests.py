@@ -175,7 +175,7 @@ class MetricsTests(TestCase):
         self.assertEqual(row["answered"], 2)  # not 2 x 2
         self.assertEqual(row["expired"], 1)
 
-    def test_pending_overdue_counts_only_requests_past_the_window(self):
+    def test_pending_overdue_counts_only_requests_past_their_deadline(self):
         shop = self._shop("S", telegram_chat_id="1")
         # Two products: ConfirmationRequest allows only one pending row per
         # product, so both prompts cannot hang off the same one.
@@ -185,9 +185,9 @@ class MetricsTests(TestCase):
         old_request = ConfirmationRequest.objects.create(
             product=old, shop=shop, status="pending"
         )
-        # created_at is auto_now_add, so age has to be forced after the fact.
+        # A request is overdue once its own expires_at has passed.
         ConfirmationRequest.objects.filter(pk=old_request.pk).update(
-            created_at=timezone.now() - timedelta(hours=72)
+            expires_at=timezone.now() - timedelta(hours=1)
         )
 
         requests = collect_health()["requests"]

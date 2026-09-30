@@ -80,16 +80,14 @@ def _catalog_health(staleness_cutoff) -> dict:
     return counts
 
 
-def _request_health(expiry_cutoff) -> dict:
+def _request_health(now) -> dict:
     counts = ConfirmationRequest.objects.aggregate(
         total=Count("pk"),
         pending=Count("pk", filter=Q(status="pending")),
-        # Pending past the expiry window: the sweep should have cleared these.
+        # Pending past its own deadline: the sweep should have cleared these.
         # Every one of them is blocking a re-prompt for its product, so a
         # non-zero count here means the loop is jammed, not merely quiet.
-        pending_overdue=Count(
-            "pk", filter=Q(status="pending", created_at__lt=expiry_cutoff)
-        ),
+        pending_overdue=Count("pk", filter=Q(status="pending", expires_at__lte=now)),
         confirmed=Count("pk", filter=Q(status="confirmed")),
         sold_out=Count("pk", filter=Q(status="sold_out")),
         expired=Count("pk", filter=Q(status="expired")),
@@ -202,7 +200,6 @@ def collect_health() -> dict:
     """
     now = timezone.now()
     staleness_cutoff = now - timedelta(days=settings.CONFIRMATION_INTERVAL_DAYS)
-    expiry_cutoff = now - timedelta(hours=settings.CONFIRMATION_REQUEST_EXPIRY_HOURS)
     rows = _shop_rows()
 
     return {
@@ -211,13 +208,13 @@ def collect_health() -> dict:
         # "the loop is broken" from "outbound prompts were never switched on".
         "config": {
             "staleness_days": settings.CONFIRMATION_INTERVAL_DAYS,
-            "expiry_hours": settings.CONFIRMATION_REQUEST_EXPIRY_HOURS,
+            "hidden_after_days": settings.CONFIRMATION_HIDDEN_AFTER_DAYS,
             "prompts_enabled": getattr(settings, "ENABLE_TELEGRAM_BOT_PROMPTS", False),
             "telegram_configured": telegram.is_configured(),
             "never_responds_min_resolved": NEVER_RESPONDS_MIN_RESOLVED,
         },
         "catalog": _catalog_health(staleness_cutoff),
-        "requests": _request_health(expiry_cutoff),
+        "requests": _request_health(now),
         "shops": rows,
         "attention": _attention(rows),
     }
