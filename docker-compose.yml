@@ -1,5 +1,16 @@
 # Starts the whole local stack: Postgres (db), Redis, the Django app (backend),
 # the Telegram poller (bot), and Celery worker + beat.
+#
+# db and redis get fixed IPs, and every app service resolves them through
+# /etc/hosts (extra_hosts). Container-name DNS is fast but can blip during
+# recreate/restart, which makes celery-beat lose Postgres and restart; a hosts
+# entry bypasses DNS entirely, so the loop is unaffected by that blip.
+
+# Shared /etc/hosts entries so the app services never need Docker DNS for the
+# backing services.
+x-backing-hosts: &backing-hosts
+  - "db:172.30.0.10"
+  - "redis:172.30.0.11"
 
 services:
   db:
@@ -10,6 +21,9 @@ services:
       POSTGRES_DB: tinsae
     ports: ["5434:5432"]
     volumes: ["postgres_data:/var/lib/postgresql/data"]
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tinsae"]
       interval: 5s
@@ -21,6 +35,9 @@ services:
     ports: ["6380:6379"]
     volumes:
       - redis_data:/data
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -35,6 +52,7 @@ services:
     volumes: [".:/app"]
     ports: ["8000:8000"]
     env_file: [.env]
+    extra_hosts: *backing-hosts
     depends_on:
       db:
         condition: service_healthy
@@ -48,6 +66,7 @@ services:
     command: celery -A config worker -l INFO
     volumes: [".:/app"]
     env_file: [.env]
+    extra_hosts: *backing-hosts
     restart: unless-stopped
     depends_on:
       db:
@@ -62,6 +81,7 @@ services:
     command: celery -A config beat -l INFO --scheduler django_celery_beat.schedulers:DatabaseScheduler
     volumes: [".:/app"]
     env_file: [.env]
+    extra_hosts: *backing-hosts
     restart: unless-stopped
     depends_on:
       db:
@@ -79,6 +99,7 @@ services:
     command: python manage.py run_bot
     volumes: [".:/app"]
     env_file: [.env]
+    extra_hosts: *backing-hosts
     restart: unless-stopped
     depends_on:
       db:
@@ -87,3 +108,9 @@ services:
 volumes:
   postgres_data:
   redis_data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

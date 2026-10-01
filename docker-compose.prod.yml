@@ -1,6 +1,14 @@
 # Production Stack for Tinsae Marketplace
 # Sized specifically for Hetzner CPX31 (4 vCPU, 8 GB RAM)
 # Employs Predictable Two-Tier Resource Budgeting (Guaranteed Minimums + Safety Ceilings)
+#
+# db and redis get fixed IPs and every app service resolves them through
+# /etc/hosts (extra_hosts), so a container-name DNS blip cannot make celery-beat
+# lose Postgres and restart.
+
+x-backing-hosts: &backing-hosts
+  - "db:172.30.0.10"
+  - "redis:172.30.0.11"
 
 services:
   # Internal Database — Isolated to internal network (No public host port!)
@@ -19,6 +27,9 @@ services:
         -c max_connections=200
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      default:
+        ipv4_address: 172.30.0.10
     deploy:
       resources:
         reservations:
@@ -43,6 +54,9 @@ services:
     command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis_data:/data
+    networks:
+      default:
+        ipv4_address: 172.30.0.11
     deploy:
       resources:
         reservations:
@@ -84,6 +98,7 @@ services:
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.prod
       - CONN_MAX_AGE=60
+    extra_hosts: *backing-hosts
     volumes:
       - staticfiles:/app/staticfiles
       - media:/app/media
@@ -115,6 +130,7 @@ services:
       - .env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.prod
+    extra_hosts: *backing-hosts
     deploy:
       resources:
         reservations:
@@ -143,6 +159,7 @@ services:
       - .env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.prod
+    extra_hosts: *backing-hosts
     deploy:
       resources:
         reservations:
@@ -174,6 +191,7 @@ services:
       - .env
     environment:
       - DJANGO_SETTINGS_MODULE=config.settings.prod
+    extra_hosts: *backing-hosts
     deploy:
       resources:
         reservations:
@@ -216,3 +234,9 @@ volumes:
   redis_data:
   staticfiles:
   media:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

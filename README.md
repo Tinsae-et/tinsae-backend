@@ -642,3 +642,8 @@ tests/             project-level tests
   GUI to the Docker database, use `localhost:5434`.
 - **Files created by the container are owned by `root`** — run
   `sudo chown -R $USER:$USER .` from the host to fix.
+- **`celery-beat` restarts with `failed to resolve host 'db'`** — a transient
+  container-DNS blip (usually during recreate) made beat lose Postgres. The
+  compose files pin `db`/`redis` to static IPs (`172.30.0.10`/`.11`) and give the
+  app services `/etc/hosts` entries, so this no longer reaches them. If you change
+  the subnet, update the `extra_hosts` anchors to match.
