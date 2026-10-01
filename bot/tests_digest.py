@@ -309,9 +309,14 @@ class SetupBotSchedulesTests(TestCase):
         digest_task = PeriodicTask.objects.get(name="bot-send-due-digests")
         self.assertTrue(digest_task.enabled)
         self.assertIsNotNone(digest_task.crontab)
-        self.assertEqual(digest_task.crontab.hour, "8")
+        # A morning window, so a beat restart at 08:00 catches up instead of
+        # losing the day's digest.
+        self.assertEqual(digest_task.crontab.hour, "8,9,10,11")
         self.assertEqual(digest_task.crontab.minute, "0")
         self.assertEqual(str(digest_task.crontab.timezone), settings.TIME_ZONE)
+
+        reminder_task = PeriodicTask.objects.get(name="bot-send-reminders")
+        self.assertEqual(reminder_task.crontab.hour, "13,14,15,16")
 
         # Second call is idempotent (running twice does not duplicate)
         call_command("setup_bot_schedules")

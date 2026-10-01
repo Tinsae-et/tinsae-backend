@@ -30,11 +30,15 @@ class Command(BaseCommand):
             )
         )
 
-        # Weekly confirmation digest: daily at 08:00 Africa/Addis_Ababa
+        # Weekly confirmation digest: a morning window, not a single 08:00 tick.
+        # The job is idempotent per shop per day (unique (shop, for_date) + the
+        # cadence gate), so firing at :00 across 08:00-11:00 means a beat restart
+        # or DNS blip around 08:00 does not lose the whole day's digest — it
+        # catches up at the next hour.
         tz = getattr(settings, "TIME_ZONE", "Africa/Addis_Ababa")
         crontab, _ = CrontabSchedule.objects.get_or_create(
             minute="0",
-            hour="8",
+            hour="8,9,10,11",
             day_of_week="*",
             day_of_month="*",
             month_of_year="*",
@@ -52,7 +56,7 @@ class Command(BaseCommand):
         digest_action = "Created" if digest_created else "Updated"
         self.stdout.write(
             self.style.SUCCESS(
-                f"{digest_action} PeriodicTask '{digest_task.name}' -> {digest_task.task} (08:00 {tz}, enabled={digest_task.enabled})"
+                f"{digest_action} PeriodicTask '{digest_task.name}' -> {digest_task.task} (08:00-11:00 hourly {tz}, enabled={digest_task.enabled})"
             )
         )
 
@@ -81,10 +85,12 @@ class Command(BaseCommand):
             )
         )
 
-        # Daily reminder for unanswered open digests: daily at 13:00 Africa/Addis_Ababa
+        # Reminder for unanswered open digests: an afternoon window for the same
+        # reason. `reminded_at` makes a repeat run a no-op, so it fires at most
+        # once per digest even across the window.
         reminder_crontab, _ = CrontabSchedule.objects.get_or_create(
             minute="0",
-            hour="13",
+            hour="13,14,15,16",
             day_of_week="*",
             day_of_month="*",
             month_of_year="*",
@@ -102,7 +108,7 @@ class Command(BaseCommand):
         reminder_action = "Created" if reminder_created else "Updated"
         self.stdout.write(
             self.style.SUCCESS(
-                f"{reminder_action} PeriodicTask '{reminder_task.name}' -> {reminder_task.task} (13:00 {tz}, enabled={reminder_task.enabled})"
+                f"{reminder_action} PeriodicTask '{reminder_task.name}' -> {reminder_task.task} (13:00-16:00 hourly {tz}, enabled={reminder_task.enabled})"
             )
         )
 

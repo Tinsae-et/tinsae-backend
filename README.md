@@ -395,10 +395,15 @@ That registers, all in `Africa/Addis_Ababa`:
 | Task | When |
 | --- | --- |
 | `bot.tasks.drain_outbox` | every 15s |
-| `bot.tasks.send_due_digests` | 08:00 |
-| `bot.tasks.send_reminders` | 13:00 |
+| `bot.tasks.send_due_digests` | 08:00–11:00, hourly |
+| `bot.tasks.send_reminders` | 13:00–16:00, hourly |
 | `bot.tasks.sweep` | hourly |
 | `bot.tasks.prune` | 03:00 |
+
+The digest and reminder fire across a short window rather than a single minute,
+so a beat restart or DNS blip at 08:00 catches up at 09:00 instead of losing the
+day. Both are idempotent per shop per day (unique `(shop, for_date)`,
+`reminded_at`), so the extra ticks send nothing.
 
 To re-register the client command menu (the ☰ button):
 
