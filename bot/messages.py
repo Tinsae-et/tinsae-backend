@@ -19,6 +19,8 @@ BOT_COMMANDS = [
     ("menu", "Open the menu"),
     ("myproducts", "View and manage your products"),
     ("status", "Listing freshness and last check-in"),
+    ("pause_shop", "Pause all listings (vacation mode)"),
+    ("resume_shop", "Resume all paused listings"),
     ("unlink", "Disconnect this chat from your shop"),
     ("link", "Connect using a shop code"),
     ("help", "How to use the bot"),
@@ -41,14 +43,23 @@ def welcome(chat_id: str | int) -> str:
 
 def help_text() -> str:
     return (
+        "Here is what you can do with this bot:\n\n"
         "Commands:\n"
-        "/myproducts — check products waiting on confirmation\n"
-        "/status — view listing freshness and last check-in\n"
+        "/menu — open the interactive navigation hub\n"
+        "/myproducts — browse, confirm, pause, or restock items\n"
+        "/status — check listing freshness, due items, and check-in\n"
+        "/pause_shop — vacation mode: pause all listings while away\n"
+        "/resume_shop — resume all listings when you return\n"
         "/unlink — disconnect this chat from your shop\n"
         "/help — show this help guide\n\n"
+        "Quick sold (anytime):\n"
+        'Text "sold [item name]" (e.g. "sold iPhone 15") to mark an item out of stock immediately.\n'
+        "The bot finds it and provides an instant 1-tap Undo button.\n\n"
         "Weekly check-in:\n"
         'Reply "all" if everything is still in stock.\n'
-        'Reply "sold 2 5" to mark items 2 and 5 out of stock.'
+        'Reply "sold 2 5" to mark items 2 and 5 out of stock.\n\n'
+        "Web Dashboard:\n"
+        "Tap the Open Dashboard button in /menu or /status to manage prices, photos, and settings."
     )
 
 
@@ -430,3 +441,50 @@ def status(
     if prefix_shop:
         return f"{shop_name}: {body}"
     return body
+
+
+def sold_quick_ack(product_name: str) -> str:
+    return f"❌ Got it — '{product_name}' is marked out of stock."
+
+
+def sold_ambiguous(query: str) -> str:
+    return f"Several live items match '{query}'. Tap one to mark it out of stock:"
+
+
+def sold_not_found(query: str) -> str:
+    return f"No live products matching '{query}' found. Send /myproducts to check your listings."
+
+
+def sold_undone(product_name: str) -> str:
+    return f"✅ Restored — '{product_name}' is back in stock on the storefront."
+
+
+def shop_paused(count: int, shop_names: list[str]) -> str:
+    names = ", ".join(shop_names) if shop_names else "your shop"
+    if count == 0:
+        return f"No active listings to pause for {names}."
+    noun = "listing" if count == 1 else "listings"
+    return (
+        f"⏸ Vacation mode active: {count} {noun} paused for {names}.\n"
+        "Your confirmation clocks are frozen. Send /resume_shop when you're back."
+    )
+
+
+def shop_resumed(count: int, shop_names: list[str]) -> str:
+    names = ", ".join(shop_names) if shop_names else "your shop"
+    if count == 0:
+        return f"No paused listings to resume for {names}."
+    noun = "listing" if count == 1 else "listings"
+    return (
+        f"▶️ Welcome back! {count} {noun} back on the storefront for {names}.\n"
+        "Send /myproducts to review your inventory."
+    )
+
+
+def vacation_menu() -> str:
+    return (
+        "Vacation mode:\n"
+        "Temporarily pause all listings when you take a break or close shop.\n"
+        "Your confirmation freshness clock is preserved until you return.\n\n"
+        "Choose an action below, or use /pause_shop and /resume_shop anytime."
+    )

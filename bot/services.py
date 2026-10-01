@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.db import IntegrityError, models, transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from catalog.freshness import Freshness, freshness_case
@@ -1409,3 +1410,116 @@ def shop_status(shop: Shop, *, now=None) -> dict:
         "hidden": counts["hidden"] or 0,
         "last_checkin": last_checkin,
     }
+
+
+def handle_sold_by_query(
+    chat_id: str | int, query: str
+) -> tuple[str, Product | list[Product] | None]:
+    """Mark a product sold by free-text search across the chat's live listings.
+
+    Returns (outcome, result) where outcome is:
+    - "sold": exactly 1 live product matched and was marked sold (result is Product)
+    - "ambiguous": 2-5 products matched (result is list[Product])
+    - "not_found": 0 products or >5 products matched (result is None)
+    """
+    if chat_id in (None, "") or not query.strip():
+        return "not_found", None
+
+    chat_str = str(chat_id)
+    tokens = [t.strip().lower() for t in query.split() if t.strip()]
+    if not tokens:
+        return "not_found", None
+
+    qs = Product.objects.filter(
+        shop__telegram_chat_id=chat_str,
+        status=ProductStatus.LIVE,
+        is_available=True,
+    ).select_related("shop")
+
+    for token in tokens:
+        qs = qs.filter(Q(name__icontains=token) | Q(brand__icontains=token))
+
+    matches = list(qs[:6])
+    if len(matches) == 1:
+        product = matches[0]
+        pending = ConfirmationRequest.objects.filter(
+            product=product, status="pending"
+        ).first()
+        apply_confirmation(product, confirmed=False, request=pending)
+        logger.info(
+            "Chat %s quick-sold product %s ('%s').", chat_str, product.pk, query
+        )
+        return "sold", product
+
+    if 2 <= len(matches) <= 5:
+        return "ambiguous", matches
+
+    return "not_found", None
+
+
+def pause_shop_listings(chat_id: str | int) -> tuple[int, list[str]]:
+    """Pause all live, available products for this chat's shops (vacation mode).
+
+    Leaves confirmation clock untouched (in line with pause_listing).
+    Returns (count, shop_names).
+    """
+    if chat_id in (None, ""):
+        return 0, []
+    chat_str = str(chat_id)
+    shops = list(Shop.objects.filter(telegram_chat_id=chat_str))
+    if not shops:
+        return 0, []
+
+    count = 0
+    with transaction.atomic():
+        for shop in shops:
+            products = list(
+                Product.objects.filter(
+                    shop=shop, status=ProductStatus.LIVE, is_available=True
+                )
+            )
+            for product in products:
+                pause_listing(product)
+                count += 1
+
+    logger.info(
+        "Chat %s vacation-paused %d listings across %d shop(s).",
+        chat_str,
+        count,
+        len(shops),
+    )
+    return count, [s.name for s in shops]
+
+
+def resume_shop_listings(chat_id: str | int) -> tuple[int, list[str]]:
+    """Resume all paused products for this chat's shops.
+
+    Leaves confirmation clock untouched (in line with resume_listing).
+    Returns (count, shop_names).
+    """
+    if chat_id in (None, ""):
+        return 0, []
+    chat_str = str(chat_id)
+    shops = list(Shop.objects.filter(telegram_chat_id=chat_str))
+    if not shops:
+        return 0, []
+
+    count = 0
+    with transaction.atomic():
+        for shop in shops:
+            products = list(
+                Product.objects.filter(
+                    shop=shop, status=ProductStatus.LIVE, is_available=False
+                )
+            )
+            for product in products:
+                resume_listing(product)
+                count += 1
+
+    logger.info(
+        "Chat %s resumed %d vacation-paused listings across %d shop(s).",
+        chat_str,
+        count,
+        len(shops),
+    )
+    return count, [s.name for s in shops]

@@ -26,6 +26,8 @@ from bot.management.commands.run_bot import (
     on_callback,
     on_error,
     on_text,
+    pause_shop_cmd,
+    resume_shop_cmd,
     status,
 )
 from bot.models import (
@@ -38,10 +40,13 @@ from bot.selectors import listing_for_chat, shops_for_chat
 from bot.sender import drain_outbox
 from bot.services import (
     handle_product_callback,
+    handle_sold_by_query,
     handle_telegram_callback,
     handle_text_reply,
     parse_answer,
+    pause_shop_listings,
     record_update,
+    resume_shop_listings,
     review_next,
     send_confirmation_prompt,
     shop_status,
@@ -1831,8 +1836,11 @@ class MessagesTests(SimpleTestCase):
 
     def test_help_text_content_and_plain_text(self):
         help_msg = messages.help_text()
+        self.assertIn("/menu", help_msg)
         self.assertIn("/myproducts", help_msg)
         self.assertIn("/status", help_msg)
+        self.assertIn("/pause_shop", help_msg)
+        self.assertIn("/resume_shop", help_msg)
         self.assertIn("/unlink", help_msg)
         self.assertIn("/help", help_msg)
         self.assertIn('"all"', help_msg)
@@ -2388,7 +2396,9 @@ class StatusCommandTests(BotTestCase):
         update, message = self._message_update(chat_id=CHAT_ID)
         async_to_sync(help)(update, None)
 
-        message.reply_text.assert_awaited_once_with(text=messages.help_text())
+        message.reply_text.assert_awaited_once_with(
+            text=messages.help_text(), reply_markup=keyboards.help_markup()
+        )
 
 
 class MenuParsingTests(SimpleTestCase):
@@ -2408,11 +2418,51 @@ class MenuParsingTests(SimpleTestCase):
 class MenuKeyboardTests(SimpleTestCase):
     def test_menu_markup(self):
         rows = keyboards.menu_markup().inline_keyboard
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0][0].callback_data, "menu:products")
         self.assertEqual(rows[0][1].callback_data, "menu:status")
-        self.assertEqual(rows[1][0].callback_data, "menu:help")
-        self.assertEqual(rows[1][1].callback_data, "menu:unlink")
+        self.assertIn("dashboard", rows[1][0].url)
+        self.assertEqual(rows[1][1].callback_data, "menu:help")
+        self.assertEqual(rows[2][0].callback_data, "menu:unlink")
+        self.assertEqual(rows[2][1].callback_data, "menu:vacation")
+
+    def test_help_and_vacation_markups(self):
+        h = keyboards.help_markup()
+        self.assertIn("dashboard", h.inline_keyboard[0][0].url)
+        self.assertEqual(h.inline_keyboard[0][1].callback_data, "menu:home")
+
+        v = keyboards.vacation_menu_markup()
+        self.assertEqual(v.inline_keyboard[0][0].callback_data, "menu:vac_pause")
+        self.assertEqual(v.inline_keyboard[0][1].callback_data, "menu:vac_resume")
+        self.assertEqual(v.inline_keyboard[1][0].callback_data, "menu:home")
+
+    def test_status_markup_due_items(self):
+        markup = keyboards.status_markup(total_due=3)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 2)
+        self.assertIn("Review Due Items (3)", rows[0][0].text)
+        self.assertEqual(rows[0][0].callback_data, "menu:products")
+        self.assertIn("dashboard", rows[1][0].url)
+        self.assertEqual(rows[1][1].callback_data, "menu:home")
+
+    def test_status_markup_all_fresh(self):
+        markup = keyboards.status_markup(total_due=0)
+        rows = markup.inline_keyboard
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][0].text, "🛒 My products")
+        self.assertEqual(rows[0][0].callback_data, "menu:products")
+        self.assertIn("dashboard", rows[0][1].url)
+        self.assertEqual(rows[1][0].callback_data, "menu:home")
+
+    def test_undo_and_disambiguate_sold_markup(self):
+        undo = keyboards.undo_sold_markup(123)
+        self.assertEqual(undo.inline_keyboard[0][0].callback_data, "pback:123:999")
+
+        mock_p1 = mock.Mock(pk=1, brand="Apple", name="iPhone 15")
+        mock_p2 = mock.Mock(pk=2, brand="Apple", name="iPhone 14")
+        picker = keyboards.disambiguate_sold_markup([mock_p1, mock_p2])
+        self.assertEqual(picker.inline_keyboard[0][0].callback_data, "pdeny:1:999")
+        self.assertEqual(picker.inline_keyboard[1][0].callback_data, "pdeny:2:999")
 
 
 class BotCommandsListTests(SimpleTestCase):
@@ -2490,7 +2540,9 @@ class MenuHandlerTests(BotTestCase):
 
         async_to_sync(on_callback)(update, None)
 
-        query.edit_message_text.assert_awaited_with(messages.help_text())
+        query.edit_message_text.assert_awaited_with(
+            messages.help_text(), reply_markup=keyboards.help_markup()
+        )
 
     def test_menu_unlink_shows_confirmation(self):
         update, query = self._callback_update("menu:unlink")
@@ -2499,6 +2551,29 @@ class MenuHandlerTests(BotTestCase):
 
         markup = query.edit_message_text.call_args.kwargs["reply_markup"]
         self.assertEqual(markup.inline_keyboard[0][0].callback_data, "unlink:yes")
+
+    def test_menu_vacation_shows_options(self):
+        update, query = self._callback_update("menu:vacation")
+
+        async_to_sync(on_callback)(update, None)
+
+        query.edit_message_text.assert_awaited_with(
+            messages.vacation_menu(), reply_markup=keyboards.vacation_menu_markup()
+        )
+
+    def test_menu_vac_pause_and_resume(self):
+        update, query = self._callback_update("menu:vac_pause")
+        async_to_sync(on_callback)(update, None)
+        self.fresh_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+        self.assertIn("Vacation mode active", query.edit_message_text.call_args[0][0])
+
+        query.edit_message_text.reset_mock()
+        update, query = self._callback_update("menu:vac_resume")
+        async_to_sync(on_callback)(update, None)
+        self.fresh_product.refresh_from_db()
+        self.assertTrue(self.fresh_product.is_available)
+        self.assertIn("Welcome back", query.edit_message_text.call_args[0][0])
 
 
 class SyncBotCommandsTests(SimpleTestCase):
@@ -2580,3 +2655,161 @@ class ListingCallbackParsingTests(SimpleTestCase):
 
     def test_unknown_action_is_rejected(self):
         self.assertIsNone(parsing.parse_listing_callback("pfrobnicate:7:0"))
+
+
+class QuickSoldTests(BotTestCase):
+    def test_single_match_marks_product_sold(self):
+        outcome, product = handle_sold_by_query(CHAT_ID, "iPhone 15")
+        self.assertEqual(outcome, "sold")
+        self.assertEqual(product.pk, self.fresh_product.pk)
+        product.refresh_from_db()
+        self.assertFalse(product.is_available)
+        self.assertEqual(product.status, ProductStatus.SOLD)
+
+    def test_single_match_by_brand(self):
+        self.fresh_product.brand = "Apple"
+        self.fresh_product.save(update_fields=["brand"])
+        outcome, product = handle_sold_by_query(CHAT_ID, "Apple")
+        self.assertEqual(outcome, "sold")
+        self.assertEqual(product.pk, self.fresh_product.pk)
+
+    def test_ambiguous_matches_returns_candidates(self):
+        second = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            name="iPhone 15 Pro",
+            slug="iphone-15-pro",
+            brand="Apple",
+            price="70000.00",
+            status=ProductStatus.LIVE,
+            is_available=True,
+        )
+        outcome, matches = handle_sold_by_query(CHAT_ID, "iPhone")
+        self.assertEqual(outcome, "ambiguous")
+        self.assertEqual(len(matches), 2)
+        pks = [m.pk for m in matches]
+        self.assertIn(self.fresh_product.pk, pks)
+        self.assertIn(second.pk, pks)
+
+    def test_no_matches_returns_not_found(self):
+        outcome, res = handle_sold_by_query(CHAT_ID, "NonExistentThing")
+        self.assertEqual(outcome, "not_found")
+        self.assertIsNone(res)
+
+    def test_on_text_sold_marks_product_and_offers_undo(self):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.message.text = "sold iphone 15"
+        update.message.reply_to_message = None
+        update.effective_chat.id = int(CHAT_ID)
+
+        async_to_sync(on_text)(update, None)
+
+        self.fresh_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+        self.assertEqual(self.fresh_product.status, ProductStatus.SOLD)
+
+        update.message.reply_text.assert_awaited_once()
+        text = update.message.reply_text.call_args[0][0]
+        self.assertIn("marked out of stock", text)
+        markup = update.message.reply_text.call_args.kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        self.assertEqual(
+            markup.inline_keyboard[0][0].callback_data,
+            f"pback:{self.fresh_product.pk}:999",
+        )
+
+    def test_undo_quick_sold_restores_product(self):
+        # 1. Mark sold
+        handle_sold_by_query(CHAT_ID, "iPhone 15")
+        self.fresh_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+
+        # 2. Tap undo (pback:...:999)
+        query = mock.AsyncMock()
+        query.data = f"pback:{self.fresh_product.pk}:999"
+        query.message = mock.AsyncMock()
+        query.message.chat.id = int(CHAT_ID)
+        update = mock.Mock()
+        update.callback_query = query
+        update.effective_chat.id = int(CHAT_ID)
+
+        async_to_sync(on_callback)(update, None)
+
+        self.fresh_product.refresh_from_db()
+        self.assertTrue(self.fresh_product.is_available)
+        self.assertEqual(self.fresh_product.status, ProductStatus.LIVE)
+        query.edit_message_text.assert_awaited_once()
+        text = query.edit_message_text.call_args[0][0]
+        self.assertIn("back in stock", text)
+
+
+class VacationModeTests(BotTestCase):
+    def test_pause_shop_pauses_all_live_products(self):
+        clock_before_1 = self.fresh_product.last_confirmed_at
+        clock_before_2 = self.stale_product.last_confirmed_at
+
+        count, names = pause_shop_listings(CHAT_ID)
+        self.assertEqual(count, 2)
+        self.assertEqual(names, [self.shop.name])
+
+        self.fresh_product.refresh_from_db()
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+        self.assertFalse(self.stale_product.is_available)
+        # Invariant: clocks left completely untouched
+        self.assertEqual(self.fresh_product.last_confirmed_at, clock_before_1)
+        self.assertEqual(self.stale_product.last_confirmed_at, clock_before_2)
+
+    def test_resume_shop_restores_paused_products(self):
+        pause_shop_listings(CHAT_ID)
+        self.fresh_product.refresh_from_db()
+        self.stale_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+        self.assertFalse(self.stale_product.is_available)
+
+        clock_before_1 = self.fresh_product.last_confirmed_at
+        clock_before_2 = self.stale_product.last_confirmed_at
+
+        count, names = resume_shop_listings(CHAT_ID)
+        self.assertEqual(count, 2)
+
+        self.fresh_product.refresh_from_db()
+        self.stale_product.refresh_from_db()
+        self.assertTrue(self.fresh_product.is_available)
+        self.assertTrue(self.stale_product.is_available)
+        self.assertEqual(self.fresh_product.last_confirmed_at, clock_before_1)
+        self.assertEqual(self.stale_product.last_confirmed_at, clock_before_2)
+
+    def test_pause_and_resume_commands(self):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.effective_chat.id = int(CHAT_ID)
+
+        async_to_sync(pause_shop_cmd)(update, None)
+        self.fresh_product.refresh_from_db()
+        self.assertFalse(self.fresh_product.is_available)
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("Vacation mode active", update.message.reply_text.call_args[0][0])
+
+        update.message.reply_text.reset_mock()
+        async_to_sync(resume_shop_cmd)(update, None)
+        self.fresh_product.refresh_from_db()
+        self.assertTrue(self.fresh_product.is_available)
+        update.message.reply_text.assert_awaited_once()
+        self.assertIn("Welcome back", update.message.reply_text.call_args[0][0])
+
+
+class ActionableStatusTests(BotTestCase):
+    def test_status_command_includes_actionable_markup(self):
+        update = mock.Mock()
+        update.message = mock.AsyncMock()
+        update.effective_chat.id = int(CHAT_ID)
+
+        async_to_sync(status)(update, None)
+
+        update.message.reply_text.assert_awaited_once()
+        markup = update.message.reply_text.call_args.kwargs.get("reply_markup")
+        self.assertIsNotNone(markup)
+        self.assertIn("Review Due Items", markup.inline_keyboard[0][0].text)
+        self.assertEqual(markup.inline_keyboard[0][0].callback_data, "menu:products")

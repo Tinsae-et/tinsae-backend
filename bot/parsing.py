@@ -327,7 +327,16 @@ def parse_numeric_selection_callback(
 
 # --- Callback family 9: Menu navigation (menu:<action>) ---
 
-MENU_ACTIONS = ("products", "status", "help", "unlink", "home")
+MENU_ACTIONS = (
+    "products",
+    "status",
+    "help",
+    "unlink",
+    "home",
+    "vacation",
+    "vac_pause",
+    "vac_resume",
+)
 
 
 def format_menu_callback(action: str) -> str:

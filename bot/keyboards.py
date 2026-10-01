@@ -3,6 +3,7 @@
 Pure constructors: no database queries, no ORM, no network I/O.
 """
 
+from django.conf import settings
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.listing_states import LISTING_PAUSED, LISTING_SOLD
@@ -147,8 +148,25 @@ def _menu_button() -> InlineKeyboardButton:
     )
 
 
-def menu_markup() -> InlineKeyboardMarkup:
+def _dashboard_url(override: str | None = None) -> str:
+    """Return a Telegram-compliant public URL for the dashboard button.
+
+    Telegram Bot API strictly rejects 'localhost', '127.0.0.1', and loopback hostnames
+    with `BadRequest: wrong http url`. When FRONTEND_URL is localhost or not a public URL,
+    we fall back to 'https://tinsae.et/dashboard' so keyboards render without crashing.
+    """
+    candidate = override or getattr(settings, "FRONTEND_URL", "")
+    candidate = candidate.rstrip("/")
+    if not candidate or "localhost" in candidate or "127.0.0.1" in candidate:
+        return "https://tinsae.et/dashboard"
+    if candidate.endswith("/dashboard"):
+        return candidate
+    return f"{candidate}/dashboard"
+
+
+def menu_markup(dashboard_url: str | None = None) -> InlineKeyboardMarkup:
     """Build the /menu navigation hub."""
+    target_url = _dashboard_url(dashboard_url)
     return InlineKeyboardMarkup(
         [
             [
@@ -163,16 +181,156 @@ def menu_markup() -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(
+                    "🌐 Open Dashboard ↗",
+                    url=target_url,
+                ),
+                InlineKeyboardButton(
                     "❓ Help",
                     callback_data=format_menu_callback("help"),
                 ),
+            ],
+            [
                 InlineKeyboardButton(
                     "🔌 Unlink",
                     callback_data=format_menu_callback("unlink"),
                 ),
+                InlineKeyboardButton(
+                    "🏖 Vacation mode",
+                    callback_data=format_menu_callback("vacation"),
+                ),
             ],
         ]
     )
+
+
+def help_markup(dashboard_url: str | None = None) -> InlineKeyboardMarkup:
+    """Build inline keyboard markup for /help and menu help."""
+    target_url = _dashboard_url(dashboard_url)
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("🌐 Open Dashboard ↗", url=target_url),
+                _menu_button(),
+            ]
+        ]
+    )
+
+
+def vacation_menu_markup() -> InlineKeyboardMarkup:
+    """Build inline keyboard markup for vacation mode menu."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⏸ Pause all listings",
+                    callback_data=format_menu_callback("vac_pause"),
+                ),
+                InlineKeyboardButton(
+                    "▶️ Resume all listings",
+                    callback_data=format_menu_callback("vac_resume"),
+                ),
+            ],
+            [_menu_button()],
+        ]
+    )
+
+
+def vacation_paused_markup() -> InlineKeyboardMarkup:
+    """Build markup after pausing listings in vacation mode."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "▶️ Resume all listings",
+                    callback_data=format_menu_callback("vac_resume"),
+                )
+            ],
+            [_menu_button()],
+        ]
+    )
+
+
+def vacation_resumed_markup() -> InlineKeyboardMarkup:
+    """Build markup after resuming listings in vacation mode."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 My products",
+                    callback_data=format_menu_callback("products"),
+                )
+            ],
+            [_menu_button()],
+        ]
+    )
+
+
+def status_markup(
+    total_due: int = 0,
+    dashboard_url: str | None = None,
+) -> InlineKeyboardMarkup:
+    """Build the inline keyboard markup for /status."""
+    target_url = _dashboard_url(dashboard_url)
+
+    if total_due > 0:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        f"⚡ Review Due Items ({total_due})",
+                        callback_data=format_menu_callback("products"),
+                    )
+                ],
+                [
+                    InlineKeyboardButton("🌐 Open Dashboard ↗", url=target_url),
+                    _menu_button(),
+                ],
+            ]
+        )
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "🛒 My products",
+                    callback_data=format_menu_callback("products"),
+                ),
+                InlineKeyboardButton("🌐 Open Dashboard ↗", url=target_url),
+            ],
+            [_menu_button()],
+        ]
+    )
+
+
+def undo_sold_markup(product_pk: int) -> InlineKeyboardMarkup:
+    """Build keyboard offering an immediate Undo for a quick-sold product."""
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "↩️ Undo (Back in stock)",
+                    callback_data=format_listing_callback("pback", product_pk, 999),
+                )
+            ],
+            [_menu_button()],
+        ]
+    )
+
+
+def disambiguate_sold_markup(products) -> InlineKeyboardMarkup:
+    """Build buttons to pick which product to mark sold when query is ambiguous."""
+    rows = []
+    for product in products:
+        label = f"❌ {product.brand} {product.name}"[:BUTTON_LABEL_LIMIT]
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=format_listing_callback("pdeny", product.pk, 999),
+                )
+            ]
+        )
+    rows.append([_menu_button()])
+    return InlineKeyboardMarkup(rows)
 
 
 def unlink_confirmation_markup() -> InlineKeyboardMarkup:

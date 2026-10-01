@@ -12,7 +12,7 @@ import math
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from telegram import Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -33,11 +33,14 @@ from bot.services import (
     clear_blocked_for_chat,
     handle_digest_text,
     handle_product_callback,
+    handle_sold_by_query,
     handle_telegram_callback,
     handle_text_reply,
     link_shop_to_chat,
     looks_like_link_code,
+    pause_shop_listings,
     record_update,
+    resume_shop_listings,
     review_next,
     shop_status,
     start_review,
@@ -83,7 +86,7 @@ async def help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Inbound /help from user %s (chat %s)", update.effective_user.username, chat_id
     )
     text = messages.help_text()
-    await update.message.reply_text(text=text)
+    await update.message.reply_text(text=text, reply_markup=keyboards.help_markup())
     logger.info("Outbound reply to chat %s: %r", chat_id, text)
 
 
@@ -130,15 +133,17 @@ async def _products_content(chat_id):
 
 
 async def _status_content(chat_id):
-    """The /status text for a chat."""
+    """The /status content for a chat: `(text, markup | None)`."""
     shops = await sync_to_async(shops_for_chat, thread_sensitive=True)(chat_id)
     if not shops:
-        return messages.not_linked()
+        return messages.not_linked(), None
 
     prefix_shop = len(shops) > 1
     lines = []
+    total_due = 0
     for shop in shops:
         data = await sync_to_async(shop_status, thread_sensitive=True)(shop)
+        total_due += data["due"] + data["hidden"]
         lines.append(
             messages.status(
                 shop_name=shop.name,
@@ -149,7 +154,7 @@ async def _status_content(chat_id):
                 prefix_shop=prefix_shop,
             )
         )
-    return "\n".join(lines)
+    return "\n".join(lines), keyboards.status_markup(total_due)
 
 
 async def _unlink_content(chat_id):
@@ -198,6 +203,19 @@ async def _on_listing_answer(query, chat_id, data: str):
     # The answered row leaves the list, so redraw to keep the count honest.
     parsed = parsing.parse_listing_callback(data)
     page = parsed[2] if parsed else 0
+    if page == 999:
+        action = parsed[0] if parsed else ""
+        if action == "pback":
+            text = messages.sold_undone(f"{product.brand} {product.name}")
+            markup = InlineKeyboardMarkup([[keyboards._menu_button()]])
+            await query.edit_message_text(text, reply_markup=markup)
+            return
+        if action == "pdeny":
+            text = messages.sold_quick_ack(f"{product.brand} {product.name}")
+            markup = keyboards.undo_sold_markup(product.pk)
+            await query.edit_message_text(text, reply_markup=markup)
+            return
+
     await _refresh_listing(query, chat_id, page=page)
 
 
@@ -227,12 +245,40 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text, markup = await _products_content(chat_id)
                 await query.edit_message_text(text, reply_markup=markup)
             elif menu_action == "status":
-                await query.edit_message_text(await _status_content(chat_id))
+                text, markup = await _status_content(chat_id)
+                if markup:
+                    await query.edit_message_text(text, reply_markup=markup)
+                else:
+                    await query.edit_message_text(text)
             elif menu_action == "help":
-                await query.edit_message_text(messages.help_text())
+                await query.edit_message_text(
+                    messages.help_text(), reply_markup=keyboards.help_markup()
+                )
             elif menu_action == "unlink":
                 text, markup = await _unlink_content(chat_id)
                 await query.edit_message_text(text, reply_markup=markup)
+            elif menu_action == "vacation":
+                await query.edit_message_text(
+                    messages.vacation_menu(),
+                    reply_markup=keyboards.vacation_menu_markup(),
+                )
+            elif menu_action == "vac_pause":
+                count, shop_names = await sync_to_async(
+                    pause_shop_listings, thread_sensitive=True
+                )(chat_id)
+                await query.edit_message_text(
+                    messages.shop_paused(count, shop_names),
+                    reply_markup=keyboards.vacation_paused_markup(),
+                )
+            elif menu_action == "vac_resume":
+                count, shop_names = await sync_to_async(
+                    resume_shop_listings, thread_sensitive=True
+                )(chat_id)
+                await query.edit_message_text(
+                    messages.shop_resumed(count, shop_names),
+                    reply_markup=keyboards.vacation_resumed_markup(),
+                )
+
         return
 
     unlink_action = parsing.parse_unlink_callback(data)
@@ -452,7 +498,31 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     logger.info("Inbound /status from chat %s", chat_id)
 
-    await update.message.reply_text(await _status_content(chat_id))
+    text, markup = await _status_content(chat_id)
+    if markup:
+        await update.message.reply_text(text, reply_markup=markup)
+    else:
+        await update.message.reply_text(text)
+
+
+async def pause_shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pause all live listings for this chat's shops (vacation mode)."""
+    chat_id = update.effective_chat.id
+    logger.info("Inbound /pause_shop from chat %s", chat_id)
+    count, shop_names = await sync_to_async(pause_shop_listings, thread_sensitive=True)(
+        chat_id
+    )
+    await update.message.reply_text(messages.shop_paused(count, shop_names))
+
+
+async def resume_shop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Resume all paused listings for this chat's shops."""
+    chat_id = update.effective_chat.id
+    logger.info("Inbound /resume_shop from chat %s", chat_id)
+    count, shop_names = await sync_to_async(
+        resume_shop_listings, thread_sensitive=True
+    )(chat_id)
+    await update.message.reply_text(messages.shop_resumed(count, shop_names))
 
 
 def _text_reply_ack(outcome: str, product) -> str:
@@ -521,6 +591,31 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=keyboards.digest_markup(digest_id),
             )
             return
+
+    lower_text = message.text.strip().lower()
+    if lower_text.startswith("sold ") or lower_text.startswith("/sold "):
+        parts = message.text.strip().split(maxsplit=1)
+        if len(parts) > 1:
+            query_str = parts[1].strip()
+            if query_str and not all(part.isdigit() for part in query_str.split()):
+                outcome, res = await sync_to_async(
+                    handle_sold_by_query, thread_sensitive=True
+                )(chat_id=str(chat_id), query=query_str)
+                if outcome == "sold":
+                    await message.reply_text(
+                        messages.sold_quick_ack(f"{res.brand} {res.name}"),
+                        reply_markup=keyboards.undo_sold_markup(res.pk),
+                    )
+                    return
+                if outcome == "ambiguous":
+                    await message.reply_text(
+                        messages.sold_ambiguous(query_str),
+                        reply_markup=keyboards.disambiguate_sold_markup(res),
+                    )
+                    return
+                if outcome == "not_found":
+                    await message.reply_text(messages.sold_not_found(query_str))
+                    return
 
     outcome, product = await sync_to_async(handle_text_reply, thread_sensitive=True)(
         text=message.text,
@@ -591,6 +686,8 @@ class Command(BaseCommand):
         app.add_handler(CommandHandler("link", link))
         app.add_handler(CommandHandler("unlink", unlink))
         app.add_handler(CommandHandler("status", status))
+        app.add_handler(CommandHandler("pause_shop", pause_shop_cmd))
+        app.add_handler(CommandHandler("resume_shop", resume_shop_cmd))
         app.add_handler(CommandHandler("myproducts", my_products))
         app.add_handler(CallbackQueryHandler(on_callback))
         # Last, and command-free: a merchant who ignores the buttons and just
