@@ -28,6 +28,7 @@ jobs:
       DJANGO_DEBUG: "False"
       DATABASE_URL: postgres://tinsae:tinsae@localhost:5432/tinsae
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      ENABLE_TELEGRAM_BOT_PROMPTS: "True"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
