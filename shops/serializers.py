@@ -10,7 +10,7 @@ from catalog.models import (
 from catalog.serializers import ProductImageSerializer
 from catalog.specs import category_schema, normalize_specs, validate_specs
 
-from .models import Shop, VerificationRequest
+from .models import Shop, ShopPhoto, VerificationRequest
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -23,8 +23,10 @@ class ShopSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "description",
+            "logo",
             "phone",
             "city",
+            "address",
             "latitude",
             "longitude",
             "telegram_chat_id",
@@ -32,6 +34,7 @@ class ShopSerializer(serializers.ModelSerializer):
             "owner",
             "created_at",
             "updated_at",
+            "categories",
         ]
         # `telegram_chat_id` is readable here so an owner can see whether their
         # shop is linked, but it is never writable over the API. It is the bot's
@@ -51,6 +54,26 @@ class ShopSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    categories = serializers.SlugRelatedField(
+        many=True,
+        slug_field="slug",
+        queryset=Category.objects.all(),
+        required=False,
+    )
+
+
+class ShopPhotoSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ShopPhoto
+        fields = ["id", "url", "image", "display_order", "is_cover", "created_at"]
+        read_only_fields = ["id", "url", "created_at"]
+
+    def get_url(self, obj):
+        request = self.context.get("request")
+        return request.build_absolute_uri(obj.image.url) if request else obj.image.url
+
 
 class ShopPublicSerializer(serializers.ModelSerializer):
     """Shop detail as anyone else sees it.
@@ -61,6 +84,13 @@ class ShopPublicSerializer(serializers.ModelSerializer):
     number and the storefront is meant to show it.
     """
 
+    categories = serializers.SlugRelatedField(
+        many=True,
+        slug_field="slug",
+        read_only=True,
+    )
+    photos = ShopPhotoSerializer(many=True, read_only=True)
+
     class Meta:
         model = Shop
         fields = [
@@ -68,8 +98,11 @@ class ShopPublicSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "description",
+            "logo",
             "phone",
             "city",
+            "categories",
+            "photos",
             "latitude",
             "longitude",
             "is_verified",
