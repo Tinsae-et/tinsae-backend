@@ -23,10 +23,10 @@ from .models import Shop, ShopPhoto, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
 from .serializers import (
     ShopListSerializer,
+    ShopPhotoSerializer,
     ShopProductImageSerializer,
     ShopProductSerializer,
     ShopPublicSerializer,
-    ShopPhotoSerializer,
     ShopSerializer,
     VerificationRequestSerializer,
 )

@@ -3,8 +3,8 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     PublicShopProductsView,
-    ShopProductImageViewSet,
     ShopPhotoViewSet,
+    ShopProductImageViewSet,
     ShopProductViewSet,
     ShopViewSet,
     VerificationViewSet,
