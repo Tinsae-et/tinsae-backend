@@ -79,6 +79,7 @@ class DigestBuildTests(TestCase):
         self.assertEqual(rows[1][0].callback_data, "drev:99")
 
 
+@override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=True)
 class DigestWorkflowTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="u2", password="pw")
@@ -781,6 +782,7 @@ class DigestRunBotTests(TestCase):
         self.assertIsNone(self.digest.closed_at)
 
 
+@override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=True)
 class ConfirmationRequestExpiresAtTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="u_exp", password="pw")
@@ -1014,6 +1016,7 @@ class SweepServicesTests(TestCase):
         self.assertEqual(OutboundMessage.objects.count(), 0)
 
 
+@override_settings(ENABLE_TELEGRAM_BOT_PROMPTS=True)
 class SendRemindersTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="u_rem", password="pw")

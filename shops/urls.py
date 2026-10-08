@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     PublicShopProductsView,
+    ShopPhotoViewSet,
     ShopProductImageViewSet,
     ShopProductViewSet,
     ShopViewSet,
@@ -21,6 +22,7 @@ router.register("shops", ShopViewSet)
 PRODUCTS = "shops/<slug:shop_slug>/products/"
 PRODUCT = "shops/<slug:shop_slug>/products/<slug:slug>/"
 IMAGES = "shops/<slug:shop_slug>/products/<slug:product_slug>/images/"
+SHOP_PHOTOS = "shops/<slug:shop_slug>/photos/"
 VERIFICATION = "shops/<slug:shop_slug>/verification/"
 
 
@@ -50,6 +52,10 @@ images_detail = ShopProductImageViewSet.as_view(
         "delete": "destroy",
     }
 )
+shop_photos = ShopPhotoViewSet.as_view({"get": "list", "post": "create"})
+shop_photo_detail = ShopPhotoViewSet.as_view(
+    {"get": "retrieve", "patch": "partial_update", "delete": "destroy"}
+)
 
 urlpatterns = router.urls + [
     # `confirm-all` is declared before the detail route so it is not swallowed
@@ -62,6 +68,8 @@ urlpatterns = router.urls + [
     path(PRODUCT + "resume/", resume, name="shop-products-resume"),
     path(IMAGES, images_list, name="shop-product-images-list"),
     path(IMAGES + "<int:pk>/", images_detail, name="shop-product-images-detail"),
+    path(SHOP_PHOTOS, shop_photos, name="shop-photos-list"),
+    path(SHOP_PHOTOS + "<int:pk>/", shop_photo_detail, name="shop-photos-detail"),
     path(PRODUCT, products_detail, name="shop-products-detail"),
     path(VERIFICATION, verification_list, name="shop-verification-list"),
     path(VERIFICATION + "state/", verification_detail, name="shop-verification-detail"),

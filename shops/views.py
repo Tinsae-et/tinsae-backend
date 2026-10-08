@@ -19,10 +19,11 @@ from catalog.services import (
 )
 from catalog.views import ORDERING_FIELDS, TRUTHY
 
-from .models import Shop, VerificationRequest
+from .models import Shop, ShopPhoto, VerificationRequest
 from .permissions import IsOwnerOrReadOnly
 from .serializers import (
     ShopListSerializer,
+    ShopPhotoSerializer,
     ShopProductImageSerializer,
     ShopProductSerializer,
     ShopPublicSerializer,
@@ -109,6 +110,25 @@ class ShopViewSet(viewsets.ModelViewSet):
                 {"detail": "This account already has a registered shop."}
             )
         serializer.save(owner=self.request.user)
+
+
+class ShopPhotoViewSet(viewsets.ModelViewSet):
+    serializer_class = ShopPhotoSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_shop(self):
+        return get_object_or_404(
+            Shop, slug=self.kwargs["shop_slug"], owner=self.request.user
+        )
+
+    def get_queryset(self):
+        return ShopPhoto.objects.filter(shop=self.get_shop())
+
+    def perform_create(self, serializer):
+        shop = self.get_shop()
+        if shop.photos.count() >= 8:
+            raise ValidationError({"image": "A shop can have at most 8 photos."})
+        serializer.save(shop=shop)
 
 
 class ShopProductViewSet(viewsets.ModelViewSet):

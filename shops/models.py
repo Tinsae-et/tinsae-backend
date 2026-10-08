@@ -7,6 +7,7 @@ from django.db.models.signals import post_save, pre_save
 from django.dispatch import receiver
 from django.utils.text import slugify
 
+from catalog.image_utils import validate_image_file
 from core.models import BaseModel
 from core.slugs import save_with_unique_slug
 
@@ -15,8 +16,15 @@ class Shop(BaseModel):
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=220, unique=True, blank=True)
     description = models.TextField(blank=True)
+    logo = models.ImageField(
+        upload_to="shops/logos/",
+        blank=True,
+        null=True,
+        validators=[validate_image_file],
+    )
     phone = models.CharField(max_length=30, blank=True)
     city = models.CharField(max_length=100, blank=True)
+    address = models.CharField(max_length=200, blank=True)
     latitude = models.DecimalField(
         max_digits=9,
         decimal_places=6,
@@ -54,6 +62,9 @@ class Shop(BaseModel):
         on_delete=models.CASCADE,
         related_name="shops",
     )
+    categories = models.ManyToManyField(
+        "catalog.Category", blank=True, related_name="shops"
+    )
 
     class Meta(BaseModel.Meta):
         ordering = ["name"]
@@ -70,6 +81,21 @@ class Shop(BaseModel):
         # identifier, not a label.
         base = slugify(self.name) or "shop"
         return save_with_unique_slug(self, base, super().save, *args, **kwargs)
+
+
+class ShopPhoto(BaseModel):
+    shop = models.ForeignKey(Shop, on_delete=models.CASCADE, related_name="photos")
+    image = models.ImageField(
+        upload_to="shops/photos/", validators=[validate_image_file]
+    )
+    display_order = models.PositiveIntegerField(default=0)
+    is_cover = models.BooleanField(default=False)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["-is_cover", "display_order", "created_at"]
+
+    def __str__(self):
+        return f"{self.shop.slug} photo {self.pk}"
 
 
 class VerificationRequest(models.Model):
