@@ -1,6 +1,7 @@
 import logging
 
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Min, Prefetch, Q
+from django.db.models.functions import Lower
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import generics, mixins, permissions, serializers, viewsets
@@ -110,6 +111,31 @@ class ShopViewSet(viewsets.ModelViewSet):
                 {"detail": "This account already has a registered shop."}
             )
         serializer.save(owner=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="areas", pagination_class=None)
+    def areas(self, request):
+        """The areas that have verified shops, busiest first, for the public
+        directory's area filter. An area is the shop's `city` for now; the
+        list endpoint filters on it with `?city=` (case-insensitive), so
+        spellings that differ only in case are counted together.
+        """
+        rows = (
+            Shop.objects.filter(is_verified=True)
+            .exclude(city="")
+            .annotate(area=Lower("city"))
+            .values("area")
+            .annotate(count=Count("id"), label=Min("city"))
+            .order_by("-count", "area")
+        )
+        return Response(
+            [{"city": _area_label(row["label"]), "count": row["count"]} for row in rows]
+        )
+
+
+def _area_label(city):
+    """A display spelling for an area: an all-lowercase entry ("bole") is
+    capitalised, anything else ("CMC", "Bahir Dar") is kept as typed."""
+    return city.title() if city.islower() else city
 
 
 class ShopPhotoViewSet(viewsets.ModelViewSet):

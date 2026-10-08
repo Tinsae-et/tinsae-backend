@@ -121,6 +121,7 @@ class ShopListSerializer(serializers.ModelSerializer):
             "name",
             "slug",
             "description",
+            "logo",
             "phone",
             "city",
             "latitude",

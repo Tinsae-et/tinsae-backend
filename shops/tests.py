@@ -1250,3 +1250,36 @@ class ProductStatusFilterTests(TestCase):
     def test_draft_is_draft_only(self):
         names = self._names(status="draft")
         self.assertEqual(names, {"Draft Item"})
+
+
+class ShopAreasTest(TestCase):
+    """`/shops/areas/` feeds the public directory's area filter: only verified
+    shops count, blank cities are left out, and case variants are merged the
+    same way the list's `?city=` filter matches them."""
+
+    def setUp(self):
+        owner = User.objects.create_user(username="areas_owner", password="pass")
+        for name, city, verified in [
+            ("Bole One", "Bole", True),
+            ("Bole Two", "bole", True),
+            ("Piazza One", "Piazza", True),
+            ("Bole Unverified", "Bole", False),
+            ("No City", "", True),
+        ]:
+            Shop.objects.create(name=name, city=city, owner=owner, is_verified=verified)
+
+    def test_counts_verified_shops_per_area_busiest_first(self):
+        response = APIClient().get("/api/v1/shops/areas/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            [{"city": "Bole", "count": 2}, {"city": "Piazza", "count": 1}],
+        )
+
+    def test_area_matches_the_list_filter(self):
+        response = APIClient().get("/api/v1/shops/?verified_only=1&city=Bole")
+        self.assertEqual(response.json()["count"], 2)
+
+    def test_list_includes_logo(self):
+        response = APIClient().get("/api/v1/shops/?verified_only=1")
+        self.assertIn("logo", response.json()["results"][0])
