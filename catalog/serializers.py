@@ -28,6 +28,9 @@ class ProductSerializer(serializers.ModelSerializer):
     shop_name = serializers.CharField(source="shop.name", read_only=True)
     shop_slug = serializers.CharField(source="shop.slug", read_only=True)
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
+    # The seller's logo, so a product page can show the shop's own avatar
+    # rather than initials. Null when the shop has none.
+    shop_logo = serializers.SerializerMethodField()
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
     # `typo_score`, `freshness_score` and `rank_score` are deliberately not
@@ -69,6 +72,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "shop_name",
             "shop_slug",
             "shop_verified",
+            "shop_logo",
             "category",
             "images",
             "last_confirmed_at",
@@ -76,6 +80,13 @@ class ProductSerializer(serializers.ModelSerializer):
             "slug",
             "specs",
         ]
+
+    def get_shop_logo(self, obj):
+        if not obj.shop.logo:
+            return None
+        request = self.context.get("request")
+        url = obj.shop.logo.url
+        return request.build_absolute_uri(url) if request else url
 
     def get_title(self, obj):
         return f"{obj.brand} {obj.name}"
