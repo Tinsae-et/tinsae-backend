@@ -198,10 +198,17 @@ class ProductImageModelTest(TestCase):
         self.assertEqual(data["title"], "Hp Laptop")
         self.assertEqual(data["shop_name"], "Test shop")
         self.assertFalse(data["shop_verified"])
+        self.assertIsNone(data["shop_logo"])
         self.assertEqual(data["category"]["name"], "Electronics")
         self.assertEqual(data["condition"], "new")
         self.assertEqual(len(data["images"]), 1)
         self.assertEqual(data["images"][0]["display_order"], 0)
+
+    def test_product_serializer_includes_shop_logo(self):
+        self.shop.logo = self._png("logo.png")
+        self.shop.save()
+        data = ProductSerializer(self.product).data
+        self.assertTrue(data["shop_logo"].startswith("/media/shops/logos/"))
 
     def test_primary_image_surfaces_first(self):
         first = ProductImage.objects.create(
