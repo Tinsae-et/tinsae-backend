@@ -199,6 +199,36 @@ class ShopProductSerializer(serializers.ModelSerializer):
             obj.product_image.all(), many=True, context=self.context
         ).data
 
+    def validate_category(self, category):
+        # A parent ("Vehicles & Auto") only groups its subcategories: a car and
+        # a tyre share no specs, so a listing must name the one it belongs to.
+        if category.children.exists():
+            raise serializers.ValidationError(f"Pick a subcategory of {category.name}.")
+        return category
+
+    def _check_brand(self, attrs):
+        """A brand where the category is bought by brand (phones, cars...).
+
+        Unbranded goods (a locally made sofa, a rug) leave it blank. Drafts
+        may skip it, like the other required details.
+        """
+        instance = self.instance
+        if instance and not {"brand", "category", "status"} & attrs.keys():
+            return
+        category = attrs.get("category") or (instance.category if instance else None)
+        product_type = category.product_type if category else None
+        status = attrs.get("status", instance.status if instance else None)
+        brand = attrs.get("brand", instance.brand if instance else "") or ""
+        if (
+            product_type
+            and product_type.brand_required
+            and status != ProductStatus.DRAFT
+            and not brand.strip()
+        ):
+            raise serializers.ValidationError(
+                {"brand": f"Add the brand: {product_type.label} buyers search by it."}
+            )
+
     def validate(self, attrs):
         """Hold `specs` to the category's schema.
 
@@ -209,6 +239,7 @@ class ShopProductSerializer(serializers.ModelSerializer):
         not for completeness, so a half-finished listing can still be saved.
         """
         attrs = super().validate(attrs)
+        self._check_brand(attrs)
         if not {"specs", "category", "condition"} & attrs.keys():
             return attrs
 

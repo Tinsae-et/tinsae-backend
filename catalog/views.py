@@ -1,7 +1,17 @@
 import logging
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Case, Count, IntegerField, Prefetch, Q, Value, When
+from django.db.models import (
+    Case,
+    Count,
+    IntegerField,
+    Max,
+    Min,
+    Prefetch,
+    Q,
+    Value,
+    When,
+)
 from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from django.utils.decorators import method_decorator
@@ -11,12 +21,25 @@ from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 
-from core.pagination import ProductSuggestionsPagination
+from core.pagination import CategoryPagination, ProductSuggestionsPagination
 from shops.models import Shop
 
+from .filters import (
+    MAX_FACET_VALUES,
+    condition_filter,
+    list_param,
+    number_range,
+    spec_filters,
+    value_counts,
+)
 from .models import Category, ConfirmationStatus, Product, ProductImage
-from .serializers import CategorySerializer, ProductSerializer
-from .services import apply_search, get_product_suggestions, log_search
+from .serializers import CategoryTreeSerializer, ProductSerializer
+from .services import (
+    apply_search,
+    build_search_filter,
+    get_product_suggestions,
+    log_search,
+)
 from .specs import category_schema
 
 ORDERING_FIELDS = {
@@ -30,7 +53,9 @@ ORDERING_FIELDS = {
 }
 
 TRUTHY = {"1", "true", "yes", "on"}
-PUBLIC_STATS_TTL = 60 * 60 * 24
+# Short enough that the category counts in the menus follow a day's new
+# listings; the endpoint is also throttled, so the cache is not the only guard.
+PUBLIC_STATS_TTL = 60 * 15
 logger = logging.getLogger(__name__)
 
 
@@ -69,8 +94,11 @@ def price_param(params, name):
 
 
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = Category.objects.all()
-    serializer_class = CategorySerializer
+    # Every category is listed, subcategories included (with `parent` set), so
+    # existing clients keep working; `children` saves new ones the tree-building.
+    queryset = Category.objects.prefetch_related("children")
+    serializer_class = CategoryTreeSerializer
+    pagination_class = CategoryPagination
 
 
 class CategorySchemaView(views.APIView):
@@ -100,8 +128,22 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
     lookup_field = "slug"
 
     def get_queryset(self):
+        params = self.request.query_params
+        ordering = params.get("ordering")
+        if ordering:
+            field = ordering[1:] if ordering.startswith("-") else ordering
+            if field not in ORDERING_FIELDS:
+                raise ValidationError(
+                    {"ordering": f"Invalid ordering field: {ordering}."}
+                )
+        if "freshness" in params:
+            logger.warning(
+                "Deprecated query parameter ?freshness= used on the public "
+                "product list; use ?fresh= instead. Remove after 2026-12-31."
+            )
+
         qs = (
-            Product.objects.filter(is_available=True)
+            self.filtered_queryset()
             .select_related("category", "shop")
             # Sorted here rather than in the serializer: calling .order_by() on
             # the prefetched manager discards the prefetch and costs one extra
@@ -131,51 +173,14 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             )
         )
 
-        ordering = self.request.query_params.get("ordering")
-        if ordering:
-            field = ordering[1:] if ordering.startswith("-") else ordering
-            if field not in ORDERING_FIELDS:
-                raise ValidationError(
-                    {"ordering": f"Invalid ordering field: {ordering}."}
-                )
-
         # Ranked search lives on this route because this is the route the
         # frontend calls (`frontend-implementation-guide.md`: "GET
         # /catalog/products/?q=..."). TIN-58 asked to upgrade the TIN-16 search,
         # and a second endpoint beside it would have been a fork, not an
         # upgrade: two ranking rules, and only one of them wired to a client.
-        if query := (self.request.query_params.get("q") or "").strip():
+        query = (params.get("q") or "").strip()
+        if query:
             qs = apply_search(qs, query)
-        min_price = price_param(self.request.query_params, "min_price")
-        if min_price is not None:
-            qs = qs.filter(price__gte=min_price)
-        max_price = price_param(self.request.query_params, "max_price")
-        if max_price is not None:
-            qs = qs.filter(price__lte=max_price)
-        if self.request.query_params.get("verified_only"):
-            qs = qs.filter(shop__is_verified=True)
-        if "freshness" in self.request.query_params:
-            logger.warning(
-                "Deprecated query parameter ?freshness= used on the public "
-                "product list; use ?fresh= instead. Remove after 2026-12-31."
-            )
-        # Strict about its value, unlike the two flags above: those accept any
-        # non-empty string and their tests pin that down, but `fresh=false` has
-        # an obvious intended meaning and must not switch the filter on.
-        if (self.request.query_params.get("fresh") or "").lower() in TRUTHY:
-            qs = qs.fresh()
-        if category := self.request.query_params.get("category"):
-            qs = qs.filter(category__slug=category)
-        # Brand is a facet, not a free-text search: a comma-separated list is
-        # the OR of the brands picked in the filter panel. Matching is
-        # case-insensitive because stored casing drifts ("APPLE" vs "Apple").
-        if brand := self.request.query_params.get("brand"):
-            brands = [b.strip() for b in brand.split(",") if b.strip()]
-            if brands:
-                brand_q = Q()
-                for b in brands:
-                    brand_q |= Q(brand__iexact=b)
-                qs = qs.filter(brand_q)
 
         # An explicit sort replaces the ranking rather than nesting underneath
         # it: a buyer who asks for cheapest-first means it. Filters compose with
@@ -187,6 +192,152 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             # freshness here would undo the entire ranking.
             return qs
         return qs.order_by("freshness_rank", "-last_signal")
+
+    def filtered_queryset(self, skip=frozenset()):
+        """Available products narrowed by every filter param, unordered.
+
+        The one place the list's filters live, so the facet counts can never
+        disagree with the list. `skip` drops named filters ("category",
+        "brand", "condition", "spec:<key>"): a facet counts its options with
+        every other filter applied but not its own, so ticking "Diesel" does
+        not hide "Petrol" -- the standard faceted-search behaviour.
+        """
+        params = self.request.query_params
+        qs = Product.objects.filter(is_available=True)
+        if query := (params.get("q") or "").strip():
+            qs = qs.filter(build_search_filter(query))
+        if "price" not in skip:
+            min_price = price_param(params, "min_price")
+            if min_price is not None:
+                qs = qs.filter(price__gte=min_price)
+            max_price = price_param(params, "max_price")
+            if max_price is not None:
+                qs = qs.filter(price__lte=max_price)
+        if params.get("verified_only"):
+            qs = qs.filter(shop__is_verified=True)
+        # Strict about its value, unlike the flag above: that one accepts any
+        # non-empty string and its tests pin that down, but `fresh=false` has
+        # an obvious intended meaning and must not switch the filter on.
+        if (params.get("fresh") or "").lower() in TRUTHY:
+            qs = qs.fresh()
+        if "category" not in skip and (category := params.get("category")):
+            # A parent category lists its subcategories' products too:
+            # ?category=vehicles shows cars, motorcycles, trucks...
+            qs = qs.filter(
+                Q(category__slug=category) | Q(category__parent__slug=category)
+            )
+        # Brand is a facet, not a free-text search: a comma-separated list is
+        # the OR of the brands picked in the filter panel. Matching is
+        # case-insensitive because stored casing drifts ("APPLE" vs "Apple").
+        if "brand" not in skip and (brands := list_param(params, "brand")):
+            brand_q = Q()
+            for b in brands:
+                brand_q |= Q(brand__iexact=b)
+            qs = qs.filter(brand_q)
+        if "condition" not in skip and (condition_q := condition_filter(params)):
+            qs = qs.filter(condition_q)
+        for key, spec_q in spec_filters(params, self.category_schema()).items():
+            if f"spec:{key}" not in skip:
+                qs = qs.filter(spec_q)
+        return qs
+
+    def category_schema(self):
+        """The `?category=` schema, or None; looked up once per request."""
+        if not hasattr(self, "_category_schema"):
+            slug = self.request.query_params.get("category")
+            category = (
+                Category.objects.select_related("product_type")
+                .filter(slug=slug)
+                .first()
+                if slug
+                else None
+            )
+            self._category_schema = category_schema(category)
+        return self._category_schema
+
+    @action(detail=False, methods=["get"], url_path="facets")
+    def facets(self, request):
+        """What the filter rail shows: each option's count under the other filters.
+
+        Takes the same params as the list. Every spec of the category's schema
+        is counted: options for enum and text specs, the stored range for
+        numbers. Counts follow the list's own filters, so a number here is
+        always what clicking the option would show.
+        """
+        schema = self.category_schema()
+
+        def counted(skip=frozenset()):
+            # No ordering: the counts group by value, and a default ordering
+            # would add its columns to the GROUP BY.
+            return self.filtered_queryset(skip).order_by()
+
+        data = {
+            "total": counted().count(),
+            "brands": [
+                {"value": row["brand"], "count": row["count"]}
+                for row in counted({"brand"})
+                .exclude(brand="")
+                .values("brand")
+                .annotate(count=Count("id"))
+                .order_by("-count", "brand")[: MAX_FACET_VALUES * 2]
+            ],
+            "conditions": [
+                {"value": row["condition"], "count": row["count"]}
+                for row in counted({"condition"})
+                .values("condition")
+                .annotate(count=Count("id"))
+                .order_by("-count")
+            ],
+            "subcategories": [],
+            # Every category's count under the other filters (search, price,
+            # trust...), parents including their subcategories: the category
+            # tree in the rail shows where the matching listings are.
+            "categories": {},
+            "specs": {},
+        }
+        by_category = counted({"category"})
+        for row in (
+            by_category.values("category__slug").annotate(count=Count("id")).order_by()
+        ):
+            data["categories"][row["category__slug"]] = row["count"]
+        for row in (
+            by_category.filter(category__parent__isnull=False)
+            .values("category__parent__slug")
+            .annotate(count=Count("id"))
+            .order_by()
+        ):
+            parent = row["category__parent__slug"]
+            data["categories"][parent] = (
+                data["categories"].get(parent, 0) + row["count"]
+            )
+        data["category_total"] = by_category.count()
+        # The price slider's track: this category's range under the other
+        # filters, not the whole catalogue's (an excavator made the Phones
+        # slider span ETB 18M). Its own bounds are left out so it can widen.
+        prices = counted({"price"}).aggregate(low=Min("price"), high=Max("price"))
+        data["price"] = (
+            {"min": float(prices["low"]), "max": float(prices["high"])}
+            if prices["low"] is not None
+            else None
+        )
+        if slug := request.query_params.get("category"):
+            data["subcategories"] = [
+                {"slug": row["category__slug"], "count": row["count"]}
+                for row in counted({"category"})
+                .filter(category__parent__slug=slug)
+                .values("category__slug")
+                .annotate(count=Count("id"))
+                .order_by()
+            ]
+        if schema:
+            for field in schema["fields"]:
+                key = field["key"]
+                qs = counted({f"spec:{key}"})
+                if field["type"] == "number":
+                    data["specs"][key] = {"range": number_range(qs, key)}
+                else:
+                    data["specs"][key] = {"values": value_counts(qs, key)}
+        return Response(data)
 
     def list(self, request, *args, **kwargs):
         """Serve the page, then record the search that produced it.
@@ -310,6 +461,19 @@ class PublicStatsView(views.APIView):
             for row in category_counts
             if row["category__slug"]
         }
+        # A parent category counts its subcategories' products, the same way
+        # ?category=<parent> lists them; otherwise "Vehicles & Auto" shows 0.
+        parent_counts = (
+            buyer_visible_qs.filter(category__parent__isnull=False)
+            .values("category__parent__slug")
+            .annotate(count=Count("id"))
+            .order_by()
+        )
+        for row in parent_counts:
+            slug = row["category__parent__slug"]
+            category_product_count[slug] = (
+                category_product_count.get(slug, 0) + row["count"]
+            )
 
         data = {
             "total_shops": total_shops,

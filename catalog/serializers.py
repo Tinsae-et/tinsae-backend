@@ -4,9 +4,38 @@ from .models import Category, Product, ProductImage
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    # Whether listings here have a spec form and spec filters: true for
+    # "Cars", false for the "Vehicles & Auto" parent that only groups them.
+    has_specs = serializers.SerializerMethodField()
+
     class Meta:
         model = Category
-        fields = ["id", "name", "slug", "parent", "display_order"]
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "parent",
+            "display_order",
+            "has_specs",
+            "icon",
+            "tagline",
+        ]
+
+    def get_has_specs(self, obj):
+        return obj.product_type_id is not None
+
+
+class CategoryTreeSerializer(CategorySerializer):
+    """A category with its subcategories, for navigation.
+
+    Only the category list uses it: nesting `children` into every product's
+    category would cost a query per product.
+    """
+
+    children = CategorySerializer(many=True, read_only=True)
+
+    class Meta(CategorySerializer.Meta):
+        fields = [*CategorySerializer.Meta.fields, "children"]
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -78,7 +107,8 @@ class ProductSerializer(serializers.ModelSerializer):
         ]
 
     def get_title(self, obj):
-        return f"{obj.brand} {obj.name}"
+        # An unbranded listing is just its name, without a leading space.
+        return f"{obj.brand} {obj.name}".strip()
 
     def get_images(self, obj):
         # Ordering belongs to the viewset's Prefetch — re-sorting here would
