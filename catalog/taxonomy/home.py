@@ -36,6 +36,16 @@ ATTRIBUTES = {
             ("leather", "Leather"),
             ("fabric", "Fabric"),
             ("glass", "Glass"),
+            # Clothing, shoes and bags (catalog/taxonomy/fashion.py).
+            ("cotton", "Cotton"),
+            ("polyester", "Polyester"),
+            ("denim", "Denim"),
+            ("linen", "Linen"),
+            ("wool", "Wool"),
+            ("blend", "Blend"),
+            ("synthetic", "Synthetic"),
+            ("canvas", "Canvas"),
+            ("suede", "Suede"),
         ),
     },
     # Whether it fits the room is the first question for any furniture.

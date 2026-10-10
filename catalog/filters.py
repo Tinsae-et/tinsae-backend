@@ -138,14 +138,17 @@ def spec_filters(params, schema: dict | None) -> dict[str, Q]:
     return filters
 
 
-def value_counts(qs, key: str, *, multiple: bool = False) -> list[dict]:
+def value_counts(
+    qs, key: str, *, multiple: bool = False, order: list[str] | None = None
+) -> list[dict]:
     """The most common stored values of a spec, with how many listings hold each.
 
     For a multiple spec each value in a listing's list counts once: a shirt
-    in S, M and L adds one to each size.
+    in S, M and L adds one to each size. Its values are listed in `order` (the
+    field's options as stored), so sizes read S, M, L, XL rather than by count.
     """
     if multiple:
-        return _list_value_counts(qs, key)
+        return _list_value_counts(qs, key, order or [])
     rows = (
         qs.annotate(_value=KT(f"specs__{key}"))
         .exclude(_value__isnull=True)
@@ -157,7 +160,7 @@ def value_counts(qs, key: str, *, multiple: bool = False) -> list[dict]:
     return [{"value": row["_value"], "count": row["count"]} for row in rows]
 
 
-def _list_value_counts(qs, key: str) -> list[dict]:
+def _list_value_counts(qs, key: str, order: list[str]) -> list[dict]:
     """Per-item counts over list values, counted in Python.
 
     Postgres cannot group by the items of a JSON array without a lateral
@@ -170,8 +173,21 @@ def _list_value_counts(qs, key: str) -> list[dict]:
     ):
         items = value if isinstance(value, list) else [value]
         counts.update({str(item) for item in items if item not in (None, "")})
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
-    return [{"value": v, "count": n} for v, n in ranked[:MAX_FACET_VALUES]]
+    top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:MAX_FACET_VALUES]
+    position = {value: i for i, value in enumerate(order)}
+
+    def in_order(item):
+        # Options first, as listed; then typed values, numbers numerically
+        # ("30" before "100"), then the rest alphabetically.
+        value = item[0]
+        if value in position:
+            return (0, position[value], "")
+        try:
+            return (1, float(value), "")
+        except ValueError:
+            return (2, 0, value.casefold())
+
+    return [{"value": v, "count": n} for v, n in sorted(top, key=in_order)]
 
 
 def number_range(qs, key: str) -> dict | None:

@@ -49,17 +49,17 @@ class CategoryModelTest(TestCase):
 
         call_command("seed_catalog")
         call_command("seed_shop_data", sample=True, no_images=True)
-        self.assertEqual(Product.objects.count(), 59)
+        self.assertEqual(Product.objects.count(), 65)
 
     def test_seed_shop_data_procedural_mode(self):
         from django.core.management import call_command
 
         call_command("seed_catalog")
         call_command("seed_shop_data", per_category=2, no_images=True)
-        # 2 for each of the 24 categories that take listings (10 electronics,
-        # 6 vehicles, 5 furniture & appliances, 3 power & solar); group
+        # 2 for each of the 30 categories that take listings (10 electronics,
+        # 6 vehicles, 5 furniture & appliances, 3 power & solar, 6 fashion); group
         # parents ("Vehicles & Auto", "Computers"...) have no products.
-        self.assertEqual(Product.objects.count(), 48)
+        self.assertEqual(Product.objects.count(), 60)
 
 
 class ProductModelTest(TestCase):

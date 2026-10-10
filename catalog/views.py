@@ -336,9 +336,14 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 if field["type"] == "number":
                     data["specs"][key] = {"range": number_range(qs, key)}
                 else:
+                    # Text fields store an option's label, enums its value.
+                    store = "label" if field["type"] == "text" else "value"
                     data["specs"][key] = {
                         "values": value_counts(
-                            qs, key, multiple=field.get("multiple", False)
+                            qs,
+                            key,
+                            multiple=field.get("multiple", False),
+                            order=[o[store] for o in field["options"] or []],
                         )
                     }
         return Response(data)

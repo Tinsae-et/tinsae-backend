@@ -208,7 +208,7 @@ class SeedReconciliationTests(TestCase):
         # last_confirmed_at but never confirmation_status. A health page that
         # read the clock directly would disagree with what buyers actually get.
         before = collect_health()["catalog"]
-        self.assertEqual(before["available"], 59)
+        self.assertEqual(before["available"], 65)
         self.assertEqual(before["stale"], 0)
         self.assertEqual(before["stale_by_clock"], 5)
         self.assertEqual(before["sweep_drift"], 5)
@@ -219,16 +219,16 @@ class SeedReconciliationTests(TestCase):
         after = collect_health()
         # The five samples seeded at 45 days, past the window.
         self.assertEqual(after["catalog"]["stale"], 5)
-        self.assertEqual(after["catalog"]["fresh"], 54)
-        self.assertEqual(after["catalog"]["fresh_pct"], 91.5)
+        self.assertEqual(after["catalog"]["fresh"], 60)
+        self.assertEqual(after["catalog"]["fresh_pct"], 92.3)
         self.assertEqual(after["catalog"]["never_confirmed"], 0)
         self.assertTrue(after["catalog"]["sweep_current"])
 
         # Seeded shops carry no telegram_chat_id, so nothing was ever asked.
         self.assertEqual(after["requests"]["total"], 0)
         self.assertIsNone(after["requests"]["response_rate"])
-        self.assertEqual(len(after["shops"]), 11)
-        self.assertEqual(len(after["attention"]["unreachable"]), 11)
+        self.assertEqual(len(after["shops"]), 13)
+        self.assertEqual(len(after["attention"]["unreachable"]), 13)
         self.assertEqual(after["attention"]["never_responds"], [])
         self.assertEqual(after["attention"]["never_asked"], [])
 

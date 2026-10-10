@@ -58,6 +58,10 @@ ATTRIBUTES = {
             ("midnight", "Midnight"),
             ("starlight", "Starlight"),
             ("natural_titanium", "Natural Titanium"),
+            # Fashion colours.
+            ("navy", "Navy"),
+            ("beige", "Beige"),
+            ("multicolor", "Multicolour"),
         ),
     },
     # Pick or type: "Shop · 18 months" or "Brand 2y + shop 6m" are real too.
