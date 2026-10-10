@@ -1,3 +1,4 @@
+from django import forms
 from django.contrib import admin
 
 from .models import (
@@ -5,16 +6,19 @@ from .models import (
     AttributeOption,
     Category,
     Product,
+    ProductCondition,
     ProductImage,
+    ProductStatus,
     ProductType,
     ProductTypeAttribute,
     SearchLog,
 )
+from .specs import category_schema, normalize_specs, validate_specs
 
 
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
-    list_display = ["name", "parent", "product_type", "display_order", "slug"]
+    list_display = ["name", "parent", "product_type", "icon", "display_order", "slug"]
     list_filter = ["product_type"]
     search_fields = ["name"]
     prepopulated_fields = {"slug": ["name"]}
@@ -99,8 +103,55 @@ class ProductImageInline(admin.TabularInline):
     fields = ["image", "is_primary", "display_order"]
 
 
+class ProductAdminForm(forms.ModelForm):
+    """Hold admin edits to the same rules as the shop dashboard.
+
+    `specs` is a raw JSON box here; without this an admin could save values no
+    merchant form would accept (an unknown key, "fast" as a mileage).
+    """
+
+    class Meta:
+        model = Product
+        fields = "__all__"
+
+    def clean(self):
+        cleaned = super().clean()
+        category = cleaned.get("category")
+        schema = category_schema(category) if category else None
+        if schema is None:
+            return cleaned
+        specs = normalize_specs(schema, cleaned.get("specs") or {})
+        instance = self.instance
+        # Older values stay editable within the listing's own category, as in
+        # the dashboard; a move to another category starts from its rules.
+        existing = (
+            instance.specs
+            if instance.pk and instance.category_id == category.id
+            else {}
+        )
+        errors = validate_specs(
+            schema,
+            specs,
+            condition=cleaned.get("condition") or ProductCondition.NEW,
+            enforce_required=cleaned.get("status") != ProductStatus.DRAFT,
+            existing=existing or {},
+        )
+        if errors:
+            raise forms.ValidationError(
+                {
+                    "specs": [
+                        f"{key}: {' '.join(messages)}"
+                        for key, messages in sorted(errors.items())
+                    ]
+                }
+            )
+        cleaned["specs"] = specs
+        return cleaned
+
+
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
+    form = ProductAdminForm
     list_display = [
         "brand",
         "name",

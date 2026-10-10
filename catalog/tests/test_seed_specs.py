@@ -1,3 +1,4 @@
+import io
 import tempfile
 
 from django.core.management import call_command
@@ -90,7 +91,15 @@ class SeedSpecsTest(TestCase):
             "Workstation",
         )
         self.assertEqual(laptop_type("HP Spectre x360 2-in-1 14 OLED"), "2-in-1")
-        self.assertEqual(laptop_type("HP Pavilion 15 Core i5"), "Everyday / student")
+        # The name does not say and the field is optional: left empty.
+        specs = seed_specs(
+            self._cat("laptops"),
+            {},
+            text="HP Pavilion 15 Core i5",
+            condition="new",
+            seed="pavilion",
+        )
+        self.assertNotIn("laptop_type", specs)
 
     def test_used_items_get_their_condition_fields(self):
         specs = seed_specs(
@@ -127,7 +136,7 @@ class SeedSpecsTest(TestCase):
         self.assertEqual(specs["kit"], "with_lens")
         self.assertEqual(specs["lens_mount"], "Canon RF")
 
-    def test_old_free_text_specs_are_converted_and_kept(self):
+    def test_old_free_text_specs_are_converted_then_dropped(self):
         specs = seed_specs(
             self._cat("accessories"),
             {"capacity": "10000mAh", "type": "Power bank", "port": "USB-C + USB-A"},
@@ -138,9 +147,9 @@ class SeedSpecsTest(TestCase):
         self.assertEqual(specs["accessory_type"], "power_bank")
         self.assertEqual(specs["battery_capacity"], 10000)
         self.assertIn("output_power", specs)
-        self.assertEqual(specs["capacity"], "10000mAh")
+        self.assertNotIn("capacity", specs)
 
-    def test_old_one_line_specs_are_replaced_not_duplicated(self):
+    def test_only_schema_keys_are_kept(self):
         specs = seed_specs(
             self._cat("phones"),
             {"display": "6.2″ Dynamic AMOLED 2X 120Hz", "n5g": "Yes", "year": "2024"},
@@ -150,14 +159,30 @@ class SeedSpecsTest(TestCase):
         )
         self.assertEqual(specs["screen_size"], 6.2)
         self.assertEqual(specs["network"], "5g")
-        self.assertEqual(specs["release_year"], 2024)
-        # The old keys are gone once their new fields hold the value.
+        # Old keys are gone, whether or not a field took their value.
         for old in ("display", "n5g", "year"):
             self.assertNotIn(old, specs)
         # Required unit facts get the mainstream defaults.
-        self.assertEqual(specs["phone_type"], "smartphone")
         self.assertEqual(specs["carrier_lock"], "unlocked")
-        self.assertEqual(specs["region_version"], "Global")
+
+    def test_a_used_vehicle_gets_mileage_and_a_new_one_does_not(self):
+        call_command("seed_catalog", stdout=io.StringIO())
+        cars = self._cat("cars")
+        base = {
+            "body_type": "sedan",
+            "year": 2015,
+            "transmission": "manual",
+            "fuel": "petrol",
+        }
+        used = seed_specs(
+            cars, base, text="Toyota Corolla White", condition="used", seed="c1"
+        )
+        self.assertTrue(12000 <= used["mileage"] <= 180000)
+        self.assertEqual(used["color"], "White")
+        new = seed_specs(
+            cars, base, text="Toyota Corolla White", condition="new", seed="c2"
+        )
+        self.assertNotIn("mileage", new)
 
     def test_the_same_seed_gives_the_same_specs(self):
         args = {"text": "Tecno Spark 10 Pro", "condition": "new", "seed": "same"}

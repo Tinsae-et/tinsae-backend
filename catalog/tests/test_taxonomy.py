@@ -66,6 +66,26 @@ class SyncTaxonomyTest(TestCase):
         with self.assertRaises(TaxonomyError):
             sync_taxonomy(attributes, PRODUCT_TYPES)
 
+    def test_a_unit_never_changes_under_stored_values(self):
+        sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)
+        attributes = copy.deepcopy(ATTRIBUTES)
+        attributes["screen_size"]["unit"] = "cm"
+        # Nothing stored yet: the unit may still change.
+        sync_taxonomy(attributes, PRODUCT_TYPES)
+        sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)
+
+        owner = User.objects.create_user(username="unit", password="pass")
+        Product.objects.create(
+            shop=Shop.objects.create(name="Unit Shop", owner=owner),
+            category=self.phones,
+            brand="A",
+            name="Phone",
+            price="1.00",
+            specs={"screen_size": 6.1},
+        )
+        with self.assertRaises(TaxonomyError):
+            sync_taxonomy(attributes, PRODUCT_TYPES)
+
     def test_an_enum_may_widen_to_text(self):
         # Processor started as a closed list; every stored value stays valid text.
         as_enum = copy.deepcopy(ATTRIBUTES)
@@ -115,22 +135,25 @@ class CategorySchemaApiTest(TestCase):
         battery = next(
             f for f in response.data["fields"] if f["key"] == "battery_health"
         )
-        self.assertEqual(battery["show_if"], {"condition": ["used"]})
+        self.assertEqual(
+            battery["show_if"],
+            {"condition": ["used"], "phone_type": ["smartphone", "rugged"]},
+        )
         self.assertEqual(battery["max"], 100)
 
     def test_fields_carry_their_section_and_level(self):
         response = APIClient().get("/api/v1/catalog/categories/phones/schema/")
         fields = {f["key"]: f for f in response.data["fields"]}
-        # Key specs are required; the spec sheet is recommended, never required;
-        # facts about the unit sit in their own section.
+        # Key specs are required; recommended ones stay optional; facts about
+        # the unit sit in their own section.
         self.assertEqual(
             (fields["storage"]["section"], fields["storage"]["required"]), ("key", True)
         )
         self.assertEqual(
-            (fields["chipset"]["section"], fields["chipset"]["recommended"]),
-            ("details", True),
+            (fields["main_camera"]["section"], fields["main_camera"]["recommended"]),
+            ("key", True),
         )
-        self.assertFalse(fields["chipset"]["required"])
+        self.assertFalse(fields["main_camera"]["required"])
         self.assertEqual(
             (fields["carrier_lock"]["section"], fields["carrier_lock"]["required"]),
             ("item", True),
@@ -191,7 +214,9 @@ class ListingSpecValidationTest(TestCase):
 
     def test_missing_required_specs_are_field_errors(self):
         response = self.client.post(
-            self.url, self._payload(specs={"storage": 256}), format="json"
+            self.url,
+            self._payload(specs={"phone_type": "smartphone", "storage": 256}),
+            format="json",
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn("ram", response.data["specs"])
@@ -255,13 +280,19 @@ class ListingSpecValidationTest(TestCase):
     def test_a_draft_may_be_incomplete_but_not_invalid(self):
         response = self.client.post(
             self.url,
-            self._payload(status="draft", specs={"storage": 256}),
+            self._payload(
+                status="draft", specs={"phone_type": "smartphone", "storage": 256}
+            ),
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
         response = self.client.post(
             self.url,
-            self._payload(status="draft", name="Other", specs={"storage": "300gb"}),
+            self._payload(
+                status="draft",
+                name="Other",
+                specs={"phone_type": "smartphone", "storage": "300gb"},
+            ),
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -342,6 +373,15 @@ class SpecsMigrationTest(TestCase):
         # Noise cancelling only applies to headphones and earbuds.
         self.assertNotIn("noise_cancellation", after)
 
+    def test_wireless_audio_battery_is_read_from_text(self):
+        before = {
+            "type": "Over-ear Wireless",
+            "bluetooth": "5.2",
+            "battery": "30h with ANC",
+        }
+        after = migrate_product_specs("audio", self._schema("audio"), before, "new")
+        self.assertEqual(after["battery_life"], 30)
+
     def test_a_valid_value_is_never_overwritten(self):
         before = {"storage": 128, "sim": "Dual Nano-SIM"}
         after = migrate_product_specs("phones", self._schema("phones"), before, "new")
@@ -370,14 +410,11 @@ class SpecSheetConversionTest(TestCase):
         }
         after = migrate_product_specs("phones", self._schema("phones"), before, "new")
         self.assertEqual(after["screen_size"], 6.2)
-        self.assertEqual(after["display_panel"], "Dynamic AMOLED 2X")
-        self.assertEqual(after["refresh_rate"], 120)
-        self.assertEqual(after["chipset"], "Exynos 2400 Deca-Core")
-        self.assertEqual((after["main_camera"], after["camera_setup"]), (50, "triple"))
-        self.assertEqual(
-            (after["battery_capacity"], after["fast_charging"]), (4000, 25)
-        )
-        self.assertEqual((after["release_year"], after["weight"]), (2024, 167))
+        self.assertEqual(after["main_camera"], 50)
+        self.assertEqual(after["battery_capacity"], 4000)
+        # Fields dropped from the phone schema are not filled in.
+        for key in ("display_panel", "chipset", "camera_setup", "release_year"):
+            self.assertNotIn(key, after)
 
     def test_a_laptop_spec_sheet_is_split_into_fields(self):
         before = {
@@ -387,16 +424,11 @@ class SpecSheetConversionTest(TestCase):
             "weight": "2.3 kg",
         }
         after = migrate_product_specs("laptops", self._schema("laptops"), before, "new")
-        self.assertEqual(after["ram_type"], "LPDDR5X")
-        self.assertEqual((after["gpu_type"], after["vram"]), ("dedicated", 8))
-        self.assertEqual((after["display_panel"], after["refresh_rate"]), ("IPS", 165))
-        self.assertEqual(after["weight"], 2300)
-
-        integrated = migrate_product_specs(
-            "laptops", self._schema("laptops"), {"gpu": "Intel Iris Xe"}, "new"
-        )
-        self.assertEqual(integrated["gpu_type"], "integrated")
-        self.assertNotIn("vram", integrated)
+        self.assertEqual(after["ram"], 16)
+        self.assertEqual(after["gpu"], "NVIDIA GeForce RTX 4060 8GB")
+        # Fields dropped from the laptop schema are not filled in.
+        for key in ("ram_type", "gpu_type", "vram", "display_panel", "refresh_rate"):
+            self.assertNotIn(key, after)
 
 
 class SizeConversionTest(TestCase):

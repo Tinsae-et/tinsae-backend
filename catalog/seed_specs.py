@@ -7,8 +7,13 @@ into specs that pass the category's schema, in three passes:
 1. convert old free-text keys with the `migrate_specs` mappers;
 2. read what the name and colour text say (storage, RAM, colour, type...);
 3. fill every still-missing required field deterministically -- warranty from
-   the condition, battery health / cycles / shutter count for used items, and
-   otherwise a stable pick seeded by the product, so reseeding is repeatable.
+   the condition, battery health / cycles / shutter count / mileage for used
+   items, and otherwise a stable pick seeded by the product, so reseeding is
+   repeatable.
+
+Only keys the schema defines are kept: the seed data still describes products
+the old way ("chip", "year", "weight"...), and those details are not part of
+the listing any more.
 
 The result is validated before it is returned: a seed that cannot produce a
 valid listing fails loudly instead of writing data the form would reject.
@@ -49,6 +54,9 @@ COLORS = [
     (r"purple|violet|lavender", "purple"),
     (r"pink|rose", "pink"),
     (r"red|crimson", "red"),
+    (r"yellow|lemon|amber", "yellow"),
+    (r"orange", "orange"),
+    (r"brown|bronze", "brown"),
 ]
 
 # Read from the name when the old specs did not already provide them.
@@ -101,37 +109,18 @@ NAME_RULES = {
     "noise_cancellation": [(r"noise cancel|anc\b", "yes")],
     "sim": [(r"dual sim", "dual")],
     "network": [(r"\b5g\b", "5g")],
-    "phone_type": [
-        (r"rugged|armor|blackview|ulefone", "rugged"),
-        (r"nokia 1\d\d\b|itel it", "feature_phone"),
-    ],
 }
 
 # The only optional fields a seed fills at random, because any value is
 # plausible for them. Everything else stays empty unless the name or old specs
-# say so: a random pick would give an iPhone a headphone jack, a Canon a Sony
-# mount, a MacBook "Windows".
-MAY_GUESS = {"touchscreen", "water_resistance", "compatible_with", "connector"}
+# say so: a random pick would give a Canon a Sony mount.
+MAY_GUESS = {"water_resistance", "compatible_with", "connector"}
 
 # What a seed assumes when the name is silent, instead of a random pick.
 INVENT_DEFAULTS = {
     "storage_type": "ssd",
-    "laptop_type": "everyday",
-    "phone_type": "smartphone",
     "network": "4g",
     "carrier_lock": "unlocked",
-    "region_version": "global",
-}
-
-# Old seed keys each new field replaces; the old key is dropped once the new
-# one holds a value, so the product page does not show the same fact twice.
-SUPERSEDED = {
-    "display": ("screen_size", "display_panel"),
-    "chip": ("chipset",),
-    "camera": ("main_camera",),
-    "battery": ("battery_capacity", "battery_life"),
-    "year": ("release_year",),
-    "n5g": ("network",),
 }
 
 # Keyed by the plain value: enum members hash by name, so a
@@ -164,7 +153,9 @@ NUMBER_RANGES = {
     "output_power": (10, 65),
     "battery_capacity": (5000, 20000),
     "power_output": (5, 60),
+    "motor_power": (500, 4000),
     "megapixels": (12, 45),
+    "mileage": (12000, 180000),
 }
 
 _schemas: dict[int, dict | None] = {}
@@ -290,6 +281,10 @@ def seed_specs(
         if not matches_condition(field["show_if"], values):
             result.pop(key, None)
             continue
+        # A keypad phone is 2G, whatever the old free-text specs implied.
+        if key == "network" and result.get("phone_type") == "feature_phone":
+            result[key] = "2g"
+            continue
         current = result.get(key)
         if current not in (None, "") and check_value(field, current) is None:
             continue
@@ -313,17 +308,13 @@ def seed_specs(
             invented = _invent(field, condition, rng, schema["product_type"])
             result[key] = as_text(field, invented)
 
-    for old, replacements in SUPERSEDED.items():
-        if old in result and any(
-            result.get(new) not in (None, "") for new in replacements
-        ):
-            del result[old]
+    # Old free-text keys have given what they could; the rest is dropped.
+    defined = {f["key"] for f in fields}
+    result = {k: v for k, v in result.items() if k in defined}
 
     # Stored exactly as a merchant's save would store it.
     result = normalize_specs(schema, result)
-    defined = {f["key"] for f in fields}
-    legacy = {k: v for k, v in result.items() if k not in defined}
-    errors = validate_specs(schema, result, condition=condition, existing=legacy)
+    errors = validate_specs(schema, result, condition=condition)
     if errors:
         raise ValueError(f"Seed specs for {seed!r} fail the schema: {errors}")
     return result

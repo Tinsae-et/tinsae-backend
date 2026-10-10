@@ -201,35 +201,34 @@ class SeedReconciliationTests(TestCase):
     """The AC's "numbers reconcile with the seeded data" check, pinned."""
 
     def test_seeded_catalog_before_and_after_a_sweep(self):
-        Category.objects.create(name="Phones", slug="phones")
-        Category.objects.create(name="Accessories", slug="accessories")
+        # Sample mode creates the categories it needs (every vertical).
         call_command("seed_shop_data", sample=True, no_images=True)
 
         # Before the sweep the stored column is untouched: the seeder writes
         # last_confirmed_at but never confirmation_status. A health page that
         # read the clock directly would disagree with what buyers actually get.
         before = collect_health()["catalog"]
-        self.assertEqual(before["available"], 31)
+        self.assertEqual(before["available"], 53)
         self.assertEqual(before["stale"], 0)
-        self.assertEqual(before["stale_by_clock"], 3)
-        self.assertEqual(before["sweep_drift"], 3)
+        self.assertEqual(before["stale_by_clock"], 5)
+        self.assertEqual(before["sweep_drift"], 5)
         self.assertFalse(before["sweep_current"])
 
         call_command("sweep_freshness")
 
         after = collect_health()
-        # The three products seeded at 45 days, past the 30-day window.
-        self.assertEqual(after["catalog"]["stale"], 3)
-        self.assertEqual(after["catalog"]["fresh"], 28)
-        self.assertEqual(after["catalog"]["fresh_pct"], 90.3)
+        # The five samples seeded at 45 days, past the window.
+        self.assertEqual(after["catalog"]["stale"], 5)
+        self.assertEqual(after["catalog"]["fresh"], 48)
+        self.assertEqual(after["catalog"]["fresh_pct"], 90.6)
         self.assertEqual(after["catalog"]["never_confirmed"], 0)
         self.assertTrue(after["catalog"]["sweep_current"])
 
         # Seeded shops carry no telegram_chat_id, so nothing was ever asked.
         self.assertEqual(after["requests"]["total"], 0)
         self.assertIsNone(after["requests"]["response_rate"])
-        self.assertEqual(len(after["shops"]), 3)
-        self.assertEqual(len(after["attention"]["unreachable"]), 3)
+        self.assertEqual(len(after["shops"]), 10)
+        self.assertEqual(len(after["attention"]["unreachable"]), 10)
         self.assertEqual(after["attention"]["never_responds"], [])
         self.assertEqual(after["attention"]["never_asked"], [])
 

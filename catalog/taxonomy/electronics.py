@@ -1,4 +1,5 @@
-"""Electronics: the six live categories and the specs their listings carry.
+"""Electronics: phones, tablets, wearables, computers, TV & audio, cameras and
+accessories, and the specs their listings carry.
 
 `ATTRIBUTES` is the global list: each key is defined once. `PRODUCT_TYPES`
 picks attributes per type, narrows enum options with `options`, and sets the
@@ -80,7 +81,6 @@ ATTRIBUTES = {
         "type": "number",
         "unit": "GB",
         "min": 1,
-        "max": 65536,
         "convert_from": SIZE_FROM_ENUM,
     },
     "storage_type": {
@@ -98,7 +98,6 @@ ATTRIBUTES = {
         "type": "number",
         "unit": "GB",
         "min": 1,
-        "max": 65536,
         "convert_from": SIZE_FROM_ENUM,
     },
     "ram": {
@@ -107,7 +106,6 @@ ATTRIBUTES = {
         "unit": "GB",
         # 0.5 for the 512MB feature-class phones still sold.
         "min": 0.5,
-        "max": 512,
         "convert_from": SIZE_FROM_ENUM,
     },
     "connectivity": {
@@ -133,12 +131,6 @@ ATTRIBUTES = {
         "type": "number",
         "unit": "in",
         "min": 1,
-        "max": 100,
-    },
-    "touchscreen": {
-        "label": "Touchscreen",
-        "type": "enum",
-        "options": _opts(("yes", "Yes"), ("no", "No")),
     },
     # --- phones & tablets ---
     "sim": {
@@ -155,7 +147,7 @@ ATTRIBUTES = {
     "network": {
         "label": "Network",
         "type": "enum",
-        "options": _opts(("3g", "3G"), ("4g", "4G"), ("5g", "5G")),
+        "options": _opts(("2g", "2G"), ("3g", "3G"), ("4g", "4G"), ("5g", "5G")),
     },
     # --- laptops ---
     # What the laptop is for -- the first thing buyers narrow by. Pick or type
@@ -270,6 +262,7 @@ ATTRIBUTES = {
             ("ip54", "IP54"),
             ("ip67", "IP67"),
             ("ip68", "IP68"),
+            ("5atm", "5ATM"),
         ),
     },
     # --- cameras ---
@@ -309,7 +302,6 @@ ATTRIBUTES = {
         "type": "number",
         "unit": "MP",
         "min": 1,
-        "max": 400,
     },
     "shutter_count": {"label": "Shutter count", "type": "number", "min": 0},
     # --- accessories ---
@@ -325,7 +317,6 @@ ATTRIBUTES = {
             ("mouse_keyboard", "Mouse / keyboard"),
             ("external_storage", "External storage"),
             ("memory_card", "Memory card"),
-            ("wearable", "Smartwatch / band"),
             ("other", "Other"),
         ),
     },
@@ -366,126 +357,26 @@ ATTRIBUTES = {
         "type": "number",
         "unit": "m",
         "min": 0.1,
-        "max": 20,
     },
     # --- spec sheet: display, performance, camera, battery, body ---
-    "resolution": {
-        "label": "Resolution",
-        "type": "text",
-        "options": _opts(
-            ("hd", "HD (1366×768)"),
-            ("hd_plus", "HD+ (1600×900)"),
-            ("fhd", "FHD (1920×1080)"),
-            ("fhd_plus", "FHD+ (1920×1200)"),
-            ("qhd", "QHD (2560×1440)"),
-            ("qhd_plus", "QHD+ (2560×1600)"),
-            ("3k", "3K (2880×1800)"),
-            ("4k", "4K UHD (3840×2160)"),
-        ),
-    },
-    "display_panel": {
-        "label": "Display type",
-        "type": "text",
-        "options": _opts(
-            ("ips_lcd", "IPS LCD"),
-            ("lcd", "LCD"),
-            ("tn", "TN"),
-            ("oled", "OLED"),
-            ("amoled", "AMOLED"),
-            ("super_amoled", "Super AMOLED"),
-            ("dynamic_amoled_2x", "Dynamic AMOLED 2X"),
-            ("ltpo_oled", "LTPO OLED"),
-            ("mini_led", "Mini-LED"),
-            ("liquid_retina", "Liquid Retina"),
-        ),
-    },
     "refresh_rate": {
         "label": "Refresh rate",
         "type": "number",
         "unit": "Hz",
         "min": 30,
-        "max": 540,
-    },
-    "chipset": {
-        "label": "Chipset",
-        "type": "text",
-        "options": _opts(
-            ("apple_a15", "Apple A15 Bionic"),
-            ("apple_a16", "Apple A16 Bionic"),
-            ("apple_a17_pro", "Apple A17 Pro"),
-            ("apple_a18", "Apple A18"),
-            ("snapdragon_8_gen_3", "Snapdragon 8 Gen 3"),
-            ("snapdragon_8_gen_2", "Snapdragon 8 Gen 2"),
-            ("snapdragon_7", "Snapdragon 7 series"),
-            ("snapdragon_6", "Snapdragon 6 series"),
-            ("exynos_2400", "Exynos 2400"),
-            ("exynos_1380", "Exynos 1380"),
-            ("dimensity_9300", "MediaTek Dimensity 9300"),
-            ("dimensity_7200", "MediaTek Dimensity 7200"),
-            ("helio_g99", "MediaTek Helio G99"),
-            ("helio_g85", "MediaTek Helio G85"),
-            ("tensor_g3", "Google Tensor G3"),
-            ("unisoc_t606", "Unisoc T606"),
-        ),
     },
     "main_camera": {
         "label": "Main camera",
         "type": "number",
         "unit": "MP",
         "min": 0.3,
-        "max": 400,
-    },
-    "camera_setup": {
-        "label": "Camera setup",
-        "type": "enum",
-        "options": _opts(
-            ("single", "Single"),
-            ("dual", "Dual"),
-            ("triple", "Triple"),
-            ("quad", "Quad"),
-        ),
-    },
-    "selfie_camera": {
-        "label": "Selfie camera",
-        "type": "number",
-        "unit": "MP",
-        "min": 0.3,
-        "max": 200,
-    },
-    "fast_charging": {
-        "label": "Charging speed",
-        "type": "number",
-        "unit": "W",
-        "min": 1,
-        "max": 300,
-    },
-    "wireless_charging": {
-        "label": "Wireless charging",
-        "type": "enum",
-        "options": _YES_NO,
-    },
-    "nfc": {"label": "NFC", "type": "enum", "options": _YES_NO},
-    "card_slot": {"label": "Memory card slot", "type": "enum", "options": _YES_NO},
-    "headphone_jack": {"label": "3.5 mm jack", "type": "enum", "options": _YES_NO},
-    "weight": {
-        "label": "Weight",
-        "type": "number",
-        "unit": "g",
-        "min": 1,
-        "max": 20000,
-    },
-    "release_year": {
-        "label": "Release year",
-        "type": "number",
-        "min": 1990,
-        "max": 2100,
     },
     "phone_type": {
         "label": "Phone type",
         "type": "enum",
         "options": _opts(
             ("smartphone", "Smartphone"),
-            ("feature_phone", "Feature phone"),
+            ("feature_phone", "Basic / keypad phone"),
             ("rugged", "Rugged"),
         ),
     },
@@ -526,86 +417,115 @@ ATTRIBUTES = {
         "options": _YES_NO,
     },
     # --- laptops ---
-    "ram_type": {
-        "label": "RAM type",
-        "type": "text",
-        "options": _opts(
-            ("ddr3", "DDR3"),
-            ("ddr4", "DDR4"),
-            ("ddr5", "DDR5"),
-            ("lpddr4x", "LPDDR4X"),
-            ("lpddr5", "LPDDR5"),
-            ("lpddr5x", "LPDDR5X"),
-            ("unified", "Unified memory"),
-        ),
-    },
-    "ram_upgradeable": {
-        "label": "RAM upgrade",
-        "type": "enum",
-        "options": _opts(("upgradeable", "Upgradeable"), ("soldered", "Soldered")),
-    },
-    "storage_interface": {
-        "label": "SSD interface",
-        "type": "enum",
-        "options": _opts(("nvme", "NVMe"), ("sata", "SATA")),
-    },
-    "gpu_type": {
-        "label": "Graphics type",
-        "type": "enum",
-        "options": _opts(("integrated", "Integrated"), ("dedicated", "Dedicated")),
-    },
-    "vram": {
-        "label": "Graphics memory",
-        "type": "number",
-        "unit": "GB",
-        "min": 0.5,
-        "max": 128,
-    },
-    "keyboard_layout": {
-        "label": "Keyboard",
-        "type": "text",
-        "options": _opts(
-            ("us", "US English"),
-            ("uk", "UK English"),
-            ("arabic", "Arabic / English"),
-            ("french", "French"),
-            ("german", "German"),
-        ),
-    },
-    "backlit_keyboard": {
-        "label": "Backlit keyboard",
-        "type": "enum",
-        "options": _YES_NO,
-    },
-    "fingerprint": {"label": "Fingerprint reader", "type": "enum", "options": _YES_NO},
-    "wifi_version": {
-        "label": "Wi-Fi",
-        "type": "text",
-        "options": _opts(
-            ("wifi_5", "Wi-Fi 5"),
-            ("wifi_6", "Wi-Fi 6"),
-            ("wifi_6e", "Wi-Fi 6E"),
-            ("wifi_7", "Wi-Fi 7"),
-        ),
-    },
-    "bluetooth_version": {
-        "label": "Bluetooth",
-        "type": "text",
-        "options": _opts(
-            ("bt_4_2", "4.2"),
-            ("bt_5_0", "5.0"),
-            ("bt_5_1", "5.1"),
-            ("bt_5_2", "5.2"),
-            ("bt_5_3", "5.3"),
-            ("bt_5_4", "5.4"),
-        ),
-    },
     "battery_life": {
         "label": "Battery life",
         "type": "number",
         "unit": "h",
         "min": 0.5,
-        "max": 100,
+    },
+    # --- desktops ---
+    "form_factor": {
+        "label": "Form factor",
+        "type": "enum",
+        "options": _opts(
+            ("tower", "Tower"),
+            ("all_in_one", "All-in-one"),
+            ("mini_pc", "Mini PC"),
+        ),
+    },
+    "monitor_included": {
+        "label": "Monitor included",
+        "type": "enum",
+        "options": _YES_NO,
+    },
+    # --- monitors & TVs ---
+    # A closed list, unlike laptops' pick-or-type `resolution`: screens are sold
+    # by these names, and buyers filter on them.
+    "display_resolution": {
+        "label": "Resolution",
+        "type": "enum",
+        "options": _opts(
+            ("hd", "HD (720p)"),
+            ("fhd", "Full HD (1080p)"),
+            ("qhd", "QHD (1440p)"),
+            ("4k", "4K UHD"),
+            ("8k", "8K"),
+        ),
+    },
+    "monitor_panel": {
+        "label": "Panel",
+        "type": "enum",
+        "options": _opts(("ips", "IPS"), ("va", "VA"), ("oled", "OLED"), ("tn", "TN")),
+    },
+    "curved": {"label": "Curved", "type": "enum", "options": _YES_NO},
+    "smart_tv": {"label": "Smart TV", "type": "enum", "options": _YES_NO},
+    # Pick or type: brands ship their own platforms (VIDAA, Roku...).
+    "tv_os": {
+        "label": "Smart platform",
+        "type": "text",
+        "options": _opts(
+            ("android_tv", "Android TV"),
+            ("google_tv", "Google TV"),
+            ("tizen", "Tizen"),
+            ("webos", "webOS"),
+            ("vidaa", "VIDAA"),
+        ),
+    },
+    # --- wearables ---
+    "wearable_type": {
+        "label": "Type",
+        "type": "enum",
+        "options": _opts(
+            ("smartwatch", "Smartwatch"), ("fitness_band", "Fitness band")
+        ),
+    },
+    "health_sensors": {
+        "label": "Health sensors",
+        "type": "enum",
+        "options": _opts(
+            ("basic", "Basic (steps, heart rate)"),
+            ("advanced", "Advanced (+ SpO2, sleep, stress)"),
+            ("medical", "Medical (+ ECG, blood pressure)"),
+        ),
+    },
+    "calling": {
+        "label": "Calling",
+        "type": "enum",
+        "options": _opts(
+            ("none", "None"),
+            ("bluetooth", "Bluetooth calling"),
+            ("lte", "LTE / eSIM"),
+        ),
+    },
+    "gps": {
+        "label": "GPS",
+        "type": "enum",
+        "options": _opts(
+            ("built_in", "Built-in"),
+            ("phone", "Uses phone GPS"),
+            ("none", "None"),
+        ),
+    },
+    "battery_days": {
+        "label": "Battery life",
+        "type": "number",
+        "unit": "days",
+        "min": 0.5,
+    },
+    # --- cameras ---
+    "video_resolution": {
+        "label": "Video",
+        "type": "enum",
+        "options": _opts(("fhd", "Full HD"), ("4k", "4K"), ("6k", "6K and above")),
+    },
+    "works_with": {
+        "label": "Works with",
+        "type": "enum",
+        "options": _opts(
+            ("iphone", "iPhone"),
+            ("android", "Android"),
+            ("both", "iPhone & Android"),
+        ),
     },
 }
 
@@ -613,10 +533,8 @@ ATTRIBUTES = {
 # every dict onto several lines.
 # fmt: off
 USED = {"condition": ["used"]}
-# Sections: key (default) = what buyers filter on; details = the spec sheet,
-# collapsible in the form; item = facts about this unit. See the model's
-# ProductTypeAttribute.section.
-DETAIL = {"section": "details"}
+# Sections: key (default) = what buyers filter on; item = facts about this unit
+# (warranty, battery health...). See the model's ProductTypeAttribute.section.
 ITEM = {"section": "item"}
 WARRANTY = {"attribute": "warranty", "required": True, "section": "item",
             "placeholder": "e.g. Brand · 1 year"}
@@ -634,63 +552,49 @@ def _color(required=True):
 PRODUCT_TYPES = {
     "smartphone": {
         "label": "Smartphone",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "iPhone 15 Pro", "variant": "256GB \u00b7 Natural Titanium"},
         "categories": ["phones"],
         "brands": [
             "Apple", "Samsung", "Tecno", "Infinix", "Xiaomi", "Itel", "Oppo",
             "Vivo", "Realme", "Huawei", "Honor", "Google", "Nokia", "Motorola", "OnePlus",
         ],
         "fields": [
-            # Key specs: what buyers filter on.
+            # A keypad phone has no storage, RAM or camera to list, so those
+            # fields are smart/rugged only, keyed off the type.
             {"attribute": "phone_type", "required": True},
-            STORAGE,
-            RAM,
+            {**STORAGE, "show_if": {"phone_type": ["smartphone", "rugged"]}},
+            {**RAM, "show_if": {"phone_type": ["smartphone", "rugged"]}},
             _color(),
             {"attribute": "sim", "required": True},
             {"attribute": "network", "required": True},
-            # Spec sheet: recommended leads the product page's key-spec card.
-            {**DETAIL, "attribute": "screen_size", "recommended": True,
+            {"attribute": "screen_size", "recommended": True,
              "placeholder": "e.g. 6.1"},
-            {**DETAIL, "attribute": "display_panel", "recommended": True,
-             "placeholder": "e.g. AMOLED"},
-            {**DETAIL, "attribute": "refresh_rate", "recommended": True,
-             "placeholder": "e.g. 120"},
-            {**DETAIL, "attribute": "resolution"},
-            {**DETAIL, "attribute": "chipset", "recommended": True,
-             "placeholder": "e.g. Snapdragon 8 Gen 3"},
-            {**DETAIL, "attribute": "main_camera", "recommended": True,
-             "placeholder": "e.g. 50"},
-            {**DETAIL, "attribute": "camera_setup", "recommended": True},
-            {**DETAIL, "attribute": "selfie_camera", "placeholder": "e.g. 12"},
-            {**DETAIL, "attribute": "battery_capacity", "label": "Battery",
+            # Spec sheet: recommended leads the product page's key-spec card.
+            {"attribute": "main_camera", "recommended": True,
+             "placeholder": "e.g. 50",
+             "show_if": {"phone_type": ["smartphone", "rugged"]}},
+            {"attribute": "battery_capacity", "label": "Battery",
              "recommended": True, "placeholder": "e.g. 5000"},
-            {**DETAIL, "attribute": "fast_charging", "recommended": True,
-             "placeholder": "e.g. 25"},
-            {**DETAIL, "attribute": "wireless_charging"},
-            {**DETAIL, "attribute": "os", "recommended": True,
-             "placeholder": "e.g. Android 14"},
-            {**DETAIL, "attribute": "release_year", "recommended": True,
-             "placeholder": "e.g. 2024"},
-            {**DETAIL, "attribute": "weight", "control": "weight", "recommended": True,
-             "placeholder": "e.g. 187"},
-            {**DETAIL, "attribute": "nfc"},
-            {**DETAIL, "attribute": "card_slot"},
-            {**DETAIL, "attribute": "headphone_jack"},
-            {**DETAIL, "attribute": "water_resistance", "label": "IP rating",
-             "placeholder": "e.g. IP68"},
             # This item: facts about the unit in the shop.
             {**ITEM, "attribute": "carrier_lock", "required": True},
-            {**ITEM, "attribute": "region_version", "required": True,
-             "placeholder": "e.g. Global",
+            {**ITEM, "attribute": "region_version", "placeholder": "e.g. Global",
              "hint": "Imported phones: the market it was made for."},
             WARRANTY,
-            {**ITEM, "attribute": "battery_health", "show_if": USED,
-             "required_if": USED, "placeholder": "e.g. 92",
+            {**ITEM, "attribute": "battery_health",
+             "show_if": {"condition": ["used"],
+                         "phone_type": ["smartphone", "rugged"]},
+             "required_if": {"condition": ["used"],
+                             "phone_type": ["smartphone", "rugged"]},
+             "placeholder": "e.g. 92",
              "hint": "Settings › Battery on most phones."},
             {**ITEM, "attribute": "box_contents", "placeholder": "e.g. Full box"},
         ],
     },
     "laptop": {
         "label": "Laptop",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "MacBook Air 13 M3", "variant": "16GB \u00b7 512GB SSD"},
         "categories": ["laptops"],
         "brands": [
             "Apple", "Dell", "HP", "Lenovo", "Asus", "Acer",
@@ -698,7 +602,8 @@ PRODUCT_TYPES = {
         ],
         "fields": [
             # Key specs.
-            {"attribute": "laptop_type", "required": True, "placeholder": "e.g. Gaming"},
+            {"attribute": "laptop_type", "placeholder": "e.g. Gaming"},
+            {"attribute": "os", "recommended": True, "placeholder": "e.g. Windows 11"},
             {"attribute": "processor", "required": True,
              "placeholder": "e.g. Intel Core i5-1135G7",
              "hint": "Type the exact model; the sticker or System Info shows it."},
@@ -709,38 +614,12 @@ PRODUCT_TYPES = {
             {"attribute": "secondary_storage", "required": True, "control": "size",
              "placeholder": "e.g. 1", "show_if": {"storage_type": ["ssd_hdd"]}},
             {"attribute": "screen_size", "required": True, "placeholder": "e.g. 15.6"},
-            _color(),
-            # Spec sheet.
-            {**DETAIL, "attribute": "ram_type", "recommended": True,
-             "placeholder": "e.g. DDR4"},
-            {**DETAIL, "attribute": "ram_upgradeable"},
-            {**DETAIL, "attribute": "storage_interface",
-             "show_if": {"storage_type": ["ssd", "ssd_hdd"]}},
-            {**DETAIL, "attribute": "resolution", "recommended": True,
-             "placeholder": "e.g. FHD (1920×1080)"},
-            {**DETAIL, "attribute": "display_panel", "recommended": True,
-             "placeholder": "e.g. IPS LCD"},
-            {**DETAIL, "attribute": "refresh_rate", "placeholder": "e.g. 144"},
-            {**DETAIL, "attribute": "gpu", "recommended": True,
-             "placeholder": "e.g. NVIDIA GeForce RTX 4060",
+            _color(required=False),
+            # A key spec, not buried in the full spec sheet: for a gaming or
+            # workstation laptop the GPU is what the buyer is choosing on.
+            {"attribute": "gpu", "recommended": True,
+             "placeholder": "e.g. NVIDIA GeForce RTX 4060 8GB",
              "hint": "Any brand or model; the suggestions are only a start."},
-            {**DETAIL, "attribute": "gpu_type", "recommended": True},
-            {**DETAIL, "attribute": "vram", "placeholder": "e.g. 8",
-             "show_if": {"gpu_type": ["dedicated"]}},
-            {**DETAIL, "attribute": "os", "recommended": True,
-             "placeholder": "e.g. Windows 11"},
-            {**DETAIL, "attribute": "keyboard_layout", "recommended": True,
-             "placeholder": "e.g. US English"},
-            {**DETAIL, "attribute": "backlit_keyboard"},
-            {**DETAIL, "attribute": "battery_life", "recommended": True,
-             "placeholder": "e.g. 8"},
-            {**DETAIL, "attribute": "weight", "control": "weight", "recommended": True,
-             "placeholder": "e.g. 1.4", "hint": "Switch to kg for laptops."},
-            {**DETAIL, "attribute": "touchscreen"},
-            {**DETAIL, "attribute": "fingerprint"},
-            {**DETAIL, "attribute": "wifi_version", "placeholder": "e.g. Wi-Fi 6"},
-            {**DETAIL, "attribute": "bluetooth_version", "placeholder": "e.g. 5.2"},
-            {**DETAIL, "attribute": "release_year", "placeholder": "e.g. 2023"},
             # This item.
             WARRANTY,
             {**ITEM, "attribute": "battery_cycles", "show_if": USED,
@@ -750,6 +629,8 @@ PRODUCT_TYPES = {
     },
     "tablet": {
         "label": "Tablet",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "iPad Air 11 (M2)", "variant": "128GB \u00b7 Wi-Fi"},
         "categories": ["tablets"],
         "brands": [
             "Apple", "Samsung", "Lenovo", "Xiaomi", "Huawei", "Microsoft", "Amazon", "Tecno",
@@ -760,14 +641,17 @@ PRODUCT_TYPES = {
              "options": ["wifi", "wifi_cellular"]},
             _color(),
             {**RAM, "required": False},
-            {"attribute": "screen_size", "placeholder": "e.g. 10.9"},
+            {"attribute": "screen_size", "required": True,
+             "placeholder": "e.g. 10.9"},
             WARRANTY,
-            {"attribute": "battery_health", "show_if": USED, "required_if": USED,
-             "placeholder": "e.g. 90"},
+            {**ITEM, "attribute": "battery_health", "show_if": USED,
+             "required_if": USED, "placeholder": "e.g. 90"},
         ],
     },
     "audio": {
         "label": "Audio",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "WH-1000XM5", "variant": "Black \u00b7 Wireless"},
         "categories": ["audio"],
         "brands": [
             "Apple", "Sony", "JBL", "Bose", "Samsung", "Anker", "Beats",
@@ -781,13 +665,19 @@ PRODUCT_TYPES = {
              "show_if": {"audio_type": ["earbuds", "on_ear", "over_ear"]}},
             {"attribute": "power_output", "placeholder": "e.g. 30",
              "show_if": {"audio_type": ["speaker", "soundbar"]}},
-            {"attribute": "water_resistance", "placeholder": "e.g. IPX4"},
+            # The first question for wireless headphones and speakers.
+            {"attribute": "battery_life", "placeholder": "e.g. 30",
+             "show_if": {"connectivity": ["bluetooth", "bluetooth_wired"]}},
+            {"attribute": "water_resistance", "placeholder": "e.g. IPX4",
+             "show_if": {"audio_type": ["earbuds", "on_ear", "over_ear", "speaker"]}},
             _color(),
             WARRANTY,
         ],
     },
     "camera": {
         "label": "Camera",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "Alpha 7 IV", "variant": "Body only"},
         "categories": ["cameras"],
         "brands": [
             "Canon", "Sony", "Nikon", "Fujifilm", "Panasonic", "GoPro", "DJI", "Insta360",
@@ -799,14 +689,93 @@ PRODUCT_TYPES = {
             {"attribute": "lens_mount", "placeholder": "e.g. Sony E",
              "show_if": {"camera_type": ["mirrorless", "dslr"]}},
             {"attribute": "megapixels", "placeholder": "e.g. 24"},
+            {"attribute": "video_resolution"},
             WARRANTY,
             {"attribute": "shutter_count", "placeholder": "e.g. 12000",
              "show_if": {"condition": ["used"], "camera_type": ["mirrorless", "dslr"]},
-             "required_if": USED},
+             "required_if": {"condition": ["used"],
+                             "camera_type": ["mirrorless", "dslr"]}},
+        ],
+    },
+    "wearable": {
+        "label": "Wearable",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "Apple Watch Series 9", "variant": "45mm \u00b7 GPS"},
+        "categories": ["wearables"],
+        "brands": [
+            "Apple", "Samsung", "Xiaomi", "Huawei", "Amazfit", "Oraimo", "Garmin",
+        ],
+        "fields": [
+            {"attribute": "wearable_type", "required": True},
+            {"attribute": "works_with"},
+            {"attribute": "health_sensors", "recommended": True},
+            {"attribute": "calling", "recommended": True},
+            {"attribute": "gps"},
+            {"attribute": "battery_days", "recommended": True, "placeholder": "e.g. 7"},
+            {"attribute": "water_resistance", "placeholder": "e.g. 5ATM"},
+            _color(required=False),
+            WARRANTY,
+        ],
+    },
+    "desktop": {
+        "label": "Desktop",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "OptiPlex 7010 Tower", "variant": "Core i5 \u00b7 16GB \u00b7 512GB SSD"},
+        "categories": ["desktops"],
+        "brands": ["Dell", "HP", "Lenovo", "Apple", "Asus", "Acer", "MSI"],
+        "fields": [
+            {"attribute": "form_factor", "required": True},
+            {"attribute": "os", "recommended": True, "placeholder": "e.g. Windows 11"},
+            {"attribute": "processor", "required": True,
+             "placeholder": "e.g. Intel Core i5-12400"},
+            {**RAM, "placeholder": "e.g. 16"},
+            {"attribute": "storage_type", "required": True},
+            {**STORAGE, "placeholder": "e.g. 512"},
+            {"attribute": "secondary_storage", "required": True, "control": "size",
+             "placeholder": "e.g. 1", "show_if": {"storage_type": ["ssd_hdd"]}},
+            {"attribute": "gpu", "recommended": True,
+             "placeholder": "e.g. NVIDIA GeForce RTX 4060 8GB"},
+            {**ITEM, "attribute": "monitor_included"},
+            WARRANTY,
+        ],
+    },
+    "monitor": {
+        "label": "Monitor",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "Odyssey G5 27\"", "variant": "QHD \u00b7 165Hz"},
+        "categories": ["monitors"],
+        "brands": ["Samsung", "LG", "Dell", "HP", "Asus", "AOC", "Lenovo", "BenQ"],
+        "fields": [
+            {"attribute": "screen_size", "required": True, "placeholder": "e.g. 27"},
+            {"attribute": "display_resolution", "required": True},
+            {"attribute": "refresh_rate", "placeholder": "e.g. 144"},
+            {"attribute": "monitor_panel"},
+            {"attribute": "curved"},
+            WARRANTY,
+        ],
+    },
+    "tv": {
+        "label": "TV",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "55\" Crystal UHD", "variant": "4K \u00b7 Smart TV"},
+        "categories": ["tvs"],
+        "brands": [
+            "Samsung", "LG", "Sony", "Hisense", "TCL", "Skyworth", "Xiaomi", "Haier",
+        ],
+        "fields": [
+            {"attribute": "screen_size", "required": True, "placeholder": "e.g. 55"},
+            {"attribute": "display_resolution", "required": True},
+            {"attribute": "smart_tv", "required": True},
+            {"attribute": "refresh_rate", "placeholder": "e.g. 120"},
+            {"attribute": "tv_os", "placeholder": "e.g. Google TV",
+             "show_if": {"smart_tv": ["yes"]}},
+            WARRANTY,
         ],
     },
     "accessory": {
         "label": "Accessory",
+        # What the listing form suggests for the name and variant.
+        "listing_examples": {"name": "20W USB-C Charger", "variant": "White"},
         "categories": ["accessories"],
         "brands": [
             "Apple", "Samsung", "Anker", "Oraimo", "Baseus", "Ugreen",

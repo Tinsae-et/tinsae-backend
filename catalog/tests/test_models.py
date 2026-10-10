@@ -40,22 +40,26 @@ class CategoryModelTest(TestCase):
         from django.core.management import call_command
 
         call_command("seed_catalog")
+        count = Category.objects.count()
         call_command("seed_catalog")
-        self.assertEqual(Category.objects.count(), 6)
+        self.assertEqual(Category.objects.count(), count)
 
     def test_seed_shop_data_sample_mode(self):
         from django.core.management import call_command
 
         call_command("seed_catalog")
         call_command("seed_shop_data", sample=True, no_images=True)
-        self.assertEqual(Product.objects.count(), 31)
+        self.assertEqual(Product.objects.count(), 53)
 
     def test_seed_shop_data_procedural_mode(self):
         from django.core.management import call_command
 
         call_command("seed_catalog")
         call_command("seed_shop_data", per_category=2, no_images=True)
-        self.assertEqual(Product.objects.count(), 12)
+        # 2 for each of the 21 categories that take listings (10 electronics,
+        # 6 vehicles, 5 furniture & appliances); group parents ("Vehicles &
+        # Auto", "Computers"...) have no products of their own.
+        self.assertEqual(Product.objects.count(), 42)
 
 
 class ProductModelTest(TestCase):

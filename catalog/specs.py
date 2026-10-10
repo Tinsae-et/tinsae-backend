@@ -12,6 +12,7 @@ from decimal import Decimal
 from django.db.models import Prefetch
 
 from .models import AttributeOption, AttributeType, Category, ProductTypeAttribute
+from .taxonomy import PRODUCT_TYPES
 
 # Free-text keys the form writes outside the schema.
 ALWAYS_ALLOWED_KEYS = {"variant"}
@@ -93,6 +94,12 @@ def category_schema(category: Category | None) -> dict | None:
         "category": category.slug,
         "product_type": product_type.key,
         "brands": list(product_type.brands or []),
+        "brand_required": product_type.brand_required,
+        # Form copy, read from the taxonomy code rather than the database: it
+        # is presentation, not a rule, so it needs no sync.
+        "listing_examples": PRODUCT_TYPES.get(product_type.key, {}).get(
+            "listing_examples", {}
+        ),
         "fields": fields,
     }
 
@@ -214,9 +221,9 @@ def check_value(field: dict, value) -> str | None:
         if isinstance(value, bool) or not isinstance(value, int | float):
             return f"{label} must be a number."
         if field["min"] is not None and value < field["min"]:
-            return f"{label} must be at least {field['min']:g}."
+            return f"{label} must be at least {field['min']:n}."
         if field["max"] is not None and value > field["max"]:
-            return f"{label} must be at most {field['max']:g}."
+            return f"{label} must be at most {field['max']:n}."
         return None
     if not isinstance(value, str):
         return f"{label} must be text."
