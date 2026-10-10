@@ -210,6 +210,37 @@ STARTER_CATEGORIES = [
         "display_order": 4,
         "parent": "furniture-appliances",
     },
+    {
+        "slug": "power-solar",
+        "icon": "bolt",
+        "tagline": "Generators · Solar · Inverters · Batteries",
+        "name": "Power & Solar",
+        "display_order": 7,
+    },
+    {
+        "slug": "generators",
+        "icon": "generator",
+        "tagline": "Petrol · Diesel · Silent · Three-phase",
+        "name": "Generators",
+        "display_order": 0,
+        "parent": "power-solar",
+    },
+    {
+        "slug": "solar",
+        "icon": "sun",
+        "tagline": "Panels · Home kits · Solar lights",
+        "name": "Solar Panels & Kits",
+        "display_order": 1,
+        "parent": "power-solar",
+    },
+    {
+        "slug": "inverters-batteries",
+        "icon": "battery",
+        "tagline": "Inverters · UPS · Lithium · Stabilizers",
+        "name": "Inverters & Batteries",
+        "display_order": 2,
+        "parent": "power-solar",
+    },
 ]
 
 
