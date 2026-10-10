@@ -479,13 +479,20 @@ ATTRIBUTES = {
             ("smartwatch", "Smartwatch"), ("fitness_band", "Fitness band")
         ),
     },
-    "health_sensors": {
+    # A checklist (multiple values), not a level: buyers filter on the one
+    # sensor they need, an ECG or blood oxygen. A new key, because the old
+    # `health_sensors` held a level and a key never changes meaning.
+    "sensors": {
         "label": "Health sensors",
         "type": "enum",
         "options": _opts(
-            ("basic", "Basic (steps, heart rate)"),
-            ("advanced", "Advanced (+ SpO2, sleep, stress)"),
-            ("medical", "Medical (+ ECG, blood pressure)"),
+            ("heart_rate", "Heart rate"),
+            ("spo2", "Blood oxygen (SpO2)"),
+            ("sleep", "Sleep tracking"),
+            ("stress", "Stress"),
+            ("ecg", "ECG"),
+            ("blood_pressure", "Blood pressure"),
+            ("temperature", "Skin temperature"),
         ),
     },
     "calling": {
@@ -708,7 +715,7 @@ PRODUCT_TYPES = {
         "fields": [
             {"attribute": "wearable_type", "required": True},
             {"attribute": "works_with"},
-            {"attribute": "health_sensors", "recommended": True},
+            {"attribute": "sensors", "recommended": True, "multiple": True},
             {"attribute": "calling", "recommended": True},
             {"attribute": "gps"},
             {"attribute": "battery_days", "recommended": True, "placeholder": "e.g. 7"},

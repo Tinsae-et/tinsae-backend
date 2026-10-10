@@ -2773,7 +2773,14 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "medical",
+                "sensors": [
+                    "heart_rate",
+                    "spo2",
+                    "sleep",
+                    "stress",
+                    "ecg",
+                    "temperature",
+                ],
                 "calling": "bluetooth",
                 "gps": "built_in",
                 "battery_days": 1.5,
@@ -2797,7 +2804,14 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "medical",
+                "sensors": [
+                    "heart_rate",
+                    "spo2",
+                    "sleep",
+                    "stress",
+                    "ecg",
+                    "temperature",
+                ],
                 "calling": "bluetooth",
                 "gps": "built_in",
                 "battery_days": 2,
@@ -2821,7 +2835,7 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "advanced",
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
                 "calling": "none",
                 "gps": "phone",
                 "battery_days": 16,
@@ -2846,7 +2860,7 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "advanced",
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
                 "calling": "bluetooth",
                 "gps": "built_in",
                 "battery_days": 10,
@@ -2870,7 +2884,7 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "advanced",
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
                 "calling": "bluetooth",
                 "gps": "built_in",
                 "battery_days": 14,
@@ -2894,7 +2908,7 @@ CATALOG_MATRICES = {
                 },
             ],
             "specs": {
-                "health_sensors": "basic",
+                "sensors": ["heart_rate", "sleep"],
                 "calling": "bluetooth",
                 "gps": "phone",
                 "battery_days": 7,
@@ -5102,7 +5116,7 @@ SAMPLE_PRODUCTS = [
         "price": "2900.00",
         "freshness": "expired",
         "specs": {
-            "health_sensors": "advanced",
+            "sensors": ["heart_rate", "spo2", "sleep", "stress"],
             "calling": "none",
             "gps": "phone",
             "battery_days": 16,

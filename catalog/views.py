@@ -336,7 +336,11 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 if field["type"] == "number":
                     data["specs"][key] = {"range": number_range(qs, key)}
                 else:
-                    data["specs"][key] = {"values": value_counts(qs, key)}
+                    data["specs"][key] = {
+                        "values": value_counts(
+                            qs, key, multiple=field.get("multiple", False)
+                        )
+                    }
         return Response(data)
 
     def list(self, request, *args, **kwargs):

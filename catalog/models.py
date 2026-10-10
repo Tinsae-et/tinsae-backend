@@ -193,6 +193,10 @@ class ProductTypeAttribute(BaseModel):
         default="key",
     )
     recommended = models.BooleanField(default=False)
+    # Several values instead of one, stored as a list: the sizes or colours a
+    # shirt is available in. Per type, not per attribute: colour is one value
+    # on a phone and several on a shirt.
+    multiple = models.BooleanField(default=False)
     placeholder = models.CharField(max_length=80, blank=True)
     hint = models.CharField(max_length=160, blank=True)
     display_order = models.PositiveIntegerField(default=0)

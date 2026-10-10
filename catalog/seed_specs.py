@@ -293,6 +293,9 @@ def seed_specs(
         guess = _from_name(field, text)
         if guess is not None:
             guess = as_text(field, guess)
+            # A multiple field stores a list, even of one guessed value.
+            if field.get("multiple"):
+                guess = [guess]
         if guess is not None and check_value(field, guess) is None:
             result[key] = guess
             continue
@@ -306,7 +309,8 @@ def seed_specs(
         optional_pick = key in MAY_GUESS and rng.random() < optional_rate
         if required or optional_pick:
             invented = _invent(field, condition, rng, schema["product_type"])
-            result[key] = as_text(field, invented)
+            invented = as_text(field, invented)
+            result[key] = [invented] if field.get("multiple") else invented
 
     # Old free-text keys have given what they could; the rest is dropped.
     defined = {f["key"] for f in fields}

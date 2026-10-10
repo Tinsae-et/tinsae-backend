@@ -77,6 +77,7 @@ def category_schema(category: Category | None) -> dict | None:
             "control": link.control or None,
             "section": link.section,
             "recommended": link.recommended,
+            "multiple": link.multiple,
             "options": None,
         }
         # Enum: the closed list. Text: suggestions to type from (processor).
@@ -128,24 +129,40 @@ def normalize_specs(schema: dict, specs):
     out = dict(specs)
     for field in schema["fields"]:
         value = out.get(field["key"])
-        if field["type"] != AttributeType.TEXT or not isinstance(value, str):
+        if field["type"] != AttributeType.TEXT:
             continue
-        value = " ".join(value.split())
-        folded = value.casefold()
-        for option in field["options"] or []:
-            if folded in (option["label"].casefold(), option["value"].casefold()):
-                value = option["label"]
-                break
-        out[field["key"]] = value
+        if isinstance(value, str):
+            out[field["key"]] = _tidy_text(field, value)
+        elif field.get("multiple") and isinstance(value, list):
+            # Each item tidied, then repeats dropped: "black" and "Black"
+            # are one colour, kept once, in the order given.
+            tidied = [_tidy_text(field, v) if isinstance(v, str) else v for v in value]
+            out[field["key"]] = list(dict.fromkeys(tidied))
     return out
+
+
+def _tidy_text(field: dict, value: str) -> str:
+    value = " ".join(value.split())
+    folded = value.casefold()
+    for option in field["options"] or []:
+        if folded in (option["label"].casefold(), option["value"].casefold()):
+            return option["label"]
+    return value
 
 
 def matches_condition(condition: dict | None, values: dict) -> bool:
     """Whether every key in a `show_if` / `required_if` holds an allowed value."""
     if not condition:
         return True
+
+    def holds(value, allowed):
+        # A multi-value spec meets the condition when any of its values does.
+        if isinstance(value, list):
+            return any(str(v) in allowed for v in value)
+        return str(value) in allowed
+
     return all(
-        str(values.get(key, "")) in allowed for key, allowed in condition.items()
+        holds(values.get(key, ""), allowed) for key, allowed in condition.items()
     )
 
 
@@ -182,7 +199,7 @@ def validate_specs(
 
     for key, field in defined.items():
         visible = matches_condition(field["show_if"], values)
-        present = key in specs and specs[key] not in (None, "")
+        present = key in specs and specs[key] not in (None, "", [])
         unchanged = present and key in existing and existing[key] == specs[key]
 
         if not visible:
@@ -208,7 +225,33 @@ def validate_specs(
     return errors
 
 
+# More than any real size run or colour range; stops a runaway list.
+MAX_VALUES = 30
+
+
 def check_value(field: dict, value) -> str | None:
+    """The error message for a value against its field, or None when valid.
+
+    A multiple field takes a list, every item checked as a single value would
+    be; anything else takes one value.
+    """
+    if not field.get("multiple"):
+        return _check_one(field, value)
+    label = field["label"]
+    if not isinstance(value, list):
+        return f"{label}: send a list of values."
+    if len(value) > MAX_VALUES:
+        return f"{label}: at most {MAX_VALUES} values."
+    if len({str(v) for v in value}) != len(value):
+        return f"{label}: each value once."
+    for item in value:
+        message = _check_one(field, item)
+        if message:
+            return message
+    return None
+
+
+def _check_one(field: dict, value) -> str | None:
     """The error message for one value against its field, or None when valid."""
     label = field["label"]
     if field["type"] == AttributeType.ENUM:

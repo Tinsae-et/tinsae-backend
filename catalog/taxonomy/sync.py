@@ -259,6 +259,7 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
                 "control": field.get("control", ""),
                 "section": field.get("section", "key"),
                 "recommended": field.get("recommended", False),
+                "multiple": field.get("multiple", False),
                 "placeholder": field.get("placeholder", ""),
                 "hint": field.get("hint", ""),
                 "display_order": order,

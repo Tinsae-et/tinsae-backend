@@ -17,6 +17,7 @@ each option would show, so the filter rail can print real counts.
 """
 
 import math
+from collections import Counter
 
 from django.db.models import Count, Q
 from django.db.models.fields.json import KT
@@ -105,7 +106,16 @@ def spec_filters(params, schema: dict | None) -> dict[str, Q]:
                         )
                     }
                 )
-            if field["type"] == "enum":
+            if field.get("multiple"):
+                # A list matches when it holds any picked value: "size M"
+                # finds the shirt sold in S to XL. JSON containment, so it
+                # is exact; the picked values come from the facet counts,
+                # which are stored values.
+                q = Q()
+                for value in spec["values"]:
+                    q |= Q(**{f"specs__{key}__contains": [value]})
+                filters[key] = q
+            elif field["type"] == "enum":
                 filters[key] = Q(**{f"specs__{key}__in": spec["values"]})
             else:
                 # Text is stored as typed (tidied to a suggestion's label), so
@@ -128,8 +138,14 @@ def spec_filters(params, schema: dict | None) -> dict[str, Q]:
     return filters
 
 
-def value_counts(qs, key: str) -> list[dict]:
-    """The most common stored values of a spec, with how many listings hold each."""
+def value_counts(qs, key: str, *, multiple: bool = False) -> list[dict]:
+    """The most common stored values of a spec, with how many listings hold each.
+
+    For a multiple spec each value in a listing's list counts once: a shirt
+    in S, M and L adds one to each size.
+    """
+    if multiple:
+        return _list_value_counts(qs, key)
     rows = (
         qs.annotate(_value=KT(f"specs__{key}"))
         .exclude(_value__isnull=True)
@@ -139,6 +155,23 @@ def value_counts(qs, key: str) -> list[dict]:
         .order_by("-count", "_value")[:MAX_FACET_VALUES]
     )
     return [{"value": row["_value"], "count": row["count"]} for row in rows]
+
+
+def _list_value_counts(qs, key: str) -> list[dict]:
+    """Per-item counts over list values, counted in Python.
+
+    Postgres cannot group by the items of a JSON array without a lateral
+    join; at the catalogue's size, reading the lists is cheaper to keep.
+    A single (legacy) value counts as a one-item list.
+    """
+    counts: Counter = Counter()
+    for value in qs.filter(**{f"specs__{key}__isnull": False}).values_list(
+        f"specs__{key}", flat=True
+    ):
+        items = value if isinstance(value, list) else [value]
+        counts.update({str(item) for item in items if item not in (None, "")})
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [{"value": v, "count": n} for v, n in ranked[:MAX_FACET_VALUES]]
 
 
 def number_range(qs, key: str) -> dict | None:
