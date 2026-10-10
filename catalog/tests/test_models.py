@@ -61,6 +61,22 @@ class CategoryModelTest(TestCase):
         # parents ("Vehicles & Auto", "Computers"...) have no products.
         self.assertEqual(Product.objects.count(), 60)
 
+    def test_seeded_shops_can_list_in_the_categories_they_sell(self):
+        from django.core.management import call_command
+
+        call_command("seed_catalog")
+        for options in ({"sample": True}, {"per_category": 1}):
+            with self.subTest(options):
+                call_command("seed_shop_data", no_images=True, **options)
+                # Without these the seed merchant's listing form offers no
+                # category at all.
+                for product in Product.objects.select_related("shop", "category"):
+                    self.assertIn(
+                        product.category,
+                        product.shop.categories.all(),
+                        f"{product.shop.slug} cannot list {product.category.slug}",
+                    )
+
 
 class ProductModelTest(TestCase):
     def setUp(self):

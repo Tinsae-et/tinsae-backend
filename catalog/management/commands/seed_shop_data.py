@@ -276,6 +276,19 @@ SHOPS_BY_CATEGORY = {
     **POWER_SHOPS_BY_CATEGORY,
     **FASHION_SHOPS_BY_CATEGORY,
 }
+
+
+def shop_category_slugs(index: int) -> list[str]:
+    """The categories a seeded shop sells, so its owner can list in them.
+
+    The first shops sell every electronics category; the rest sell the
+    categories SHOPS_BY_CATEGORY gives them.
+    """
+    if index < ELECTRONICS_SHOP_COUNT:
+        return sorted(set(CATALOG_MATRICES) - set(SHOPS_BY_CATEGORY))
+    return [slug for slug, shops in SHOPS_BY_CATEGORY.items() if index in shops]
+
+
 # Only electronics and appliances come back "refurbished"; a used sofa or car
 # is just used.
 NEVER_REFURBISHED = (
@@ -6377,6 +6390,17 @@ class Command(BaseCommand):
             )
             shop_objs[index] = shop
 
+        # Every category exists, with the same definitions as `seed_catalog`.
+        category_cache = {
+            category.slug: category for category, _ in ensure_categories()
+        }
+        # Added, never replaced: categories an owner picked in Shop settings
+        # survive a reseed.
+        for index, shop in shop_objs.items():
+            shop.categories.add(
+                *(category_cache[slug] for slug in shop_category_slugs(index))
+            )
+
         if sample_mode:
             self.stdout.write(
                 f"Running in sample mode ({len(SAMPLE_PRODUCTS)} products across "
@@ -6384,11 +6408,6 @@ class Command(BaseCommand):
             )
             self._seed_sample(shop_objs, images_per_product, force_images, image_source)
             return
-
-        # Every category exists, with the same definitions as `seed_catalog`.
-        category_cache = {
-            category.slug: category for category, _ in ensure_categories()
-        }
 
         ensure_taxonomy()
         for cat in category_cache.values():
@@ -6633,9 +6652,7 @@ class Command(BaseCommand):
         updated = 0
         img_count = 0
 
-        # The samples span every vertical, so their categories must exist,
-        # exactly as full mode ensures them.
-        ensure_categories()
+        # The categories exist already (`handle` ensures them for both modes).
         ensure_taxonomy()
         for data in SAMPLE_PRODUCTS:
             shop = shop_objs[data["shop"]]
