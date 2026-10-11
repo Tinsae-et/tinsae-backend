@@ -43,6 +43,23 @@ def _decimal(value):
 # change that is not a pure widening. Each maps one stored value to the new
 # type, or None when it cannot.
 CONVERTERS = {"size_gb": size_to_gb}
+# Not in CONVERTERS: it needs the attribute's options. A closed list opening
+# up to pick-or-type stores what people see ("Sedan"), not the code ("sedan"),
+# so old and new listings read, filter and count as one value.
+OPTION_LABEL = "option_label"
+
+
+def _option_labels(attribute, spec):
+    """value -> label for an attribute, old options and new suggestions alike."""
+    labels = {o.value: o.label for o in attribute.options.all()}
+    labels.update({o["value"]: o["label"] for o in spec.get("options", [])})
+
+    def convert(value):
+        if isinstance(value, list):
+            return [labels.get(v, v) for v in value]
+        return labels.get(value, value) if isinstance(value, str) else None
+
+    return convert
 
 
 def convert_stored_values(key: str, convert) -> tuple[int, int]:
@@ -81,7 +98,7 @@ def check_definitions(attributes: dict, product_types: dict) -> None:
         if spec["type"] == "number" and spec.get("options"):
             raise TaxonomyError(f"Number attribute {key!r} cannot have options.")
         conversion = spec.get("convert_from")
-        if conversion and conversion.get("using") not in CONVERTERS:
+        if conversion and conversion.get("using") not in {*CONVERTERS, OPTION_LABEL}:
             raise TaxonomyError(
                 f"Attribute {key!r} converts with unknown {conversion.get('using')!r}."
             )
@@ -157,9 +174,13 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
             if retyped:
                 conversion = spec.get("convert_from") or {}
                 if conversion.get("type") == attribute.type:
-                    converted, moved = convert_stored_values(
-                        key, CONVERTERS[conversion["using"]]
+                    using = conversion["using"]
+                    convert = (
+                        _option_labels(attribute, spec)
+                        if using == OPTION_LABEL
+                        else CONVERTERS[using]
                     )
+                    converted, moved = convert_stored_values(key, convert)
                     changes.append(
                         f"convert attribute {key}: {attribute.type} -> {spec['type']} "
                         f"({converted} value(s) converted, {moved} unreadable "

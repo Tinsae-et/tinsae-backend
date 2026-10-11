@@ -13,7 +13,7 @@ Location is the sub-city plus the area typed as people say it ("CMC",
 "Ayat"), so buyers can filter by sub-city and still read the exact spot.
 """
 
-from .electronics import _opts
+from .electronics import OPEN_LIST, _opts
 
 ATTRIBUTES = {
     "listing_type": {
@@ -43,11 +43,14 @@ ATTRIBUTES = {
     "area_name": {"label": "Area", "type": "text"},
     "apartment_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("apartment", "Apartment"),
             ("condominium", "Condominium"),
             ("penthouse", "Penthouse"),
+            ("duplex", "Duplex"),
         ),
     },
     "bedrooms": {"label": "Bedrooms", "type": "number", "min": 0, "max": 20},
@@ -83,7 +86,9 @@ ATTRIBUTES = {
     },
     "amenities": {
         "label": "Amenities",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("parking", "Parking"),
             ("elevator", "Elevator"),
@@ -91,6 +96,8 @@ ATTRIBUTES = {
             ("backup_power", "Backup power"),
             ("security", "24h security"),
             ("garden", "Garden / compound"),
+            ("swimming_pool", "Swimming pool"),
+            ("gym", "Gym"),
         ),
     },
     # Whether the seller can hand over the ownership certificate ("carta"):
@@ -113,23 +120,27 @@ ATTRIBUTES = {
     },
     "land_use": {
         "label": "Land use",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("residential", "Residential"),
             ("commercial", "Commercial"),
             ("mixed", "Mixed use"),
             ("agricultural", "Agricultural"),
+            ("industrial", "Industrial"),
         ),
     },
     "commercial_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("office", "Office"),
             ("shop", "Shop / retail"),
             ("warehouse", "Warehouse"),
             ("building", "Whole building"),
-            ("other", "Other"),
         ),
     },
 }

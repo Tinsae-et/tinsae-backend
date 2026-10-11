@@ -7,7 +7,7 @@ make and model ("Toyota", "Vitz"), so they are not specs here; `condition`
 electronics and defined there.
 """
 
-from .electronics import ITEM, USED, _opts
+from .electronics import ITEM, OPEN_LIST, USED, _opts
 
 ATTRIBUTES = {
     # A model year, not `release_year`: that one starts at 1990, and older
@@ -38,17 +38,24 @@ ATTRIBUTES = {
             ("lpg", "LPG"),
             ("cng", "CNG"),
             ("lng", "LNG"),
+            ("other", "Other"),
         ),
     },
     "body_type": {
         "label": "Body type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("sedan", "Sedan"),
             ("suv", "SUV"),
             ("hatchback", "Hatchback"),
             ("pickup", "Pickup"),
             ("van", "Van"),
+            ("coupe", "Coupe"),
+            ("station_wagon", "Station wagon"),
+            ("minivan", "Minivan"),
+            ("convertible", "Convertible"),
         ),
     },
     "engine_cc": {
@@ -65,6 +72,8 @@ ATTRIBUTES = {
             ("bus", "Bus"),
             ("minibus", "Minibus"),
             ("machinery", "Machinery"),
+            ("trailer", "Trailer"),
+            ("other", "Other"),
         ),
     },
     "load_capacity": {
@@ -99,6 +108,8 @@ ATTRIBUTES = {
             ("kids", "Kids"),
             ("electric", "Electric"),
             ("bmx", "BMX"),
+            ("folding", "Folding"),
+            ("other", "Other"),
         ),
     },
     "wheel_size": {
@@ -130,13 +141,17 @@ ATTRIBUTES = {
     },
     "motorcycle_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("standard", "Standard"),
             ("sport", "Sport"),
             ("cruiser", "Cruiser"),
             ("scooter", "Scooter"),
             ("off_road", "Off-road"),
+            ("touring", "Touring"),
+            ("delivery", "Delivery / cargo"),
         ),
     },
     # An electric motor's rating, in kW as motors are sold and compared: a
@@ -261,7 +276,7 @@ PRODUCT_TYPES = {
         "categories": ["motorcycles"],
         "brands": ["Bajaj", "TVS", "Honda", "Yamaha", "Suzuki", "Yadea"],
         "fields": [
-            {"attribute": "motorcycle_type", "required": True, "control": "chips"},
+            {"attribute": "motorcycle_type", "required": True},
             # The power source decides the rest: an electric scooter has no
             # engine size or gearbox, but a motor rating, a battery and a range.
             {**FUEL, "label": "Power source", "options": ["petrol", "electric"]},

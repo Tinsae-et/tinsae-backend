@@ -29,6 +29,8 @@ _YES_NO = _opts(("yes", "Yes"), ("no", "No"))
 # to convert stored values to numbers in GB once, in the same transaction; see
 # catalog/taxonomy/sync.py `CONVERTERS`.
 SIZE_FROM_ENUM = {"type": "enum", "using": "size_gb"}
+# A closed list opened to pick-or-type: stored codes become their labels.
+OPEN_LIST = {"type": "enum", "using": "option_label"}
 
 ATTRIBUTES = {
     # --- shared across types ---
@@ -245,6 +247,8 @@ ATTRIBUTES = {
             ("over_ear", "Over-ear"),
             ("speaker", "Speaker"),
             ("soundbar", "Soundbar"),
+            ("home_theatre", "Home theatre"),
+            ("other", "Other"),
         ),
     },
     "noise_cancellation": {
@@ -279,6 +283,7 @@ ATTRIBUTES = {
             ("compact", "Compact"),
             ("action", "Action"),
             ("drone", "Drone"),
+            ("other", "Other"),
         ),
     },
     "kit": {
@@ -430,7 +435,9 @@ ATTRIBUTES = {
     # --- desktops ---
     "form_factor": {
         "label": "Form factor",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("tower", "Tower"),
             ("all_in_one", "All-in-one"),
@@ -458,7 +465,9 @@ ATTRIBUTES = {
     },
     "monitor_panel": {
         "label": "Panel",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(("ips", "IPS"), ("va", "VA"), ("oled", "OLED"), ("tn", "TN")),
     },
     "curved": {"label": "Curved", "type": "enum", "options": _YES_NO},
@@ -478,9 +487,14 @@ ATTRIBUTES = {
     # --- wearables ---
     "wearable_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
-            ("smartwatch", "Smartwatch"), ("fitness_band", "Fitness band")
+            ("smartwatch", "Smartwatch"),
+            ("fitness_band", "Fitness band"),
+            ("smart_ring", "Smart ring"),
+            ("kids_watch", "Kids watch"),
         ),
     },
     # A checklist (multiple values), not a level: buyers filter on the one

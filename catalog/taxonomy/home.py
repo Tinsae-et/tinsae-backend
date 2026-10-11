@@ -7,7 +7,7 @@ appliances keep it, because a fridge is bought by its brand. `color`,
 `seats` and `warranty` are shared attributes defined elsewhere.
 """
 
-from .electronics import ITEM, WARRANTY, _opts
+from .electronics import ITEM, OPEN_LIST, WARRANTY, _opts
 
 ATTRIBUTES = {
     # --- furniture ---
@@ -84,12 +84,15 @@ ATTRIBUTES = {
     },
     "mattress_type": {
         "label": "Mattress type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("foam", "Foam"),
             ("spring", "Spring"),
             ("pocket_spring", "Pocket spring"),
             ("hybrid", "Hybrid"),
+            ("latex", "Latex"),
         ),
     },
     "thickness_cm": {
@@ -123,13 +126,16 @@ ATTRIBUTES = {
     },
     "fridge_style": {
         "label": "Fridge type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("single_door", "Single door"),
             ("top_freezer", "Top freezer"),
             ("bottom_freezer", "Bottom freezer"),
             ("side_by_side", "Side-by-side"),
             ("chest_freezer", "Chest freezer"),
+            ("mini", "Mini fridge"),
         ),
     },
     "capacity_l": {
@@ -140,21 +146,27 @@ ATTRIBUTES = {
     },
     "washer_style": {
         "label": "Loading",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("front_load", "Front load"),
             ("top_load", "Top load"),
             ("twin_tub", "Twin tub"),
+            ("washer_dryer", "Washer-dryer"),
         ),
     },
     "load_kg": {"label": "Load", "type": "number", "unit": "kg", "min": 1},
     "cooking_fuel": {
         "label": "Fuel",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("electric", "Electric"),
             ("gas", "Gas"),
             ("gas_electric", "Gas + electric"),
+            ("charcoal", "Charcoal"),
         ),
     },
     # An AC is sized to the room by its cooling power.
@@ -220,13 +232,16 @@ ATTRIBUTES = {
     },
     "light_type": {
         "label": "Light type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("ceiling", "Ceiling"),
             ("table_lamp", "Table lamp"),
             ("floor_lamp", "Floor lamp"),
             ("wall_light", "Wall light"),
             ("chandelier", "Chandelier"),
+            ("outdoor", "Outdoor light"),
         ),
     },
 }

@@ -6,7 +6,7 @@ banks are phone accessories and stay in Accessories. `fuel`, `warranty` and
 `operating_hours` are shared attributes defined elsewhere.
 """
 
-from .electronics import ITEM, USED, WARRANTY, _opts
+from .electronics import ITEM, OPEN_LIST, USED, WARRANTY, _opts
 
 _YES_NO = _opts(("yes", "Yes"), ("no", "No"))
 
@@ -46,6 +46,9 @@ ATTRIBUTES = {
             ("panel", "Solar panel"),
             ("kit", "Complete kit"),
             ("light", "Solar light"),
+            ("water_heater", "Solar water heater"),
+            ("water_pump", "Solar water pump"),
+            ("other", "Other"),
         ),
     },
     # Rated output of a panel or a kit's panels, or an inverter's load.
@@ -57,8 +60,14 @@ ATTRIBUTES = {
     },
     "panel_tech": {
         "label": "Panel type",
-        "type": "enum",
-        "options": _opts(("mono", "Monocrystalline"), ("poly", "Polycrystalline")),
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
+        "options": _opts(
+            ("mono", "Monocrystalline"),
+            ("poly", "Polycrystalline"),
+            ("bifacial", "Bifacial"),
+        ),
     },
     # How long a kit or a solar light runs after dark.
     "battery_wh": {
@@ -81,6 +90,7 @@ ATTRIBUTES = {
             ("ups", "UPS"),
             ("battery", "Battery"),
             ("stabilizer", "Stabilizer"),
+            ("other", "Other"),
         ),
     },
     # Pure sine runs fridges, pumps and laptops safely; modified sine is cheaper.
@@ -106,12 +116,15 @@ ATTRIBUTES = {
     },
     "battery_chemistry": {
         "label": "Battery type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("lithium", "Lithium (LiFePO4)"),
             ("lead_acid", "Lead-acid"),
             ("gel", "Gel"),
             ("tubular", "Tubular"),
+            ("agm", "AGM"),
         ),
     },
     # Labelled and sold in Ah at the system voltage (Ah x V gives the energy).
@@ -141,7 +154,7 @@ PRODUCT_TYPES = {
         ],
         "fields": [
             {"attribute": "power_kva", "required": True, "placeholder": "e.g. 5"},
-            {"attribute": "fuel", "required": True, "options": ["petrol", "diesel"]},
+            {"attribute": "fuel", "required": True, "options": ["petrol", "diesel", "lpg"]},
             {"attribute": "phase", "required": True},
             {"attribute": "start_type"},
             {"attribute": "runtime_h", "recommended": True, "placeholder": "e.g. 8"},

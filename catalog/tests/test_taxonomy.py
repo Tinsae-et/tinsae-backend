@@ -483,6 +483,55 @@ class SizeConversionTest(TestCase):
         self.assertEqual(_applied(sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)), [])
 
 
+class OpenListConversionTest(TestCase):
+    """A closed list opened to pick-or-type stores labels, not codes."""
+
+    def test_stored_codes_become_labels_lists_included(self):
+        cars = Category.objects.create(name="Cars", slug="cars")
+        owner = User.objects.create_user(username="open", password="pass")
+        shop = Shop.objects.create(name="Open Shop", owner=owner)
+        # The database as it was: body type and amenities were closed lists.
+        as_enum = copy.deepcopy(ATTRIBUTES)
+        for key in ("body_type", "amenities"):
+            as_enum[key] = {**as_enum[key], "type": "enum"}
+            del as_enum[key]["convert_from"]
+        sync_taxonomy(as_enum, PRODUCT_TYPES)
+        product = Product.objects.create(
+            shop=shop,
+            category=cars,
+            brand="Toyota",
+            name="RAV4",
+            price="1.00",
+            specs={"body_type": "suv", "amenities": ["parking", "water_tank"]},
+        )
+
+        changes = sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)
+
+        self.assertTrue(
+            any(c.startswith("convert attribute body_type") for c in changes)
+        )
+        product.refresh_from_db()
+        self.assertEqual(product.specs["body_type"], "SUV")
+        self.assertEqual(product.specs["amenities"], ["Parking", "Water tank"])
+        self.assertEqual(_applied(sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)), [])
+
+    def test_a_typed_value_is_accepted_where_the_list_has_none(self):
+        Category.objects.create(name="Cars", slug="cars")
+        sync_taxonomy(ATTRIBUTES, PRODUCT_TYPES)
+        schema = category_schema(Category.objects.get(slug="cars"))
+        specs = {
+            "body_type": "limousine",
+            "year": 2015,
+            "fuel": "petrol",
+            "transmission": "automatic",
+            "color": "Black",
+        }
+        self.assertEqual(validate_specs(schema, specs, condition="new"), {})
+        # A field that switches other questions stays a fixed list.
+        bad = {**specs, "fuel": "ethanol"}
+        self.assertIn("fuel", validate_specs(schema, bad, condition="new"))
+
+
 MEDIA = tempfile.mkdtemp()
 
 

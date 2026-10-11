@@ -1,5 +1,6 @@
 import io
 import math
+import re
 import urllib.request
 from datetime import timedelta
 from decimal import Decimal
@@ -878,7 +879,10 @@ def image_pool_key(category_slug: str, specs: dict | None) -> str:
     """'trucks-heavy:bus' when that pool exists, otherwise the category slug."""
     field = IMAGE_POOL_FIELD.get(category_slug)
     if field:
-        key = f"{category_slug}:{(specs or {}).get(field)}"
+        # A pick-or-type field stores its label ("SUV", "Formal"); the pools
+        # are keyed by code ("suv", "formal").
+        value = re.sub(r"[^a-z0-9]+", "_", str((specs or {}).get(field)).lower())
+        key = f"{category_slug}:{value.strip('_')}"
         if key in UNSPLASH_PUBLIC_IMAGES:
             return key
     return category_slug

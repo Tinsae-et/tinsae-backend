@@ -9,7 +9,7 @@ made, so `brand_required` is off everywhere. `color` and `material` are shared
 attributes defined elsewhere; the fashion options are added there.
 """
 
-from .electronics import _opts
+from .electronics import OPEN_LIST, _opts
 
 ATTRIBUTES = {
     # --- clothing ---
@@ -94,7 +94,9 @@ ATTRIBUTES = {
     # --- shoes ---
     "shoe_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("sneakers", "Sneakers"),
             ("formal", "Formal"),
@@ -102,7 +104,6 @@ ATTRIBUTES = {
             ("sandals", "Sandals / Slippers"),
             ("heels", "Heels"),
             ("sports", "Sports / Running"),
-            ("other", "Other"),
         ),
     },
     # EU sizes, as sold in Addis; anything else can be typed.
@@ -114,7 +115,9 @@ ATTRIBUTES = {
     # --- bags ---
     "bag_type": {
         "label": "Type",
-        "type": "enum",
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
         "options": _opts(
             ("backpack", "Backpack"),
             ("handbag", "Handbag"),
@@ -122,7 +125,6 @@ ATTRIBUTES = {
             ("wallet", "Wallet / Purse"),
             ("laptop_bag", "Laptop bag"),
             ("luggage", "Travel / Luggage"),
-            ("other", "Other"),
         ),
     },
     # --- watches & jewelry ---
@@ -166,8 +168,15 @@ ATTRIBUTES = {
     },
     "movement": {
         "label": "Movement",
-        "type": "enum",
-        "options": _opts(("quartz", "Quartz (battery)"), ("automatic", "Automatic")),
+        "type": "text",
+        # Pick or type: the list suggests, it does not limit.
+        "convert_from": OPEN_LIST,
+        "options": _opts(
+            ("quartz", "Quartz (battery)"),
+            ("automatic", "Automatic"),
+            ("mechanical", "Mechanical (hand-wound)"),
+            ("solar", "Solar"),
+        ),
     },
 }
 
