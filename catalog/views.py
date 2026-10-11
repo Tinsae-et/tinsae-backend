@@ -41,7 +41,7 @@ from .services import (
     get_product_suggestions,
     log_search,
 )
-from .specs import category_schema
+from .specs import category_schema, group_schema
 
 ORDERING_FIELDS = {
     "name",
@@ -97,7 +97,9 @@ def price_param(params, name):
 class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
     # Every category is listed, subcategories included (with `parent` set), so
     # existing clients keep working; `children` saves new ones the tree-building.
-    queryset = Category.objects.prefetch_related("children")
+    queryset = Category.objects.select_related("product_type").prefetch_related(
+        Prefetch("children", queryset=Category.objects.select_related("product_type"))
+    )
     serializer_class = CategoryTreeSerializer
     pagination_class = CategoryPagination
 
@@ -253,7 +255,9 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
                 if slug
                 else None
             )
-            self._category_schema = category_schema(category)
+            # A parent ("Property & Rentals") filters on what its
+            # subcategories share: sale or rent, sub-city...
+            self._category_schema = category_schema(category) or group_schema(category)
         return self._category_schema
 
     @action(detail=False, methods=["get"], url_path="facets")

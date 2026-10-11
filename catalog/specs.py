@@ -108,6 +108,43 @@ def category_schema(category: Category | None) -> dict | None:
     }
 
 
+def group_schema(category: Category | None) -> dict | None:
+    """For a sale-or-rent parent, the fields every subcategory's type shares.
+
+    "Property & Rentals" has no form of its own, but all four of its types ask
+    for sale or rent and the sub-city, so a buyer can filter the whole group
+    by them. Used for filtering and counts only, never for the listing form.
+
+    Only for property: other groups ("Vehicles & Auto") stay unfilterable by
+    spec, because a car and a tyre share nothing a buyer would pick between.
+    """
+    if category is None or category.product_type_id is not None:
+        return None
+    children = list(category.children.select_related("product_type"))
+    if not children or not all(
+        child.product_type_id and sells_or_rents(child.product_type.key)
+        for child in children
+    ):
+        return None
+    schemas = [category_schema(child) for child in children]
+    if not schemas or any(schema is None for schema in schemas):
+        return None
+    shared = set.intersection(
+        *({(f["key"], f["type"]) for f in schema["fields"]} for schema in schemas)
+    )
+    return {
+        "category": category.slug,
+        "product_type": category.slug,
+        "fields": [f for f in schemas[0]["fields"] if (f["key"], f["type"]) in shared],
+    }
+
+
+def sells_or_rents(product_type_key: str | None) -> bool:
+    """Whether listings of this type are for sale or for rent (property)."""
+    fields = PRODUCT_TYPES.get(product_type_key or "", {}).get("fields", [])
+    return any(f.get("attribute") == "listing_type" for f in fields)
+
+
 def as_text(field: dict, value):
     """For a text field, an option value becomes its label: 'apple_m3' -> 'Apple M3'.
 

@@ -1,6 +1,7 @@
 from rest_framework import serializers
 
 from .models import Category, Product, ProductImage
+from .specs import sells_or_rents
 
 
 class CategorySerializer(serializers.ModelSerializer):
@@ -25,17 +26,41 @@ class CategorySerializer(serializers.ModelSerializer):
         return obj.product_type_id is not None
 
 
-class CategoryTreeSerializer(CategorySerializer):
+class CategoryNavSerializer(CategorySerializer):
+    """A category as menus need it, with what its listings are.
+
+    Only the category list uses it, where product types and children are
+    prefetched; on every product's nested category it would cost a query each.
+    """
+
+    # Listings here are for sale or for rent (property): pages offer a
+    # "For rent | For sale" switch. A parent is when all its children are.
+    sale_or_rent = serializers.SerializerMethodField()
+
+    class Meta(CategorySerializer.Meta):
+        fields = [*CategorySerializer.Meta.fields, "sale_or_rent"]
+
+    def get_sale_or_rent(self, obj):
+        if obj.product_type_id is not None:
+            return sells_or_rents(obj.product_type.key)
+        children = obj.children.all()
+        return bool(children) and all(
+            child.product_type_id is not None and sells_or_rents(child.product_type.key)
+            for child in children
+        )
+
+
+class CategoryTreeSerializer(CategoryNavSerializer):
     """A category with its subcategories, for navigation.
 
     Only the category list uses it: nesting `children` into every product's
     category would cost a query per product.
     """
 
-    children = CategorySerializer(many=True, read_only=True)
+    children = CategoryNavSerializer(many=True, read_only=True)
 
-    class Meta(CategorySerializer.Meta):
-        fields = [*CategorySerializer.Meta.fields, "children"]
+    class Meta(CategoryNavSerializer.Meta):
+        fields = [*CategoryNavSerializer.Meta.fields, "children"]
 
 
 class ProductImageSerializer(serializers.ModelSerializer):

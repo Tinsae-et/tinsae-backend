@@ -69,7 +69,9 @@ class PropertySchemaTest(TestCase):
         self.assertEqual(set(errors), {"title_deed"})
 
 
-class PropertyListingTest(TestCase):
+class AgencyMixin:
+    """A signed-in agency that posts houses."""
+
     def setUp(self):
         call_command("seed_catalog", stdout=io.StringIO())
         owner = User.objects.create_user(username="agent", password="pass")
@@ -99,6 +101,8 @@ class PropertyListingTest(TestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
 
+
+class PropertyListingTest(AgencyMixin, TestCase):
     def test_a_villa_priced_past_100_million_is_stored(self):
         self._post("Villa", "185000000.00", listing_type="sale")
         self.assertEqual(Product.objects.get().price, Decimal("185000000.00"))
@@ -123,3 +127,39 @@ class PropertyListingTest(TestCase):
         self.assertEqual(facets["conditions"], [])
         data = self.client.get(f"{PRODUCTS}?condition=new").data
         self.assertEqual(data["results"], [])
+
+
+class SaleOrRentTest(AgencyMixin, TestCase):
+    """Renters and buyers each get their own side of the property pages."""
+
+    def test_categories_say_which_are_for_sale_or_rent(self):
+        rows = self.client.get("/api/v1/catalog/categories/").data["results"]
+        flagged = {c["slug"] for c in rows if c["sale_or_rent"]}
+        self.assertEqual(
+            flagged,
+            {"property", "apartments", "houses", "land", "commercial-property"},
+        )
+
+    def test_the_whole_group_filters_to_one_side(self):
+        self._post("Villa", "65000000.00", listing_type="sale")
+        self._post("House to rent", "85000.00", listing_type="rent")
+        data = self.client.get(
+            f"{PRODUCTS}?category=property&spec_listing_type=rent"
+        ).data
+        self.assertEqual([p["title"] for p in data["results"]], ["House to rent"])
+        # Only what every property type shares: bedrooms are not on land.
+        response = self.client.get(f"{PRODUCTS}?category=property&spec_bedrooms_min=2")
+        self.assertEqual(response.status_code, 400)
+
+    def test_counts_and_price_range_follow_the_side(self):
+        self._post("Villa", "65000000.00", listing_type="sale")
+        self._post("House to rent", "85000.00", listing_type="rent")
+        facets = self.client.get(
+            "/api/v1/catalog/products/facets/?category=property&spec_listing_type=rent"
+        ).data
+        self.assertEqual(facets["categories"]["houses"], 1)
+        self.assertEqual(facets["price"], {"min": 85000.0, "max": 85000.0})
+        sides = {
+            v["value"]: v["count"] for v in facets["specs"]["listing_type"]["values"]
+        }
+        self.assertEqual(sides, {"sale": 1, "rent": 1})
