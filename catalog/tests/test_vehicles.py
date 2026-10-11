@@ -71,6 +71,28 @@ class VehicleTaxonomyTest(TestCase):
         }
         return self.client.post(self.url, payload, format="json")
 
+    def test_gas_and_plug_in_cars_can_be_listed(self):
+        # An LPG or CNG car has an engine: its gearbox is still required.
+        lpg = {**COMPLETE_CAR, "fuel": "lpg"}
+        del lpg["transmission"]
+        response = self._post(specs=lpg)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("transmission", response.data["specs"])
+        self.assertEqual(
+            self._post(specs={**COMPLETE_CAR, "fuel": "cng"}).status_code, 201
+        )
+        # A plug-in hybrid has both an engine and a battery worth comparing.
+        phev = {
+            **COMPLETE_CAR,
+            "fuel": "plug_in_hybrid",
+            "battery_kwh": 18,
+            "range_km": 80,
+        }
+        self.assertEqual(self._post(specs=phev, name="Prius PHV").status_code, 201)
+        # LNG is a truck and bus fuel, not offered for cars.
+        lng = self._post(specs={**COMPLETE_CAR, "fuel": "lng"}, name="Odd")
+        self.assertEqual(lng.status_code, 400)
+
     def test_each_subcategory_gets_its_product_type(self):
         linked = dict(
             Category.objects.filter(parent__slug="vehicles").values_list(

@@ -30,8 +30,14 @@ ATTRIBUTES = {
         "options": _opts(
             ("petrol", "Petrol"),
             ("diesel", "Diesel"),
-            ("electric", "Electric"),
             ("hybrid", "Hybrid"),
+            ("plug_in_hybrid", "Plug-in hybrid"),
+            ("electric", "Electric"),
+            # Gas: LPG and CNG conversions on cars and Bajaj three-wheelers,
+            # CNG and LNG on trucks and buses.
+            ("lpg", "LPG"),
+            ("cng", "CNG"),
+            ("lng", "LNG"),
         ),
     },
     "body_type": {
@@ -194,11 +200,16 @@ ATTRIBUTES = {
 YEAR = {"attribute": "year", "required": True, "placeholder": "e.g. 2015"}
 TRANSMISSION = {"attribute": "transmission", "required": True}
 FUEL = {"attribute": "fuel", "required": True}
-PETROL = {"fuel": ["petrol"]}
 ELECTRIC = {"fuel": ["electric"]}
-# A car with an engine: petrol, diesel or hybrid. An EV has no engine size or
+# A vehicle with an engine, whatever it burns. An EV has no engine size or
 # gearbox, and a single-speed reduction gear is not a transmission buyers ask about.
-COMBUSTION = {"fuel": ["petrol", "diesel", "hybrid"]}
+COMBUSTION = {"fuel": ["petrol", "diesel", "hybrid", "plug_in_hybrid", "lpg", "cng",
+                      "lng"]}
+# Charged from the wall: a plug-in hybrid's battery and electric range are
+# what its buyers compare, as for an EV.
+PLUG_IN = {"fuel": ["electric", "plug_in_hybrid"]}
+# Small engines: a motorcycle or a Bajaj on petrol or gas.
+SMALL_ENGINE = {"fuel": ["petrol", "lpg", "cng"]}
 MILEAGE = {**ITEM, "attribute": "mileage", "show_if": USED, "required_if": USED,
            "placeholder": "e.g. 85000"}
 # The vehicle colours from the shared list; phone finishes are left out.
@@ -224,7 +235,8 @@ PRODUCT_TYPES = {
         "fields": [
             {"attribute": "body_type", "required": True},
             YEAR,
-            FUEL,
+            {**FUEL, "options": ["petrol", "diesel", "hybrid", "plug_in_hybrid",
+                                 "electric", "lpg", "cng"]},
             {**TRANSMISSION, "required": False, "show_if": COMBUSTION,
              "required_if": COMBUSTION},
             {"attribute": "engine_size", "recommended": True,
@@ -232,9 +244,10 @@ PRODUCT_TYPES = {
             {"attribute": "motor_power", "recommended": True,
              "show_if": ELECTRIC, "placeholder": "e.g. 150"},
             {"attribute": "battery_kwh", "recommended": True,
-             "show_if": ELECTRIC, "placeholder": "e.g. 60"},
+             "show_if": PLUG_IN, "placeholder": "e.g. 60"},
             {"attribute": "range_km", "recommended": True,
-             "show_if": ELECTRIC, "placeholder": "e.g. 420"},
+             "show_if": PLUG_IN, "placeholder": "e.g. 420",
+             "hint": "For a plug-in hybrid, the range on electricity alone."},
             {"attribute": "drivetrain", "recommended": True},
             {"attribute": "seats", "placeholder": "e.g. 5"},
             _color(),
@@ -254,9 +267,9 @@ PRODUCT_TYPES = {
             {**FUEL, "label": "Power source", "options": ["petrol", "electric"]},
             YEAR,
             {"attribute": "engine_cc", "placeholder": "e.g. 150",
-             "show_if": PETROL, "required_if": PETROL},
-            {**TRANSMISSION, "required": False, "show_if": PETROL,
-             "required_if": PETROL},
+             "show_if": SMALL_ENGINE, "required_if": SMALL_ENGINE},
+            {**TRANSMISSION, "required": False, "show_if": SMALL_ENGINE,
+             "required_if": SMALL_ENGINE},
             {"attribute": "motor_power", "placeholder": "e.g. 2",
              "show_if": ELECTRIC, "required_if": ELECTRIC},
             {"attribute": "battery_kwh", "recommended": True,
@@ -306,12 +319,13 @@ PRODUCT_TYPES = {
         "brands": ["Bajaj", "TVS", "Piaggio"],
         "fields": [
             {"attribute": "vehicle_use", "recommended": True},
-            {**FUEL, "label": "Power source", "options": ["petrol", "electric"]},
+            {**FUEL, "label": "Power source",
+             "options": ["petrol", "electric", "lpg", "cng"]},
             YEAR,
             {"attribute": "engine_cc", "placeholder": "e.g. 200",
-             "show_if": PETROL, "required_if": PETROL},
-            {**TRANSMISSION, "required": False, "show_if": PETROL,
-             "required_if": PETROL},
+             "show_if": SMALL_ENGINE, "required_if": SMALL_ENGINE},
+            {**TRANSMISSION, "required": False, "show_if": SMALL_ENGINE,
+             "required_if": SMALL_ENGINE},
             {"attribute": "motor_power", "placeholder": "e.g. 1.2",
              "show_if": ELECTRIC, "required_if": ELECTRIC},
             {"attribute": "battery_kwh", "recommended": True, "placeholder": "e.g. 3",
@@ -332,7 +346,7 @@ PRODUCT_TYPES = {
             {"attribute": "vehicle_kind", "required": True},
             YEAR,
             TRANSMISSION,
-            FUEL,
+            {**FUEL, "options": ["diesel", "petrol", "hybrid", "electric", "cng", "lng"]},
             {"attribute": "load_capacity", "placeholder": "e.g. 10",
              "show_if": {"vehicle_kind": ["truck"]}},
             {"attribute": "seats", "placeholder": "e.g. 30",
