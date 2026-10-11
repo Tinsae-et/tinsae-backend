@@ -296,6 +296,45 @@ STARTER_CATEGORIES = [
         "display_order": 5,
         "parent": "fashion",
     },
+    {
+        "slug": "property",
+        "icon": "building",
+        "tagline": "Apartments · Houses · Land · Offices",
+        "name": "Property & Rentals",
+        "display_order": 9,
+    },
+    {
+        "slug": "apartments",
+        "icon": "building",
+        "tagline": "Apartments · Condominiums · For sale or rent",
+        "name": "Apartments & Condominiums",
+        "display_order": 0,
+        "parent": "property",
+    },
+    {
+        "slug": "houses",
+        "icon": "home",
+        "tagline": "Villas · G+1 · G+2 · Compounds",
+        "name": "Houses & Villas",
+        "display_order": 1,
+        "parent": "property",
+    },
+    {
+        "slug": "land",
+        "icon": "land",
+        "tagline": "Residential · Commercial · Lease plots",
+        "name": "Land & Plots",
+        "display_order": 2,
+        "parent": "property",
+    },
+    {
+        "slug": "commercial-property",
+        "icon": "store",
+        "tagline": "Offices · Shops · Warehouses · Buildings",
+        "name": "Commercial Property",
+        "display_order": 3,
+        "parent": "property",
+    },
 ]
 
 

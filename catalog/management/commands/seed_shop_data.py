@@ -235,6 +235,27 @@ SHOPS = [
         "longitude": Decimal("38.752900"),
         "is_verified": True,
     },
+    # --- property: indexes 18-19 ---
+    {
+        "name": "Bole Homes & Rentals",
+        "slug": "bole-homes-rentals",
+        "city": "Addis Ababa",
+        "phone": "+251911100019",
+        "description": "Apartments, villas and offices for sale and rent across Addis.",
+        "latitude": Decimal("8.993600"),
+        "longitude": Decimal("38.788100"),
+        "is_verified": True,
+    },
+    {
+        "name": "Ayat Land & Property",
+        "slug": "ayat-land-property",
+        "city": "Addis Ababa",
+        "phone": "+251911100020",
+        "description": "Lease plots and houses in Ayat, CMC and Lemi Kura, with title deeds.",
+        "latitude": Decimal("9.019900"),
+        "longitude": Decimal("38.884300"),
+        "is_verified": True,
+    },
 ]
 
 # The first eight shops sell electronics; the rest each sell one vertical,
@@ -270,11 +291,22 @@ FASHION_SHOPS_BY_CATEGORY = {
     "watches-jewelry": [17],
 }
 FASHION_CATEGORIES = set(FASHION_SHOPS_BY_CATEGORY)
+PROPERTY_SHOPS_BY_CATEGORY = {
+    "apartments": [18],
+    "houses": [18, 19],
+    "land": [19],
+    "commercial-property": [18],
+}
+# "New / Used" does not describe property (see catalog/taxonomy/property.py):
+# these listings are seeded as new, never discounted as used, and described
+# by their own summary.
+PROPERTY_CATEGORIES = set(PROPERTY_SHOPS_BY_CATEGORY)
 SHOPS_BY_CATEGORY = {
     **VEHICLE_SHOPS_BY_CATEGORY,
     **HOME_SHOPS_BY_CATEGORY,
     **POWER_SHOPS_BY_CATEGORY,
     **FASHION_SHOPS_BY_CATEGORY,
+    **PROPERTY_SHOPS_BY_CATEGORY,
 }
 
 
@@ -296,15 +328,13 @@ NEVER_REFURBISHED = (
     | (set(HOME_SHOPS_BY_CATEGORY) - {"appliances"})
     | FASHION_CATEGORIES
 )
-# Vehicles, furniture, clothes and bags have no retail carton: their fourth
-# shot is a second side view.
-UNBOXED_CATEGORIES = (VEHICLE_CATEGORIES - {"auto-parts"}) | {
-    "furniture",
-    "mens-clothing",
-    "womens-clothing",
-    "kids-clothing",
-    "bags",
-}
+# Vehicles, furniture, clothes, bags and property have no retail carton: their
+# fourth shot is a second side view.
+UNBOXED_CATEGORIES = (
+    (VEHICLE_CATEGORIES - {"auto-parts"})
+    | {"furniture", "mens-clothing", "womens-clothing", "kids-clothing", "bags"}
+    | PROPERTY_CATEGORIES
+)
 
 # High-resolution public royalty-free imagery curated from Unsplash CDN for each category.
 UNSPLASH_PUBLIC_IMAGES = {
@@ -780,6 +810,51 @@ UNSPLASH_PUBLIC_IMAGES |= {
         "1587925358603-c2eea5305bbc",
         "1619946928632-abefa12506e2",
     ),
+    "apartments": _unsplash(
+        "1545324418-cc1a3fa10c00",
+        "1522708323590-d24dbb6b0267",
+        "1624204386084-dd8c05e32226",
+        "1502672260266-1c1ef2d93688",
+        "1583847268964-b28dc8f51f92",
+        "1515263487990-61b07816b324",
+        "1560448204-e02f11c3d0e2",
+        "1628592102751-ba83b0314276",
+        "1665249934445-1de680641f50",
+    ),
+    "houses": _unsplash(
+        "1600596542815-ffad4c1539a9",
+        "1622015663319-e97e697503ee",
+        "1598737652403-6e0ee5bf5cf2",
+        "1682681857663-7a5cf876ad1a",
+        "1686385798007-b14812307040",
+        "1598635031829-4bfae29d33eb",
+        "1603034222368-fc53916f4eed",
+        "1668119425427-ac0924024069",
+        "1601622962666-d0b6d43a7ac7",
+    ),
+    "land": _unsplash(
+        "1495107334309-fcf20504a5ab",
+        "1494187570835-b188e7f0f26e",
+        "1764719396639-66ea940bb757",
+        "1669003152631-c953ac9f3ed3",
+        "1764222233275-87dc016c11dc",
+        "1469827160215-9d29e96e72f4",
+    ),
+    "commercial-property": _unsplash(
+        "1497366811353-6870744d04b2",
+        "1497366754035-f200968a6e72",
+        "1604328698692-f76ea9498e76",
+        "1531973576160-7125cd663d86",
+        "1579487785973-74d2ca7abdd5",
+        "1610374792793-f016b77ca51a",
+    ),
+    "commercial-property:warehouse": _unsplash(
+        "1553413077-190dd305871c",
+        "1672552226380-486fe900b322",
+        "1684695749267-233af13276d0",
+        "1644079446600-219068676743",
+        "1689942010216-dc412bb1e7a9",
+    ),
 }
 
 # The spec whose value picks a more specific photo pool, per category.
@@ -795,6 +870,7 @@ IMAGE_POOL_FIELD = {
     "womens-clothing": "clothing_type",
     "shoes": "shoe_type",
     "watches-jewelry": "jewelry_type",
+    "commercial-property": "commercial_type",
 }
 
 
@@ -5146,6 +5222,344 @@ CATALOG_MATRICES = {
             },
         },
     ],
+    # --- property ---
+    "apartments": [
+        {
+            "brand": "Noah Real Estate",
+            "name": "3-Bedroom Apartment, Bole Atlas",
+            "base_price": 18500000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 3 bedrooms · 145 m²",
+            "specs": {
+                "listing_type": "sale",
+                "apartment_type": "apartment",
+                "subcity": "bole",
+                "area_name": "Atlas",
+                "bedrooms": 3,
+                "bathrooms": 2,
+                "size_m2": 145,
+                "floor": 6,
+                "furnishing": "unfurnished",
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "new_build": "yes",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "2-Bedroom Condominium, CMC",
+            "base_price": 28000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 2 bedrooms · 75 m²",
+            "specs": {
+                "listing_type": "rent",
+                "apartment_type": "condominium",
+                "subcity": "yeka",
+                "area_name": "CMC",
+                "bedrooms": 2,
+                "bathrooms": 1,
+                "size_m2": 75,
+                "floor": 3,
+                "furnishing": "semi",
+                "amenities": ["water_tank"],
+                "new_build": "no",
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Furnished Studio near Edna Mall",
+            "base_price": 35000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Studio · 45 m²",
+            "specs": {
+                "listing_type": "rent",
+                "apartment_type": "apartment",
+                "subcity": "bole",
+                "area_name": "Edna Mall",
+                "bedrooms": 0,
+                "bathrooms": 1,
+                "size_m2": 45,
+                "floor": 4,
+                "furnishing": "furnished",
+                "amenities": ["elevator", "backup_power", "security"],
+                "advance_months": 2,
+            },
+        },
+        {
+            "brand": "Ayat Real Estate",
+            "name": "Penthouse with City View, Kazanchis",
+            "base_price": 42000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 4 bedrooms · 260 m²",
+            "specs": {
+                "listing_type": "sale",
+                "apartment_type": "penthouse",
+                "subcity": "kirkos",
+                "area_name": "Kazanchis",
+                "bedrooms": 4,
+                "bathrooms": 3,
+                "size_m2": 260,
+                "floor": 12,
+                "furnishing": "furnished",
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "new_build": "yes",
+                "title_deed": "ready",
+            },
+        },
+    ],
+    "houses": [
+        {
+            "brand": "",
+            "name": "G+1 Villa with Compound, Gerji",
+            "base_price": 65000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 5 bedrooms · 500 m² plot",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "bole",
+                "area_name": "Gerji",
+                "storeys": "g1",
+                "bedrooms": 5,
+                "bathrooms": 4,
+                "size_m2": 380,
+                "plot_m2": 500,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "garden", "water_tank", "security"],
+                "new_build": "no",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "4-Bedroom House, Summit",
+            "base_price": 85000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 4 bedrooms · 300 m² plot",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "yeka",
+                "area_name": "Summit",
+                "storeys": "g1",
+                "bedrooms": 4,
+                "bathrooms": 3,
+                "size_m2": 280,
+                "plot_m2": 300,
+                "furnishing": "semi",
+                "amenities": ["parking", "garden", "water_tank"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "Flintstone Homes",
+            "name": "G+2 Family House, Ayat",
+            "base_price": 38000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 6 bedrooms · 350 m² plot",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "yeka",
+                "area_name": "Ayat",
+                "storeys": "g2",
+                "bedrooms": 6,
+                "bathrooms": 4,
+                "size_m2": 420,
+                "plot_m2": 350,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "garden", "water_tank", "backup_power"],
+                "new_build": "yes",
+                "title_deed": "in_process",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Ground Floor House, Kotebe",
+            "base_price": 30000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 3 bedrooms · 250 m² plot",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "yeka",
+                "area_name": "Kotebe",
+                "storeys": "g0",
+                "bedrooms": 3,
+                "bathrooms": 2,
+                "size_m2": 150,
+                "plot_m2": 250,
+                "furnishing": "unfurnished",
+                "amenities": ["garden", "water_tank"],
+                "advance_months": 6,
+            },
+        },
+    ],
+    "land": [
+        {
+            "brand": "",
+            "name": "Residential Lease Plot, Bole Arabsa",
+            "base_price": 9500000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 250 m² · Residential",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "lemi_kura",
+                "area_name": "Bole Arabsa",
+                "plot_m2": 250,
+                "land_use": "residential",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Commercial Plot on Main Road, Kality",
+            "base_price": 32000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 1,000 m² · Commercial",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "akaky_kaliti",
+                "area_name": "Kality",
+                "plot_m2": 1000,
+                "land_use": "commercial",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Mixed-Use Plot, Burayu",
+            "base_price": 6800000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 300 m² · Mixed use",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "outside_addis",
+                "area_name": "Burayu",
+                "plot_m2": 300,
+                "land_use": "mixed",
+                "title_deed": "in_process",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Farmland for Lease, Sebeta",
+            "base_price": 45000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 20,000 m² · Agricultural",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "outside_addis",
+                "area_name": "Sebeta",
+                "plot_m2": 20000,
+                "land_use": "agricultural",
+                "advance_months": 12,
+            },
+        },
+    ],
+    "commercial-property": [
+        {
+            "brand": "",
+            "name": "Office Space on Bole Road",
+            "base_price": 120000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Office · 220 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "office",
+                "subcity": "bole",
+                "area_name": "Bole Road",
+                "size_m2": 220,
+                "floor": 3,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "elevator", "backup_power", "security"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Ground Floor Shop, Piassa",
+            "base_price": 60000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Shop · 60 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "shop",
+                "subcity": "arada",
+                "area_name": "Piassa",
+                "size_m2": 60,
+                "floor": 0,
+                "furnishing": "unfurnished",
+                "amenities": ["security"],
+                "advance_months": 6,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Warehouse with Loading Bay, Kality",
+            "base_price": 180000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Warehouse · 1,200 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "warehouse",
+                "subcity": "akaky_kaliti",
+                "area_name": "Kality",
+                "size_m2": 1200,
+                "floor": 0,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "security"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "Temer Properties",
+            "name": "G+5 Mixed-Use Building, Megenagna",
+            "base_price": 210000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · Whole building · 1,800 m²",
+            "specs": {
+                "listing_type": "sale",
+                "commercial_type": "building",
+                "subcity": "yeka",
+                "area_name": "Megenagna",
+                "size_m2": 1800,
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "title_deed": "ready",
+            },
+        },
+    ],
 }
 
 # The original 31 sample products, plus two per vehicle and home category, for --sample
@@ -6261,6 +6675,95 @@ SAMPLE_PRODUCTS = [
             "weight_g": 18.5,
         },
     },
+    {
+        "shop": 18,
+        "category_slug": "apartments",
+        "brand": "Noah Real Estate",
+        "name": "3-Bedroom Apartment, Bole Atlas",
+        "description": "For sale · 3 bedrooms · 145 m²",
+        "price": "18500000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "sale",
+            "apartment_type": "apartment",
+            "subcity": "bole",
+            "area_name": "Atlas",
+            "bedrooms": 3,
+            "bathrooms": 2,
+            "size_m2": 145,
+            "floor": 6,
+            "furnishing": "unfurnished",
+            "amenities": [
+                "parking",
+                "elevator",
+                "water_tank",
+                "backup_power",
+                "security",
+            ],
+            "new_build": "yes",
+            "title_deed": "ready",
+        },
+    },
+    {
+        "shop": 18,
+        "category_slug": "apartments",
+        "brand": "",
+        "name": "2-Bedroom Condominium, CMC",
+        "description": "For rent · 2 bedrooms · 75 m²",
+        "price": "28000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "rent",
+            "apartment_type": "condominium",
+            "subcity": "yeka",
+            "area_name": "CMC",
+            "bedrooms": 2,
+            "bathrooms": 1,
+            "size_m2": 75,
+            "floor": 3,
+            "furnishing": "semi",
+            "amenities": ["water_tank"],
+            "new_build": "no",
+            "advance_months": 3,
+        },
+    },
+    {
+        "shop": 19,
+        "category_slug": "land",
+        "brand": "",
+        "name": "Residential Lease Plot, Bole Arabsa",
+        "description": "For sale · 250 m² · Residential",
+        "price": "9500000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "sale",
+            "subcity": "lemi_kura",
+            "area_name": "Bole Arabsa",
+            "plot_m2": 250,
+            "land_use": "residential",
+            "title_deed": "ready",
+        },
+    },
+    {
+        "shop": 18,
+        "category_slug": "commercial-property",
+        "brand": "",
+        "name": "Office Space on Bole Road",
+        "description": "For rent · Office · 220 m²",
+        "price": "120000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "rent",
+            "commercial_type": "office",
+            "subcity": "bole",
+            "area_name": "Bole Road",
+            "size_m2": 220,
+            "floor": 3,
+            "furnishing": "unfurnished",
+            "amenities": ["parking", "elevator", "backup_power", "security"],
+            "advance_months": 3,
+        },
+    },
 ]
 
 
@@ -6451,7 +6954,10 @@ class Command(BaseCommand):
                 # Condition: 70% New, 20% Used, 10% Refurbished. Vehicles are
                 # never "refurbished": that share is new for them.
                 cond_seed = (idx * 7 + 3) % 10
-                if cond_seed in (0, 1):
+                if cat_slug in PROPERTY_CATEGORIES:
+                    condition = ProductCondition.NEW
+                    cond_note = ""
+                elif cond_seed in (0, 1):
                     condition = ProductCondition.USED
                     final_price = (final_price * Decimal("0.78")).quantize(
                         Decimal("100.00")
@@ -6506,7 +7012,11 @@ class Command(BaseCommand):
                 else:
                     item_name = base_name
 
-                item_description = f"{color} · {cond_note}"
+                item_description = (
+                    model_def["summary"]
+                    if cat_slug in PROPERTY_CATEGORIES
+                    else f"{color} · {cond_note}"
+                )
 
                 # Merge model specs with variant overrides
                 full_specs = dict(model_def.get("specs", {}))
@@ -6657,9 +7167,9 @@ class Command(BaseCommand):
         for data in SAMPLE_PRODUCTS:
             shop = shop_objs[data["shop"]]
             category = Category.objects.get(slug=data["category_slug"])
-            slug = f"{shop.slug}-{data['brand']}-{data['name']}".lower().replace(
-                " ", "-"
-            )
+            # slugify, not a space replace: names carry commas and
+            # apostrophes ("Air Force 1 '07", "Apartment, Bole Atlas").
+            slug = slugify(f"{shop.slug}-{data['brand']}-{data['name']}")
             condition = data.get("condition", ProductCondition.NEW)
             specs = seed_specs(
                 category,

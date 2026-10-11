@@ -320,7 +320,9 @@ class Product(BaseModel):
     brand = models.CharField(max_length=100, blank=True, default="")
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True, blank=True)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    # 14 digits: a villa or a building in Addis sells for well over the
+    # 100M ETB that 10 digits held.
+    price = models.DecimalField(max_digits=14, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
     condition = models.CharField(
         max_length=20,

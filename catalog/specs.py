@@ -91,16 +91,19 @@ def category_schema(category: Category | None) -> dict | None:
             ]
         fields.append(field)
 
+    presentation = PRODUCT_TYPES.get(product_type.key, {})
     return {
         "category": category.slug,
         "product_type": product_type.key,
         "brands": list(product_type.brands or []),
         "brand_required": product_type.brand_required,
-        # Form copy, read from the taxonomy code rather than the database: it
-        # is presentation, not a rule, so it needs no sync.
-        "listing_examples": PRODUCT_TYPES.get(product_type.key, {}).get(
-            "listing_examples", {}
-        ),
+        # Presentation, read from the taxonomy code rather than the database:
+        # not rules, so they need no sync. Example name and variant for the
+        # form; whether "New / Used" applies (not to a house); what the brand
+        # box asks for ("Developer").
+        "listing_examples": presentation.get("listing_examples", {}),
+        "has_condition": presentation.get("has_condition", True),
+        "brand_label": presentation.get("brand_label", "Brand"),
         "fields": fields,
     }
 

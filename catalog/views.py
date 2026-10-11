@@ -25,6 +25,7 @@ from core.pagination import CategoryPagination, ProductSuggestionsPagination
 from shops.models import Shop
 
 from .filters import (
+    HAS_CONDITION,
     MAX_FACET_VALUES,
     condition_filter,
     list_param,
@@ -59,10 +60,10 @@ PUBLIC_STATS_TTL = 60 * 15
 logger = logging.getLogger(__name__)
 
 
-# `Product.price` is max_digits=10, decimal_places=2, so nothing at or above
+# `Product.price` is max_digits=14, decimal_places=2, so nothing at or above
 # this can be stored -- and a filter bound that large is a number Postgres has
 # to be protected from rather than a query worth running. See `price_param`.
-PRICE_LIMIT = Decimal("1e8")
+PRICE_LIMIT = Decimal("1e12")
 
 
 def price_param(params, name):
@@ -284,6 +285,7 @@ class ProductViewSet(viewsets.ReadOnlyModelViewSet):
             "conditions": [
                 {"value": row["condition"], "count": row["count"]}
                 for row in counted({"condition"})
+                .filter(HAS_CONDITION)
                 .values("condition")
                 .annotate(count=Count("id"))
                 .order_by("-count")

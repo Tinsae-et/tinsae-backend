@@ -24,6 +24,7 @@ from django.db.models.fields.json import KT
 from rest_framework.exceptions import ValidationError
 
 from .models import ProductCondition
+from .taxonomy import PRODUCT_TYPES
 
 SPEC_PREFIX = "spec_"
 # A text spec (colour, processor...) can hold many distinct typed values; the
@@ -36,6 +37,15 @@ def list_param(params, name) -> list[str]:
     return [v.strip() for v in (params.get(name) or "").split(",") if v.strip()]
 
 
+# Product types where "New / Used" means nothing (property): their listings
+# store the default and are left out of condition counts and filters, so
+# "Used" never lists a house and the rail never offers "Condition" for one.
+NO_CONDITION_TYPES = sorted(
+    key for key, spec in PRODUCT_TYPES.items() if not spec.get("has_condition", True)
+)
+HAS_CONDITION = ~Q(category__product_type__key__in=NO_CONDITION_TYPES)
+
+
 def condition_filter(params) -> Q | None:
     values = list_param(params, "condition")
     if not values:
@@ -45,7 +55,7 @@ def condition_filter(params) -> Q | None:
         raise ValidationError(
             {"condition": f"Unknown condition: {', '.join(unknown)}."}
         )
-    return Q(condition__in=values)
+    return Q(condition__in=values) & HAS_CONDITION
 
 
 def _number(name, raw):

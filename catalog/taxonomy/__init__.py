@@ -10,7 +10,7 @@ Rules the sync enforces, because listings already store these keys:
 - an option dropped from the code is deactivated, never deleted.
 """
 
-from . import electronics, fashion, home, power, vehicles
+from . import electronics, fashion, home, power, property, vehicles
 
 
 def _merge(*parts):
@@ -30,6 +30,7 @@ ATTRIBUTES = _merge(
     home.ATTRIBUTES,
     power.ATTRIBUTES,
     fashion.ATTRIBUTES,
+    property.ATTRIBUTES,
 )
 PRODUCT_TYPES = _merge(
     electronics.PRODUCT_TYPES,
@@ -37,6 +38,7 @@ PRODUCT_TYPES = _merge(
     home.PRODUCT_TYPES,
     power.PRODUCT_TYPES,
     fashion.PRODUCT_TYPES,
+    property.PRODUCT_TYPES,
 )
 
 __all__ = ["ATTRIBUTES", "PRODUCT_TYPES"]
