@@ -104,36 +104,23 @@ def camera_parts(text):
     return (_number(megapixels[0]) if megapixels else None), setup
 
 
-def weight_grams(text):
-    """'221 g' -> 221; '1.55 kg' -> 1550."""
-    match = re.search(r"(\d+(?:\.\d+)?)\s*(kg|g)\b", text.replace(",", ""))
-    if not match:
-        return None
-    grams = float(match.group(1)) * (1000 if match.group(2) == "kg" else 1)
-    return int(grams) if grams.is_integer() else round(grams, 1)
-
-
 def _phones(specs):
     sim = _text(specs, "sim")
-    size, panel, refresh = display_parts(_raw(specs, "display"))
-    main_camera, camera_setup = camera_parts(_text(specs, "camera"))
-    battery = _text(specs, "battery")
-    capacity = re.search(r"(\d[\d,]*)\s*mah", battery)
-    watts = re.search(r"(\d+(?:\.\d+)?)\s*w\b", battery)
-    year = re.search(r"\b(19|20)\d{2}\b", _text(specs, "year"))
+    size, _panel, _refresh = display_parts(_raw(specs, "display"))
+    main_camera, _setup = camera_parts(_text(specs, "camera"))
+    capacity = re.search(r"(\d[\d,]*)\s*mah", _text(specs, "battery"))
     return {
+        # Set before the fields it gates: storage/RAM/camera are smart-only, so
+        # a legacy listing needs a phone type before they can be mapped. A tiny
+        # screen is the old keypad signature.
+        "phone_type": (
+            "feature_phone" if size is not None and size < 3 else "smartphone"
+        ),
         "screen_size": size,
-        "display_panel": panel,
-        "refresh_rate": refresh,
-        "chipset": _raw(specs, "chip") or None,
         "main_camera": main_camera,
-        "camera_setup": camera_setup,
         "battery_capacity": (
             int(capacity.group(1).replace(",", "")) if capacity else None
         ),
-        "fast_charging": _number(watts.group(1)) if watts else None,
-        "release_year": int(year.group(0)) if year else None,
-        "weight": weight_grams(_text(specs, "weight")),
         "storage": _size(_text(specs, "storage")),
         "ram": _size(_text(specs, "ram")),
         "sim": (
@@ -164,41 +151,10 @@ def storage_type_from_text(text):
     return "ssd" if has_ssd else "hdd" if has_hdd else None
 
 
-INTEGRATED_GPU = r"iris|uhd|integrated|radeon graphics|radeon \d{3}m|apple|arc graphics"
-
-
 def _laptops(specs):
-    size, panel, refresh = display_parts(_raw(specs, "display"))
+    size, _panel, _refresh = display_parts(_raw(specs, "display"))
     os_text = _text(specs, "os")
-    gpu = _text(specs, "gpu")
-    gpu_type = (
-        ("integrated" if re.search(INTEGRATED_GPU, gpu) else "dedicated")
-        if gpu
-        else None
-    )
-    vram = _size(gpu) if gpu_type == "dedicated" else None
-    hours = re.search(
-        r"(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hours)\b", _text(specs, "battery")
-    )
     return {
-        "display_panel": panel,
-        "refresh_rate": refresh,
-        "ram_type": first_match(
-            _text(specs, "ram"),
-            [
-                (r"lpddr5x", "lpddr5x"),
-                (r"lpddr5", "lpddr5"),
-                (r"lpddr4x", "lpddr4x"),
-                (r"ddr5", "ddr5"),
-                (r"ddr4", "ddr4"),
-                (r"ddr3", "ddr3"),
-                (r"unified", "unified"),
-            ],
-        ),
-        "gpu_type": gpu_type,
-        "vram": vram,
-        "battery_life": _number(hours.group(1)) if hours else None,
-        "weight": weight_grams(_text(specs, "weight")),
         "storage_type": storage_type_from_text(_text(specs, "storage")),
         "storage": _size(_text(specs, "storage")),
         "ram": _size(_text(specs, "ram")),
@@ -234,6 +190,7 @@ def _audio(specs):
     kind = _text(specs, "type")
     anc = _text(specs, "anc")
     water = re.search(r"ipx?\d", _text(specs, "water_resistance"))
+    hours = re.search(r"(\d+(?:\.\d+)?)\s*h", _text(specs, "battery"))
     return {
         "audio_type": first_match(
             kind,
@@ -250,6 +207,8 @@ def _audio(specs):
             "no" if anc.startswith("no") else "yes" if anc else None
         ),
         "water_resistance": water.group().lower() if water else None,
+        # "30h with ANC (40h without)": the first figure, as advertised.
+        "battery_life": _number(hours.group(1)) if hours else None,
     }
 
 
@@ -269,6 +228,15 @@ def _cameras(specs):
             else "with_lens" if kit or specs.get("lens") else None
         ),
         "megapixels": _number(_text(specs, "resolution")),
+        # "4K 60p 10-bit", "6.2K 30p", "8.3K 60p N-RAW": the headline format.
+        "video_resolution": first_match(
+            _text(specs, "video"),
+            [
+                (r"\b([6-9](\.\d)?k)\b", "6k"),
+                (r"\b(4k|5\.\dk)\b", "4k"),
+                (r"1080|full hd", "fhd"),
+            ],
+        ),
     }
 
 

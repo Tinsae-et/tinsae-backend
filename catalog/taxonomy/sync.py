@@ -43,6 +43,23 @@ def _decimal(value):
 # change that is not a pure widening. Each maps one stored value to the new
 # type, or None when it cannot.
 CONVERTERS = {"size_gb": size_to_gb}
+# Not in CONVERTERS: it needs the attribute's options. A closed list opening
+# up to pick-or-type stores what people see ("Sedan"), not the code ("sedan"),
+# so old and new listings read, filter and count as one value.
+OPTION_LABEL = "option_label"
+
+
+def _option_labels(attribute, spec):
+    """value -> label for an attribute, old options and new suggestions alike."""
+    labels = {o.value: o.label for o in attribute.options.all()}
+    labels.update({o["value"]: o["label"] for o in spec.get("options", [])})
+
+    def convert(value):
+        if isinstance(value, list):
+            return [labels.get(v, v) for v in value]
+        return labels.get(value, value) if isinstance(value, str) else None
+
+    return convert
 
 
 def convert_stored_values(key: str, convert) -> tuple[int, int]:
@@ -81,7 +98,7 @@ def check_definitions(attributes: dict, product_types: dict) -> None:
         if spec["type"] == "number" and spec.get("options"):
             raise TaxonomyError(f"Number attribute {key!r} cannot have options.")
         conversion = spec.get("convert_from")
-        if conversion and conversion.get("using") not in CONVERTERS:
+        if conversion and conversion.get("using") not in {*CONVERTERS, OPTION_LABEL}:
             raise TaxonomyError(
                 f"Attribute {key!r} converts with unknown {conversion.get('using')!r}."
             )
@@ -151,12 +168,19 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
             attribute = Attribute.objects.create(key=key, type=spec["type"], **values)
             changes.append(f"create attribute {key}")
         else:
-            if attribute.type != spec["type"]:
+            # A declared type conversion rewrites every stored value in this
+            # same transaction, so a unit may change along with it.
+            retyped = attribute.type != spec["type"]
+            if retyped:
                 conversion = spec.get("convert_from") or {}
                 if conversion.get("type") == attribute.type:
-                    converted, moved = convert_stored_values(
-                        key, CONVERTERS[conversion["using"]]
+                    using = conversion["using"]
+                    convert = (
+                        _option_labels(attribute, spec)
+                        if using == OPTION_LABEL
+                        else CONVERTERS[using]
                     )
+                    converted, moved = convert_stored_values(key, convert)
                     changes.append(
                         f"convert attribute {key}: {attribute.type} -> {spec['type']} "
                         f"({converted} value(s) converted, {moved} unreadable "
@@ -174,6 +198,19 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
                     )
                 attribute.type = spec["type"]
                 attribute.save(update_fields=["type", "updated_at"])
+            if (
+                not retyped
+                and attribute.unit != values["unit"]
+                and Product.objects.filter(specs__has_key=key).exists()
+            ):
+                # Stored numbers carry no unit of their own: 1200 saved as
+                # watts would silently read as 1200 kW. Like a type change, a
+                # unit change needs a new key while values exist.
+                raise TaxonomyError(
+                    f"Attribute {key!r} is in {attribute.unit or 'no unit'} in the "
+                    f"database and {values['unit'] or 'no unit'} in code, and "
+                    "listings hold values for it. Add a new key instead."
+                )
             if _set(attribute, changes, f"attribute {key}", **values):
                 attribute.save()
         attribute_rows[key] = attribute
@@ -212,7 +249,10 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
         product_type = ProductType.objects.filter(key=type_key).first()
         if product_type is None:
             product_type = ProductType.objects.create(
-                key=type_key, label=spec["label"], brands=spec.get("brands", [])
+                key=type_key,
+                label=spec["label"],
+                brands=spec.get("brands", []),
+                brand_required=spec.get("brand_required", True),
             )
             changes.append(f"create product type {type_key}")
         elif _set(
@@ -221,6 +261,7 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
             f"product type {type_key}",
             label=spec["label"],
             brands=spec.get("brands", []),
+            brand_required=spec.get("brand_required", True),
         ):
             product_type.save()
 
@@ -239,6 +280,7 @@ def sync_taxonomy(attributes: dict, product_types: dict, *, dry_run=False) -> li
                 "control": field.get("control", ""),
                 "section": field.get("section", "key"),
                 "recommended": field.get("recommended", False),
+                "multiple": field.get("multiple", False),
                 "placeholder": field.get("placeholder", ""),
                 "hint": field.get("hint", ""),
                 "display_order": order,

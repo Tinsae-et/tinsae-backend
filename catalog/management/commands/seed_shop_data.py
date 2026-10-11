@@ -1,4 +1,6 @@
 import io
+import math
+import re
 import urllib.request
 from datetime import timedelta
 from decimal import Decimal
@@ -11,6 +13,7 @@ from django.utils import timezone
 from django.utils.text import slugify
 from PIL import Image, ImageDraw
 
+from catalog.management.commands.seed_catalog import ensure_categories
 from catalog.models import (
     Category,
     Product,
@@ -129,7 +132,210 @@ SHOPS = [
         "longitude": Decimal("38.746600"),
         "is_verified": True,
     },
+    # --- vehicles & auto: indexes VEHICLE_SHOPS below ---
+    {
+        "name": "Bole Auto Dealers",
+        "slug": "bole-auto-dealers",
+        "city": "Addis Ababa",
+        "phone": "+251911100009",
+        "description": "New and used cars, SUVs and pickups on Bole Road.",
+        "latitude": Decimal("8.995200"),
+        "longitude": Decimal("38.789100"),
+        "is_verified": True,
+    },
+    {
+        "name": "Kality Truck & Machinery",
+        "slug": "kality-truck-machinery",
+        "city": "Addis Ababa",
+        "phone": "+251911100010",
+        "description": "Trucks, buses, minibuses and construction machinery in Kality.",
+        "latitude": Decimal("8.902300"),
+        "longitude": Decimal("38.765800"),
+        "is_verified": True,
+    },
+    {
+        "name": "Adama Motors & Bajaj",
+        "slug": "adama-motors-bajaj",
+        "city": "Adama",
+        "phone": "+251911100011",
+        "description": "Motorcycles and Bajaj three-wheelers, new and used.",
+        "latitude": Decimal("8.540000"),
+        "longitude": Decimal("39.269000"),
+        "is_verified": False,
+    },
+    {
+        "name": "Merkato Spare Parts",
+        "slug": "merkato-spare-parts",
+        "city": "Addis Ababa",
+        "phone": "+251911100012",
+        "description": "Tyres, batteries and genuine spare parts at Merkato.",
+        "latitude": Decimal("9.032800"),
+        "longitude": Decimal("38.738900"),
+        "is_verified": True,
+    },
+    {
+        "name": "Sarbet Bike Hub",
+        "slug": "sarbet-bike-hub",
+        "city": "Addis Ababa",
+        "phone": "+251911100013",
+        "description": "Mountain, city and kids' bicycles, e-bikes and repairs in Sarbet.",
+        "latitude": Decimal("8.996300"),
+        "longitude": Decimal("38.733900"),
+        "is_verified": True,
+    },
+    # --- furniture & appliances: indexes 13-14 ---
+    {
+        "name": "CMC Furniture House",
+        "slug": "cmc-furniture-house",
+        "city": "Addis Ababa",
+        "phone": "+251911100014",
+        "description": "Sofas, beds, mattresses and décor, made locally and imported, in CMC.",
+        "latitude": Decimal("9.021400"),
+        "longitude": Decimal("38.835600"),
+        "is_verified": True,
+    },
+    {
+        "name": "Piassa Home Appliances",
+        "slug": "piassa-home-appliances",
+        "city": "Addis Ababa",
+        "phone": "+251911100015",
+        "description": "Fridges, washing machines, stoves and kitchenware with warranty.",
+        "latitude": Decimal("9.036800"),
+        "longitude": Decimal("38.751200"),
+        "is_verified": True,
+    },
+    # --- power & solar: index 15 ---
+    {
+        "name": "Megenagna Power & Solar",
+        "slug": "megenagna-power-solar",
+        "city": "Addis Ababa",
+        "phone": "+251911100016",
+        "description": "Generators, solar kits, hybrid inverters and lithium batteries, installed.",
+        "latitude": Decimal("9.019200"),
+        "longitude": Decimal("38.801400"),
+        "is_verified": True,
+    },
+    # --- fashion: indexes 16-17 ---
+    {
+        "name": "Bole Fashion House",
+        "slug": "bole-fashion-house",
+        "city": "Addis Ababa",
+        "phone": "+251911100017",
+        "description": "Clothing, Habesha kemis, shoes and bags for the whole family.",
+        "latitude": Decimal("8.996400"),
+        "longitude": Decimal("38.789700"),
+        "is_verified": True,
+    },
+    {
+        "name": "Piassa Gold & Watches",
+        "slug": "piassa-gold-watches",
+        "city": "Addis Ababa",
+        "phone": "+251911100018",
+        "description": "21K and 18K gold, silver crosses and original watches.",
+        "latitude": Decimal("9.034100"),
+        "longitude": Decimal("38.752900"),
+        "is_verified": True,
+    },
+    # --- property: indexes 18-19 ---
+    {
+        "name": "Bole Homes & Rentals",
+        "slug": "bole-homes-rentals",
+        "city": "Addis Ababa",
+        "phone": "+251911100019",
+        "description": "Apartments, villas and offices for sale and rent across Addis.",
+        "latitude": Decimal("8.993600"),
+        "longitude": Decimal("38.788100"),
+        "is_verified": True,
+    },
+    {
+        "name": "Ayat Land & Property",
+        "slug": "ayat-land-property",
+        "city": "Addis Ababa",
+        "phone": "+251911100020",
+        "description": "Lease plots and houses in Ayat, CMC and Lemi Kura, with title deeds.",
+        "latitude": Decimal("9.019900"),
+        "longitude": Decimal("38.884300"),
+        "is_verified": True,
+    },
 ]
+
+# The first eight shops sell electronics; the rest each sell one vertical,
+# every such category from the shops (indexes into SHOPS) that fit it.
+ELECTRONICS_SHOP_COUNT = 8
+VEHICLE_SHOPS_BY_CATEGORY = {
+    "cars": [8],
+    "motorcycles": [10],
+    "bicycles": [12],
+    "three-wheelers": [10],
+    "trucks-heavy": [9],
+    "auto-parts": [11, 8],
+}
+VEHICLE_CATEGORIES = set(VEHICLE_SHOPS_BY_CATEGORY)
+HOME_SHOPS_BY_CATEGORY = {
+    "furniture": [13],
+    "beds-mattresses": [13],
+    "appliances": [14],
+    "kitchen-dining": [14, 13],
+    "decor-lighting": [13],
+}
+POWER_SHOPS_BY_CATEGORY = {
+    "generators": [15],
+    "solar": [15],
+    "inverters-batteries": [15],
+}
+FASHION_SHOPS_BY_CATEGORY = {
+    "mens-clothing": [16],
+    "womens-clothing": [16],
+    "kids-clothing": [16],
+    "shoes": [16],
+    "bags": [16],
+    "watches-jewelry": [17],
+}
+FASHION_CATEGORIES = set(FASHION_SHOPS_BY_CATEGORY)
+PROPERTY_SHOPS_BY_CATEGORY = {
+    "apartments": [18],
+    "houses": [18, 19],
+    "land": [19],
+    "commercial-property": [18],
+}
+# "New / Used" does not describe property (see catalog/taxonomy/property.py):
+# these listings are seeded as new, never discounted as used, and described
+# by their own summary.
+PROPERTY_CATEGORIES = set(PROPERTY_SHOPS_BY_CATEGORY)
+SHOPS_BY_CATEGORY = {
+    **VEHICLE_SHOPS_BY_CATEGORY,
+    **HOME_SHOPS_BY_CATEGORY,
+    **POWER_SHOPS_BY_CATEGORY,
+    **FASHION_SHOPS_BY_CATEGORY,
+    **PROPERTY_SHOPS_BY_CATEGORY,
+}
+
+
+def shop_category_slugs(index: int) -> list[str]:
+    """The categories a seeded shop sells, so its owner can list in them.
+
+    The first shops sell every electronics category; the rest sell the
+    categories SHOPS_BY_CATEGORY gives them.
+    """
+    if index < ELECTRONICS_SHOP_COUNT:
+        return sorted(set(CATALOG_MATRICES) - set(SHOPS_BY_CATEGORY))
+    return [slug for slug, shops in SHOPS_BY_CATEGORY.items() if index in shops]
+
+
+# Only electronics and appliances come back "refurbished"; a used sofa or car
+# is just used.
+NEVER_REFURBISHED = (
+    VEHICLE_CATEGORIES
+    | (set(HOME_SHOPS_BY_CATEGORY) - {"appliances"})
+    | FASHION_CATEGORIES
+)
+# Vehicles, furniture, clothes, bags and property have no retail carton: their
+# fourth shot is a second side view.
+UNBOXED_CATEGORIES = (
+    (VEHICLE_CATEGORIES - {"auto-parts"})
+    | {"furniture", "mens-clothing", "womens-clothing", "kids-clothing", "bags"}
+    | PROPERTY_CATEGORIES
+)
 
 # High-resolution public royalty-free imagery curated from Unsplash CDN for each category.
 UNSPLASH_PUBLIC_IMAGES = {
@@ -194,6 +400,492 @@ UNSPLASH_PUBLIC_IMAGES = {
         "https://images.unsplash.com/photo-1597872200969-2b65d56bd16b?auto=format&fit=crop&w=800&q=80",
     ],
 }
+
+
+def _unsplash(*photo_ids):
+    return [
+        f"https://images.unsplash.com/photo-{photo_id}?auto=format&fit=crop&w=800&q=80"
+        for photo_id in photo_ids
+    ]
+
+
+_VANS = _unsplash(
+    "1715340614342-899407bed6dd",
+    "1587813369290-091c9d432daf",
+    "1535655685871-dc8158ff167e",
+    "1605410791216-3d9653a95667",
+    "1563729494519-6cef8197f355",
+    "1549194898-60fd030ecc0f",
+)
+
+# Vehicles and parts. A key "<category>:<value>" is a pool for one value of the
+# spec in IMAGE_POOL_FIELD, so a bus listing shows a bus and a tyre a tyre;
+# anything without its own pool uses the category's.
+UNSPLASH_PUBLIC_IMAGES |= {
+    "wearables": _unsplash(
+        "1579586337278-3befd40fd17a",
+        "1546868871-7041f2a55e12",
+        "1624096104992-9b4fa3a279dd",
+        "1551816230-ef5deaed4a26",
+        "1637160151663-a410315e4e75",
+        "1461141346587-763ab02bced9",
+        "1617625802912-cde586faf331",
+        "1660844817855-3ecc7ef21f12",
+    ),
+    "desktops": _unsplash(
+        "1587831990711-23ca6441447b",
+        "1619597455322-4fbbd820250a",
+        "1593640495253-23196b27a87f",
+        "1483058712412-4245e9b90334",
+        "1517518295033-d5ab8ca078cc",
+        "1593640408182-31c70c8268f5",
+        "1527443224154-c4a3942d3acf",
+        "1560131914-2e469a0e8607",
+    ),
+    "monitors": _unsplash(
+        "1547658718-1cdaa0852790",
+        "1666771410140-0573b232426e",
+        "1611648694931-1aeda329f9da",
+        "1570485071395-29b575ea3b4e",
+        "1534972195531-d756b9bfa9f2",
+        "1614624532983-4ce03382d63d",
+        "1551739440-5dd934d3a94a",
+        "1677100091694-a09a1e468a7b",
+    ),
+    "tvs": _unsplash(
+        "1560169897-fc0cdbdfa4d5",
+        "1509281373149-e957c6296406",
+        "1646861039459-fd9e3aabf3fb",
+        "1567690187548-f07b1d7bf5a9",
+        "1593359677879-a4bb92f829d1",
+        "1461151304267-38535e780c79",
+        "1717295248230-93ea71f48f92",
+        "1665827488605-7717598fdf78",
+    ),
+    "furniture": _unsplash(
+        "1555041469-a586c61ea9bc",
+        "1691480152351-4b3f2c89ccff",
+        "1698936061086-2bf99c7b9fc5",
+        "1567016432779-094069958ea5",
+        "1512212621149-107ffe572d2f",
+        "1590251024078-8a6d9f90b02d",
+        "1493663284031-b7e3aefcae8e",
+        "1573866926487-a1865558a9cf",
+    ),
+    "beds-mattresses": _unsplash(
+        "1505693416388-ac5ce068fe85",
+        "1635594202056-9ea3b497e5c0",
+        "1506720186575-11354d325017",
+        "1613688684407-cc73e44fdc74",
+        "1654064550858-c62b971a378a",
+        "1688384452844-8364c3e2fc28",
+    ),
+    "beds-mattresses:mattress": _unsplash(
+        "1647376036543-f9f543601a1d",
+        "1640003145169-d10a2e85a64d",
+        "1759176171441-7afca44a5558",
+        "1635594202056-9ea3b497e5c0",
+    ),
+    "appliances": _unsplash(
+        "1484154218962-a197022b5858",
+        "1721563927724-74b1a0ddef33",
+        "1630459065645-549fe5a56db4",
+        "1536353284924-9220c464e262",
+        "1626806787461-102c1bfaaea1",
+        "1604335399105-a0c585fd81a1",
+        "1662220984920-3bd1f88e846f",
+        "1722859178634-ccc8ea5680d2",
+    ),
+    "appliances:refrigerator": _unsplash(
+        "1484154218962-a197022b5858",
+        "1721563927724-74b1a0ddef33",
+        "1630459065645-549fe5a56db4",
+        "1536353284924-9220c464e262",
+        "1588854337115-1c67d9247e4d",
+        "1571175443880-49e1d25b2bc5",
+    ),
+    "appliances:washing_machine": _unsplash(
+        "1626806787461-102c1bfaaea1",
+        "1604335399105-a0c585fd81a1",
+        "1622473590925-e3616c0a41bf",
+        "1662220984920-3bd1f88e846f",
+        "1604335398980-ededcadcc37d",
+        "1626806819282-2c1dc01a5e0c",
+    ),
+    "kitchen-dining": _unsplash(
+        "1556909212-d5b604d0c90d",
+        "1556910585-09baa3a3998e",
+        "1584990347163-2b86b71390d6",
+        "1584990347193-6bebebfeaeee",
+        "1556910602-38f53e68e15d",
+        "1518291344630-4857135fb581",
+        "1556910148-3adb7f0c665a",
+        "1678108040468-0cc9addd984d",
+    ),
+    "decor-lighting": _unsplash(
+        "1517991104123-1d56a6e81ed9",
+        "1580130281320-0ef0754f2bf7",
+        "1642689703534-e41f29622078",
+        "1570974802254-4b0ad1a755f5",
+        "1542728928-1413d1894ed1",
+        "1621177555630-b861919c864f",
+        "1573676386604-78f8ed228e2b",
+        "1620812067822-899be8a6a9a7",
+    ),
+    "generators": _unsplash(
+        "1700318092011-6e4666e94ab5",
+        "1700318131252-ab19c871ab60",
+        "1705051278299-7e64ba21437a",
+        "1707498633827-936bb448b513",
+    ),
+    "solar": _unsplash(
+        "1509391366360-2e959784a276",
+        "1558449028-b53a39d100fc",
+        "1508514177221-188b1cf16e9d",
+        "1613665813446-82a78c468a1d",
+        "1658298775754-5839ffd434cc",
+        "1521618755572-156ae0cdd74d",
+        "1655300256335-beef51a914fe",
+        "1724041875334-0a6397111c7e",
+    ),
+    "inverters-batteries": _unsplash(
+        "1780445392417-68b9dccc45f2",
+        "1676337167629-d896b3ed5724",
+        "1742899273038-67ff67477663",
+        "1676337167498-ceac1d6dafba",
+        "1732030373864-d37573915751",
+        "1676337167748-00b4e684322a",
+        "1676337167616-78853693ba3a",
+        "1676337167385-fa7a8d1eac07",
+    ),
+    "inverters-batteries:battery": _unsplash(
+        "1742899273038-67ff67477663",
+        "1676337167629-d896b3ed5724",
+        "1732030373864-d37573915751",
+        "1676337167748-00b4e684322a",
+    ),
+    "cars": _unsplash(
+        "1638618164682-12b986ec2a75",
+        "1657872737697-737a2d123ef2",
+        "1547245324-d777c6f05e80",
+        "1623869675781-80aa31012a5a",
+        "1670054953044-2605dbd0d747",
+        "1615063029891-497bebd4f03c",
+        "1650959818516-03d68079f9a0",
+        "1718762395094-fa40f65a88e8",
+    ),
+    "cars:suv": _unsplash(
+        "1694649686884-0d62d0dc47d1",
+        "1533473359331-0135ef1b58bf",
+        "1531181616225-f8e50c1ab53e",
+        "1705624843697-4461f9dce482",
+        "1606611013016-969c19ba27bb",
+        "1622893288761-823ba60f17a6",
+        "1612563893490-d86ed296e5e6",
+        "1598248691267-4a62dfdfd8a8",
+    ),
+    "cars:pickup": _unsplash(
+        "1551830820-330a71b99659",
+        "1559416523-140ddc3d238c",
+        "1607535882326-e3bd656233b3",
+        "1605504835488-e8c6d37beb43",
+        "1601252300554-4ad551483bd2",
+        "1552745998-234af3caf5b6",
+        "1612057473166-af2affdb92ad",
+        "1610647929723-a8922852cd44",
+    ),
+    "cars:van": _VANS,
+    "motorcycles": _unsplash(
+        "1591637333184-19aa84b3e01f",
+        "1558981403-c5f9899a28bc",
+        "1588756681780-9d5859fc2ca0",
+        "1559289431-9f12ee08f8b6",
+        "1596687760372-4c0d266059a7",
+        "1609630875171-b1321377ee65",
+        "1568772585407-9361f9bf3a87",
+        "1531327431456-837da4b1d562",
+    ),
+    "bicycles": _unsplash(
+        "1485965120184-e220f721d03e",
+        "1618762044398-ec1e7e048bbd",
+        "1532298229144-0ec0c57515c7",
+        "1507035895480-2b3156c31fc8",
+        "1576435728678-68d0fbf94e91",
+        "1593764592116-bfb2a97c642a",
+        "1571068316344-75bc76f77890",
+        "1505705694340-019e1e335916",
+    ),
+    "bicycles:mountain": _unsplash(
+        "1618762044398-ec1e7e048bbd",
+        "1511994298241-608e28f14fde",
+        "1673121414328-52eff37bc6d0",
+        "1624243519828-52a0f2c88af3",
+        "1535369643553-a33e0d1ac81d",
+        "1606087492572-424ebe0f2f61",
+    ),
+    "bicycles:road": _unsplash(
+        "1532298229144-0ec0c57515c7",
+        "1576435728678-68d0fbf94e91",
+        "1505705694340-019e1e335916",
+        "1541625602330-2277a4c46182",
+    ),
+    "bicycles:city": _unsplash(
+        "1593764592116-bfb2a97c642a",
+        "1485965120184-e220f721d03e",
+        "1507035895480-2b3156c31fc8",
+        "1618322704848-b71bf61dd300",
+    ),
+    "bicycles:electric": _unsplash(
+        "1618987688327-dc0b28888fe4",
+        "1620802051782-725fa33db067",
+        "1621394445346-c7b502f07206",
+        "1558978806-73073843b15e",
+        "1618322704848-b71bf61dd300",
+    ),
+    "three-wheelers": _unsplash(
+        "1752839971837-58515a01d879",
+        "1583491470869-ca0b9fa90216",
+        "1564068084235-39a9ccec4104",
+        "1501139187767-79e3d8121ea8",
+        "1552550018-5253c1b171e1",
+        "1583155381750-1c5d2634bd3f",
+        "1527708990900-6675e4de3e03",
+        "1508009603885-50cf7c579365",
+    ),
+    # Trucks are the category's default.
+    "trucks-heavy": _unsplash(
+        "1601584115197-04ecc0da31d7",
+        "1616432043562-3671ea2e5242",
+        "1591768793355-74d04bb6608f",
+        "1571989928541-674d0cf46c4a",
+        "1562954203-74c7fb884cba",
+        "1565793298595-6a879b1d9492",
+        "1592838064575-70ed626d3a0e",
+        "1649829726631-fcd218631ab5",
+    ),
+    "trucks-heavy:bus": _unsplash(
+        "1534011056808-50c1c6082fe7",
+        "1570125909232-eb263c188f7e",
+        "1557223562-6c77ef16210f",
+        "1570125909517-53cb21c89ff2",
+        "1544620347-c4fd4a3d5957",
+        "1564694202883-46e7448c1b26",
+        "1570118054363-ff4d296962f5",
+        "1561162025-aa7687ab5c12",
+    ),
+    "trucks-heavy:minibus": _VANS,
+    "trucks-heavy:machinery": _unsplash(
+        "1628645419184-26a1f2757340",
+        "1580901369227-308f6f40bdeb",
+        "1630288214173-a119cf823388",
+        "1649807533255-bbc9c9fb7d77",
+        "1583024011792-b165975b52f5",
+        "1610477865545-37711c53144d",
+        "1652303713917-2666b8bee507",
+        "1646297970360-94c9f6d8903c",
+    ),
+    "auto-parts": _unsplash(
+        "1486262715619-67b85e0b08d3",
+        "1537462715879-360eeb61a0ad",
+        "1556448851-9359658faa54",
+        "1522598140461-ec9911e01c53",
+        "1759419281480-bacc913c9606",
+        "1527383418406-f85a3b146499",
+        "1571335746824-742511d49bce",
+        "1444947295498-07f60c19a4ff",
+    ),
+    "auto-parts:tyres": _unsplash(
+        "1571335746824-742511d49bce",
+        "1578844251758-2f71da64c96f",
+        "1444947295498-07f60c19a4ff",
+        "1477823986828-5aff156284aa",
+        "1527266258038-6ae3e089a609",
+        "1585252522525-4f9ad48a24ea",
+        "1657307913178-97cb5a4d0cd7",
+        "1601411101851-ea0e07766235",
+    ),
+    "auto-parts:battery": _unsplash(
+        "1676337167629-d896b3ed5724",
+        "1676337167498-ceac1d6dafba",
+        "1742899273038-67ff67477663",
+        "1676337167752-2062c6ca7366",
+        "1764122623556-90a7d480df53",
+    ),
+    "auto-parts:engine": _unsplash(
+        "1486262715619-67b85e0b08d3",
+        "1522598140461-ec9911e01c53",
+        "1537462715879-360eeb61a0ad",
+        "1527383418406-f85a3b146499",
+        "1663642775693-6628f65358be",
+        "1429772011165-0c2e054367b8",
+    ),
+    "auto-parts:electronics": _unsplash(
+        "1592570714618-15e2d4719c6c",
+        "1631035012469-751baca1d4a0",
+        "1523987659364-8ad26ea657ef",
+        "1470948062737-aeb014e274c2",
+        "1631288299421-a22ed1019274",
+    ),
+    "mens-clothing": _unsplash(
+        "1602810318383-e386cc2a3ccf",
+        "1521572163474-6864f9cf17ab",
+        "1602810316693-3667c854239a",
+        "1594938291221-94f18cbb5660",
+        "1603252110481-7ba873bf42ab",
+        "1624835567150-0c530a20d8cc",
+        "1642764873654-9eef0467b342",
+        "1740711152088-88a009e877bb",
+    ),
+    "mens-clothing:suit": _unsplash(
+        "1617137968427-85924c800a22",
+        "1593030103066-0093718efeb9",
+        "1618886614638-80e3c103d31a",
+        "1617137984095-74e4e5e3613f",
+        "1480429370139-e0132c086e2a",
+    ),
+    "womens-clothing": _unsplash(
+        "1515372039744-b8f02a3ae446",
+        "1616313253719-c46514cddee1",
+        "1602010069450-0a62034f235c",
+        "1762154057377-cc9d3dd6900c",
+        "1563178406-4cdc2923acbc",
+        "1534875756527-5e8e4392005f",
+        "1599662875272-64de8289f6d8",
+        "1567401893414-76b7b1e5a7a5",
+    ),
+    "womens-clothing:traditional": _unsplash(
+        "1662894310962-d62a3f7f3334",
+        "1662894312921-67eabc246633",
+        "1662894310975-bce268199aec",
+        "1662894312870-54126d344de5",
+    ),
+    "kids-clothing": _unsplash(
+        "1622290291468-a28f7a7dc6a8",
+        "1622290319146-7b63df48a635",
+        "1622290291720-ac961c43ee30",
+        "1519238263530-99bdd11df2ea",
+        "1518831959646-742c3a14ebf7",
+        "1522771930-78848d9293e8",
+    ),
+    "shoes": _unsplash(
+        "1542291026-7eec264c27ff",
+        "1606107557195-0e29a4b5b4aa",
+        "1600269452121-4f2416e55c28",
+        "1560769629-975ec94e6a86",
+        "1608231387042-66d1773070a5",
+        "1549298916-b41d501d3772",
+        "1491553895911-0055eca6402d",
+        "1552346154-21d32810aba3",
+    ),
+    "shoes:formal": _unsplash(
+        "1614252235316-8c857d38b5f4",
+        "1603191659812-ee978eeeef76",
+        "1563434564528-8fdf5996e622",
+        "1549290127-7f758fdadff7",
+        "1668069226492-508742b03147",
+    ),
+    "bags": _unsplash(
+        "1598532163257-ae3c6b2524b6",
+        "1584917865442-de89df76afd3",
+        "1614179689702-355944cd0918",
+        "1600857062241-98e5dba7f214",
+        "1590874103328-eac38a683ce7",
+        "1548036328-c9fa89d128fa",
+        "1559563458-527698bf5295",
+        "1566150905458-1bf1fc113f0d",
+    ),
+    "watches-jewelry": _unsplash(
+        "1611107683227-e9060eccd846",
+        "1569397288884-4d43d6738fbd",
+        "1631982690223-8aa4be0a2497",
+        "1602173574767-37ac01994b2a",
+        "1617038220319-276d3cfab638",
+        "1650455221359-3aebf920bcc5",
+    ),
+    "watches-jewelry:watch": _unsplash(
+        "1523170335258-f5ed11844a49",
+        "1524805444758-089113d48a6d",
+        "1542496658-e33a6d0d50f6",
+        "1622434641406-a158123450f9",
+        "1522312346375-d1a52e2b99b3",
+        "1587925358603-c2eea5305bbc",
+        "1619946928632-abefa12506e2",
+    ),
+    "apartments": _unsplash(
+        "1545324418-cc1a3fa10c00",
+        "1522708323590-d24dbb6b0267",
+        "1624204386084-dd8c05e32226",
+        "1502672260266-1c1ef2d93688",
+        "1583847268964-b28dc8f51f92",
+        "1515263487990-61b07816b324",
+        "1560448204-e02f11c3d0e2",
+        "1628592102751-ba83b0314276",
+        "1665249934445-1de680641f50",
+    ),
+    "houses": _unsplash(
+        "1600596542815-ffad4c1539a9",
+        "1622015663319-e97e697503ee",
+        "1598737652403-6e0ee5bf5cf2",
+        "1682681857663-7a5cf876ad1a",
+        "1686385798007-b14812307040",
+        "1598635031829-4bfae29d33eb",
+        "1603034222368-fc53916f4eed",
+        "1668119425427-ac0924024069",
+        "1601622962666-d0b6d43a7ac7",
+    ),
+    "land": _unsplash(
+        "1495107334309-fcf20504a5ab",
+        "1494187570835-b188e7f0f26e",
+        "1764719396639-66ea940bb757",
+        "1669003152631-c953ac9f3ed3",
+        "1764222233275-87dc016c11dc",
+        "1469827160215-9d29e96e72f4",
+    ),
+    "commercial-property": _unsplash(
+        "1497366811353-6870744d04b2",
+        "1497366754035-f200968a6e72",
+        "1604328698692-f76ea9498e76",
+        "1531973576160-7125cd663d86",
+        "1579487785973-74d2ca7abdd5",
+        "1610374792793-f016b77ca51a",
+    ),
+    "commercial-property:warehouse": _unsplash(
+        "1553413077-190dd305871c",
+        "1672552226380-486fe900b322",
+        "1684695749267-233af13276d0",
+        "1644079446600-219068676743",
+        "1689942010216-dc412bb1e7a9",
+    ),
+}
+
+# The spec whose value picks a more specific photo pool, per category.
+IMAGE_POOL_FIELD = {
+    "cars": "body_type",
+    "inverters-batteries": "backup_type",
+    "beds-mattresses": "bed_item_type",
+    "appliances": "appliance_type",
+    "bicycles": "bike_type",
+    "trucks-heavy": "vehicle_kind",
+    "auto-parts": "part_type",
+    "mens-clothing": "clothing_type",
+    "womens-clothing": "clothing_type",
+    "shoes": "shoe_type",
+    "watches-jewelry": "jewelry_type",
+    "commercial-property": "commercial_type",
+}
+
+
+def image_pool_key(category_slug: str, specs: dict | None) -> str:
+    """'trucks-heavy:bus' when that pool exists, otherwise the category slug."""
+    field = IMAGE_POOL_FIELD.get(category_slug)
+    if field:
+        # A pick-or-type field stores its label ("SUV", "Formal"); the pools
+        # are keyed by code ("suv", "formal").
+        value = re.sub(r"[^a-z0-9]+", "_", str((specs or {}).get(field)).lower())
+        key = f"{category_slug}:{value.strip('_')}"
+        if key in UNSPLASH_PUBLIC_IMAGES:
+            return key
+    return category_slug
 
 
 # Palettes for the procedural renderer: background, device outline, device fill,
@@ -331,6 +1023,162 @@ def _draw_device(draw, category_slug, cx, cy, palette):
         draw.ellipse([cx - 40, cy - 40, cx + 40, cy + 40], fill=accent_hex)
         draw.ellipse([cx - 20, cy - 25, cx - 10, cy - 15], fill="#FFFFFF")
 
+    elif category_slug == "cars":
+        draw.polygon(
+            [
+                (cx - 150, cy - 10),
+                (cx - 90, cy - 90),
+                (cx + 110, cy - 90),
+                (cx + 170, cy - 10),
+            ],
+            fill=dev_fill,
+            outline=dev_border,
+        )
+        draw.polygon(
+            [
+                (cx - 130, cy - 15),
+                (cx - 82, cy - 78),
+                (cx + 5, cy - 78),
+                (cx + 5, cy - 15),
+            ],
+            fill=bg_hex,
+        )
+        draw.polygon(
+            [
+                (cx + 20, cy - 15),
+                (cx + 20, cy - 78),
+                (cx + 102, cy - 78),
+                (cx + 148, cy - 15),
+            ],
+            fill=bg_hex,
+        )
+        draw.rounded_rectangle(
+            [cx - 260, cy - 10, cx + 260, cy + 80],
+            radius=30,
+            fill=dev_fill,
+            outline=dev_border,
+            width=4,
+        )
+        draw.rounded_rectangle(
+            [cx + 232, cy + 10, cx + 256, cy + 30], radius=6, fill=accent_hex
+        )
+        for wx in (cx - 160, cx + 160):
+            draw.ellipse([wx - 55, cy + 40, wx + 55, cy + 150], fill=dev_border)
+            draw.ellipse([wx - 25, cy + 70, wx + 25, cy + 120], fill=accent_hex)
+
+    elif category_slug == "motorcycles":
+        for wx in (cx - 170, cx + 170):
+            draw.ellipse(
+                [wx - 80, cy - 10, wx + 80, cy + 150], outline=dev_border, width=14
+            )
+            draw.ellipse([wx - 16, cy + 54, wx + 16, cy + 86], fill=accent_hex)
+        draw.line(
+            [
+                (cx - 170, cy + 70),
+                (cx - 40, cy - 20),
+                (cx + 90, cy - 20),
+                (cx + 170, cy + 70),
+            ],
+            fill=dev_border,
+            width=10,
+        )
+        draw.rectangle([cx - 40, cy, cx + 50, cy + 60], fill=dev_border)
+        draw.rounded_rectangle(
+            [cx - 60, cy - 70, cx + 70, cy - 10], radius=25, fill=accent_hex
+        )
+        draw.rounded_rectangle(
+            [cx - 150, cy - 50, cx - 50, cy - 25], radius=10, fill=dev_border
+        )
+        draw.line([(cx + 90, cy - 20), (cx + 120, cy - 110)], fill=dev_border, width=8)
+        draw.line([(cx + 95, cy - 110), (cx + 150, cy - 110)], fill=dev_border, width=8)
+
+    elif category_slug == "bicycles":
+        for wx in (cx - 150, cx + 150):
+            draw.ellipse(
+                [wx - 95, cy - 25, wx + 95, cy + 165], outline=dev_border, width=10
+            )
+            draw.ellipse([wx - 10, cy + 60, wx + 10, cy + 80], fill=accent_hex)
+        draw.line(
+            [
+                (cx - 150, cy + 70),
+                (cx - 20, cy + 70),
+                (cx + 60, cy - 50),
+                (cx - 60, cy - 50),
+                (cx - 150, cy + 70),
+            ],
+            fill=accent_hex,
+            width=10,
+        )
+        draw.line([(cx - 20, cy + 70), (cx - 60, cy - 50)], fill=accent_hex, width=10)
+        draw.line([(cx + 60, cy - 50), (cx + 150, cy + 70)], fill=dev_border, width=8)
+        draw.line([(cx - 60, cy - 50), (cx - 70, cy - 85)], fill=dev_border, width=8)
+        draw.line([(cx - 100, cy - 90), (cx - 40, cy - 90)], fill=dev_border, width=10)
+        draw.line([(cx + 60, cy - 50), (cx + 45, cy - 95)], fill=dev_border, width=8)
+        draw.line([(cx + 25, cy - 100), (cx + 80, cy - 100)], fill=dev_border, width=8)
+
+    elif category_slug == "three-wheelers":
+        draw.rounded_rectangle(
+            [cx - 200, cy - 150, cx + 180, cy + 70],
+            radius=60,
+            fill=accent_hex,
+            outline=dev_border,
+            width=4,
+        )
+        draw.rounded_rectangle(
+            [cx - 170, cy - 120, cx + 150, cy - 20], radius=30, fill=bg_hex
+        )
+        draw.rounded_rectangle(
+            [cx - 210, cy + 20, cx + 190, cy + 90],
+            radius=20,
+            fill=dev_fill,
+            outline=dev_border,
+            width=4,
+        )
+        for wx in (cx - 130, cx + 150):
+            draw.ellipse([wx - 50, cy + 60, wx + 50, cy + 160], fill=dev_border)
+            draw.ellipse([wx - 18, cy + 92, wx + 18, cy + 128], fill=accent_hex)
+
+    elif category_slug == "trucks-heavy":
+        draw.rectangle(
+            [cx - 290, cy - 140, cx + 110, cy + 60],
+            fill=dev_fill,
+            outline=dev_border,
+            width=4,
+        )
+        draw.rounded_rectangle(
+            [cx + 120, cy - 110, cx + 280, cy + 80],
+            radius=18,
+            fill=accent_hex,
+            outline=dev_border,
+            width=4,
+        )
+        draw.rectangle([cx + 150, cy - 90, cx + 260, cy - 20], fill=bg_hex)
+        draw.rectangle([cx - 290, cy + 60, cx + 280, cy + 85], fill=dev_border)
+        for wx in (cx - 210, cx - 90, cx + 200):
+            draw.ellipse([wx - 45, cy + 60, wx + 45, cy + 150], fill=dev_border)
+            draw.ellipse([wx - 18, cy + 87, wx + 18, cy + 123], fill=bg_hex)
+
+    elif category_slug == "auto-parts":
+        # A tyre on its rim: the part most listings here are.
+        draw.ellipse([cx - 170, cy - 170, cx + 170, cy + 170], fill=dev_border)
+        draw.ellipse(
+            [cx - 150, cy - 150, cx + 150, cy + 150], outline=dev_fill, width=6
+        )
+        draw.ellipse(
+            [cx - 95, cy - 95, cx + 95, cy + 95],
+            fill=dev_fill,
+            outline=accent_hex,
+            width=6,
+        )
+        for i in range(5):
+            angle = math.radians(i * 72 - 90)
+            draw.line(
+                [(cx, cy), (cx + 80 * math.cos(angle), cy + 80 * math.sin(angle))],
+                fill=accent_hex,
+                width=10,
+            )
+        draw.ellipse([cx - 22, cy - 22, cx + 22, cy + 22], fill=accent_hex)
+
     else:
         aw, ah = 280, 320
         ax0, ay0 = cx - aw // 2, cy - ah // 2
@@ -450,6 +1298,8 @@ def generate_procedural_image(
     palette = PALETTES[
         (variant_idx + _VIEW_PALETTE_OFFSET.get(view, 0)) % len(PALETTES)
     ]
+    if view == "box" and category_slug in UNBOXED_CATEGORIES:
+        view = "side"
     bg_hex = palette[0]
 
     image = Image.new("RGB", (width, height), color=bg_hex)
@@ -514,8 +1364,12 @@ def get_category_image_bytes(
     variant_idx: int,
     source_mode: str = "auto",
     view: str = "front",
+    image_key: str | None = None,
 ) -> bytes:
     """Bytes for one product view, guaranteed under SEED_IMAGE_MAX_BYTES.
+
+    `image_key` names the photo pool (see `image_pool_key`); it defaults to
+    the category's own.
 
     Only the front view is ever fetched. The stock pool holds 8 photos per
     category and they are 8 different devices, so drawing the other three views
@@ -526,14 +1380,15 @@ def get_category_image_bytes(
     brand, name and specs, so caching it per category would stamp one product's
     caption onto every other product that shared the slot.
     """
-    urls = UNSPLASH_PUBLIC_IMAGES.get(category_slug, [])
+    image_key = image_key or category_slug
+    urls = UNSPLASH_PUBLIC_IMAGES.get(image_key, [])
     url_idx = variant_idx % len(urls) if urls else 0
     networked = view == "front" and source_mode in ("auto", "unsplash") and bool(urls)
 
     if networked:
         cache_dir = settings.MEDIA_ROOT / "seed_cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_file = cache_dir / f"{category_slug}_{url_idx}.jpg"
+        cache_file = cache_dir / f"{image_key.replace(':', '-')}_{url_idx}.jpg"
 
         if cache_file.exists():
             try:
@@ -2122,9 +2977,2597 @@ CATALOG_MATRICES = {
             },
         },
     ],
+    # Vehicles are written in schema keys directly; there is no old free-text
+    # form to convert. A variant's `year` also goes into the listing name.
+    "wearables": [
+        {
+            "brand": "Apple",
+            "name": "Watch Series 9 45mm",
+            "base_price": 52000,
+            "colors": [
+                "Midnight",
+                "Silver",
+                "Pink",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": [
+                    "heart_rate",
+                    "spo2",
+                    "sleep",
+                    "stress",
+                    "ecg",
+                    "temperature",
+                ],
+                "calling": "bluetooth",
+                "gps": "built_in",
+                "battery_days": 1.5,
+                "water_resistance": "5ATM",
+                "wearable_type": "smartwatch",
+                "works_with": "iphone",
+            },
+        },
+        {
+            "brand": "Samsung",
+            "name": "Galaxy Watch6 44mm",
+            "base_price": 33000,
+            "colors": [
+                "Graphite",
+                "Silver",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": [
+                    "heart_rate",
+                    "spo2",
+                    "sleep",
+                    "stress",
+                    "ecg",
+                    "temperature",
+                ],
+                "calling": "bluetooth",
+                "gps": "built_in",
+                "battery_days": 2,
+                "water_resistance": "5ATM",
+                "wearable_type": "smartwatch",
+                "works_with": "android",
+            },
+        },
+        {
+            "brand": "Xiaomi",
+            "name": "Smart Band 8",
+            "base_price": 4200,
+            "colors": [
+                "Black",
+                "Gold",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
+                "calling": "none",
+                "gps": "phone",
+                "battery_days": 16,
+                "water_resistance": "5ATM",
+                "wearable_type": "fitness_band",
+                "works_with": "both",
+            },
+        },
+        {
+            "brand": "Huawei",
+            "name": "Watch Fit 3",
+            "base_price": 14500,
+            "colors": [
+                "Black",
+                "White",
+                "Green",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
+                "calling": "bluetooth",
+                "gps": "built_in",
+                "battery_days": 10,
+                "water_resistance": "5ATM",
+                "wearable_type": "smartwatch",
+                "works_with": "both",
+            },
+        },
+        {
+            "brand": "Amazfit",
+            "name": "GTR 4",
+            "base_price": 16500,
+            "colors": [
+                "Black",
+                "Brown",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": ["heart_rate", "spo2", "sleep", "stress"],
+                "calling": "bluetooth",
+                "gps": "built_in",
+                "battery_days": 14,
+                "water_resistance": "5ATM",
+                "wearable_type": "smartwatch",
+                "works_with": "both",
+            },
+        },
+        {
+            "brand": "Oraimo",
+            "name": "Watch 2 Pro",
+            "base_price": 3500,
+            "colors": [
+                "Black",
+                "Blue",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "sensors": ["heart_rate", "sleep"],
+                "calling": "bluetooth",
+                "gps": "phone",
+                "battery_days": 7,
+                "water_resistance": "IP68",
+                "wearable_type": "smartwatch",
+                "works_with": "both",
+            },
+        },
+    ],
+    "desktops": [
+        {
+            "brand": "Dell",
+            "name": "OptiPlex 7010 Tower",
+            "base_price": 52000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "processor": "Intel Core i5-13500",
+                    "ram": "16GB",
+                    "storage": "512GB SSD",
+                    "price_adj": 0,
+                },
+                {
+                    "processor": "Intel Core i7-13700",
+                    "ram": "32GB",
+                    "storage": "1TB SSD",
+                    "price_adj": 21000,
+                },
+            ],
+            "specs": {
+                "form_factor": "tower",
+                "storage_type": "ssd",
+                "monitor_included": "no",
+            },
+        },
+        {
+            "brand": "HP",
+            "name": "Victus 15L Gaming Desktop",
+            "base_price": 98000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "processor": "Intel Core i5-12400F",
+                    "ram": "16GB",
+                    "storage": "512GB SSD",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "form_factor": "tower",
+                "storage_type": "ssd",
+                "monitor_included": "no",
+                "gpu": "NVIDIA GeForce RTX 3060 12GB",
+            },
+        },
+        {
+            "brand": "Lenovo",
+            "name": 'IdeaCentre AIO 3 24"',
+            "base_price": 64000,
+            "colors": [
+                "White",
+                "Black",
+            ],
+            "variants": [
+                {
+                    "processor": "AMD Ryzen 5 7530U",
+                    "ram": "8GB",
+                    "storage": "512GB SSD",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "form_factor": "all_in_one",
+                "storage_type": "ssd",
+                "monitor_included": "yes",
+            },
+        },
+        {
+            "brand": "Apple",
+            "name": 'iMac 24" M3',
+            "base_price": 175000,
+            "colors": [
+                "Blue",
+                "Silver",
+                "Green",
+                "Pink",
+            ],
+            "variants": [
+                {
+                    "processor": "Apple M3",
+                    "ram": "8GB",
+                    "storage": "256GB SSD",
+                    "price_adj": 0,
+                },
+                {
+                    "processor": "Apple M3",
+                    "ram": "16GB",
+                    "storage": "512GB SSD",
+                    "price_adj": 38000,
+                },
+            ],
+            "specs": {
+                "form_factor": "all_in_one",
+                "storage_type": "ssd",
+                "monitor_included": "yes",
+            },
+        },
+        {
+            "brand": "Asus",
+            "name": "ExpertCenter PN64 Mini PC",
+            "base_price": 45000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "processor": "Intel Core i5-12500H",
+                    "ram": "16GB",
+                    "storage": "512GB SSD",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "form_factor": "mini_pc",
+                "storage_type": "ssd",
+                "monitor_included": "no",
+            },
+        },
+        {
+            "brand": "MSI",
+            "name": "MAG Infinite S3",
+            "base_price": 145000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "processor": "Intel Core i7-14700F",
+                    "ram": "16GB",
+                    "storage": "1TB SSD + 2TB HDD",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "form_factor": "tower",
+                "storage_type": "ssd_hdd",
+                "monitor_included": "no",
+                "gpu": "NVIDIA GeForce RTX 4060 8GB",
+            },
+        },
+    ],
+    "monitors": [
+        {
+            "brand": "Samsung",
+            "name": 'Odyssey G5 27" Curved',
+            "base_price": 32000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 27,
+                "display_resolution": "qhd",
+                "refresh_rate": 165,
+                "monitor_panel": "va",
+                "curved": "yes",
+            },
+        },
+        {
+            "brand": "LG",
+            "name": "27UP850 4K",
+            "base_price": 48000,
+            "colors": [
+                "White",
+                "Silver",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 27,
+                "display_resolution": "4k",
+                "refresh_rate": 60,
+                "monitor_panel": "ips",
+                "curved": "no",
+            },
+        },
+        {
+            "brand": "Dell",
+            "name": 'P2422H 24"',
+            "base_price": 19500,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 24,
+                "display_resolution": "fhd",
+                "refresh_rate": 60,
+                "monitor_panel": "ips",
+                "curved": "no",
+            },
+        },
+        {
+            "brand": "AOC",
+            "name": 'Gaming 24G2 24"',
+            "base_price": 17500,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 24,
+                "display_resolution": "fhd",
+                "refresh_rate": 144,
+                "monitor_panel": "ips",
+                "curved": "no",
+            },
+        },
+        {
+            "brand": "Asus",
+            "name": 'TUF VG27AQ 27"',
+            "base_price": 29000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 27,
+                "display_resolution": "qhd",
+                "refresh_rate": 165,
+                "monitor_panel": "ips",
+                "curved": "no",
+            },
+        },
+        {
+            "brand": "Samsung",
+            "name": 'Smart Monitor M7 32"',
+            "base_price": 39000,
+            "colors": [
+                "White",
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "screen_size": 32,
+                "display_resolution": "4k",
+                "refresh_rate": 60,
+                "monitor_panel": "va",
+                "curved": "no",
+            },
+        },
+    ],
+    "tvs": [
+        {
+            "brand": "Samsung",
+            "name": '55" Crystal UHD CU7000',
+            "base_price": 68000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 60,
+                "screen_size": 55,
+                "display_resolution": "4k",
+                "smart_tv": "yes",
+                "tv_os": "Tizen",
+            },
+        },
+        {
+            "brand": "LG",
+            "name": '65" OLED evo C3',
+            "base_price": 260000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 120,
+                "screen_size": 65,
+                "display_resolution": "4k",
+                "smart_tv": "yes",
+                "tv_os": "webOS",
+            },
+        },
+        {
+            "brand": "Hisense",
+            "name": '43" A4 Full HD',
+            "base_price": 26000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 60,
+                "screen_size": 43,
+                "display_resolution": "fhd",
+                "smart_tv": "yes",
+                "tv_os": "VIDAA",
+            },
+        },
+        {
+            "brand": "TCL",
+            "name": '50" P635 4K Google TV',
+            "base_price": 39000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 60,
+                "screen_size": 50,
+                "display_resolution": "4k",
+                "smart_tv": "yes",
+                "tv_os": "Google TV",
+            },
+        },
+        {
+            "brand": "Sony",
+            "name": '55" Bravia X80L',
+            "base_price": 98000,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 60,
+                "screen_size": 55,
+                "display_resolution": "4k",
+                "smart_tv": "yes",
+                "tv_os": "Google TV",
+            },
+        },
+        {
+            "brand": "Skyworth",
+            "name": '32" HD LED',
+            "base_price": 12500,
+            "colors": [
+                "Black",
+            ],
+            "variants": [
+                {
+                    "edition": "Standard",
+                    "price_adj": 0,
+                },
+            ],
+            "specs": {
+                "refresh_rate": 60,
+                "screen_size": 32,
+                "display_resolution": "hd",
+                "smart_tv": "no",
+            },
+        },
+    ],
+    "furniture": [
+        {
+            "brand": "",
+            "name": "3-Seater Leather Sofa",
+            "base_price": 68000,
+            "colors": ["Brown", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "sofa",
+                "material": "Leather",
+                "seats": 3,
+                "dimensions": "210 × 90 × 85 cm",
+                "delivery": "free_addis",
+            },
+        },
+        {
+            "brand": "",
+            "name": "L-Shaped Fabric Sofa",
+            "base_price": 95000,
+            "colors": ["Gray", "Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "sofa",
+                "material": "Fabric",
+                "seats": 5,
+                "dimensions": "280 × 180 × 85 cm",
+                "delivery": "free_addis",
+            },
+        },
+        {
+            "brand": "",
+            "name": "6-Seater Dining Table",
+            "base_price": 54000,
+            "colors": ["Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "dining_table",
+                "material": "Solid wood",
+                "seats": 6,
+                "dimensions": "180 × 90 × 76 cm",
+                "delivery": "paid",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Glass Coffee Table",
+            "base_price": 14500,
+            "colors": ["Black", "Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "coffee_table",
+                "material": "Glass",
+                "dimensions": "110 × 60 × 45 cm",
+                "delivery": "pickup",
+            },
+        },
+        {
+            "brand": "",
+            "name": "3-Door Wardrobe",
+            "base_price": 42000,
+            "colors": ["White", "Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "wardrobe",
+                "material": "MDF",
+                "dimensions": "150 × 58 × 200 cm",
+                "delivery": "free_addis",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Office Desk with Drawers",
+            "base_price": 18500,
+            "colors": ["Brown", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "furniture_type": "desk",
+                "material": "MDF",
+                "dimensions": "120 × 60 × 75 cm",
+                "delivery": "paid",
+            },
+        },
+    ],
+    "beds-mattresses": [
+        {
+            "brand": "",
+            "name": "Solid Wood Bed Frame",
+            "base_price": 46000,
+            "colors": ["Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bed_item_type": "bed_frame",
+                "bed_size": "queen",
+                "material": "Solid wood",
+                "delivery": "free_addis",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Pocket Spring Mattress",
+            "base_price": 38000,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bed_item_type": "mattress",
+                "bed_size": "queen",
+                "mattress_type": "pocket_spring",
+                "thickness_cm": 25,
+                "firmness": "medium",
+                "delivery": "free_addis",
+            },
+        },
+        {
+            "brand": "",
+            "name": "High-Density Foam Mattress",
+            "base_price": 16500,
+            "colors": ["Blue", "White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bed_item_type": "mattress",
+                "bed_size": "double",
+                "mattress_type": "foam",
+                "thickness_cm": 20,
+                "firmness": "firm",
+                "delivery": "paid",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Cotton Bed Sheet Set",
+            "base_price": 3200,
+            "colors": ["White", "Gray", "Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"bed_item_type": "bed_sheets", "bed_size": "queen"},
+        },
+        {
+            "brand": "",
+            "name": "Winter Duvet",
+            "base_price": 5800,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"bed_item_type": "duvet", "bed_size": "king"},
+        },
+        {
+            "brand": "",
+            "name": "Memory Foam Pillow",
+            "base_price": 1400,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"bed_item_type": "pillow"},
+        },
+    ],
+    "appliances": [
+        {
+            "brand": "Samsung",
+            "name": "345L Top Freezer Refrigerator",
+            "base_price": 82000,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "appliance_type": "refrigerator",
+                "fridge_style": "top_freezer",
+                "capacity_l": 345,
+                "inverter": "yes",
+            },
+        },
+        {
+            "brand": "LG",
+            "name": "8kg Front Load Washing Machine",
+            "base_price": 76000,
+            "colors": ["White", "Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "appliance_type": "washing_machine",
+                "washer_style": "front_load",
+                "load_kg": 8,
+                "inverter": "yes",
+            },
+        },
+        {
+            "brand": "Hisense",
+            "name": "Side-by-Side Refrigerator 516L",
+            "base_price": 128000,
+            "colors": ["Black", "Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "appliance_type": "refrigerator",
+                "fridge_style": "side_by_side",
+                "capacity_l": 516,
+                "inverter": "yes",
+            },
+        },
+        {
+            "brand": "Haier",
+            "name": "7kg Twin Tub Washer",
+            "base_price": 28000,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "appliance_type": "washing_machine",
+                "washer_style": "twin_tub",
+                "load_kg": 7,
+                "inverter": "no",
+            },
+        },
+        {
+            "brand": "Midea",
+            "name": "12000 BTU Split Air Conditioner",
+            "base_price": 54000,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "appliance_type": "air_conditioner",
+                "cooling_btu": 12000,
+                "inverter": "yes",
+            },
+        },
+        {
+            "brand": "Beko",
+            "name": "4-Burner Gas Cooker with Oven",
+            "base_price": 46000,
+            "colors": ["Silver", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"appliance_type": "stove_oven", "cooking_fuel": "gas_electric"},
+        },
+    ],
+    "kitchen-dining": [
+        {
+            "brand": "",
+            "name": "Electric Mitad 55cm",
+            "base_price": 9800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"kitchen_type": "electric_mitad", "diameter_cm": 55},
+        },
+        {
+            "brand": "Tefal",
+            "name": "Non-Stick Cookware Set",
+            "base_price": 12500,
+            "colors": ["Black", "Red"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "kitchen_type": "cookware",
+                "kitchen_material": "Non-stick",
+                "set_pieces": 10,
+            },
+        },
+        {
+            "brand": "Philips",
+            "name": "Blender 2L",
+            "base_price": 6500,
+            "colors": ["White", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"kitchen_type": "blender_mixer"},
+        },
+        {
+            "brand": "Kenwood",
+            "name": "Electric Kettle 1.7L",
+            "base_price": 3400,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"kitchen_type": "kettle"},
+        },
+        {
+            "brand": "",
+            "name": "Ceramic Dinner Set",
+            "base_price": 7200,
+            "colors": ["White", "Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "kitchen_type": "dinnerware",
+                "kitchen_material": "Ceramic",
+                "set_pieces": 24,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Stainless Steel Pot Set",
+            "base_price": 8900,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "kitchen_type": "cookware",
+                "kitchen_material": "Stainless steel",
+                "set_pieces": 6,
+            },
+        },
+    ],
+    "decor-lighting": [
+        {
+            "brand": "",
+            "name": "Ceramic Table Lamp",
+            "base_price": 4200,
+            "colors": ["White", "Gold"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "lighting", "light_type": "table_lamp"},
+        },
+        {
+            "brand": "",
+            "name": "Crystal Chandelier",
+            "base_price": 26000,
+            "colors": ["Gold", "Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "lighting", "light_type": "chandelier"},
+        },
+        {
+            "brand": "",
+            "name": "Wool Area Rug",
+            "base_price": 12500,
+            "colors": ["Gray", "Red", "Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "rugs", "dimensions": "160 × 230 cm"},
+        },
+        {
+            "brand": "",
+            "name": "Blackout Curtains (Pair)",
+            "base_price": 4800,
+            "colors": ["Gray", "Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "curtains", "dimensions": "140 × 260 cm"},
+        },
+        {
+            "brand": "",
+            "name": "Round Wall Mirror",
+            "base_price": 6500,
+            "colors": ["Gold", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "mirrors", "dimensions": "80 cm"},
+        },
+        {
+            "brand": "",
+            "name": "Floor Lamp with Shade",
+            "base_price": 7800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"decor_type": "lighting", "light_type": "floor_lamp"},
+        },
+    ],
+    "generators": [
+        {
+            "brand": "Honda",
+            "name": "EU22i Inverter Generator",
+            "base_price": 98000,
+            "colors": ["Red"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 2.2,
+                "fuel": "petrol",
+                "phase": "single",
+                "start_type": "manual",
+                "runtime_h": 8,
+                "silent": "yes",
+            },
+        },
+        {
+            "brand": "Firman",
+            "name": "SPG3000 Generator",
+            "base_price": 38000,
+            "colors": ["Red", "Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 3,
+                "fuel": "petrol",
+                "phase": "single",
+                "start_type": "manual",
+                "runtime_h": 9,
+                "silent": "no",
+            },
+        },
+        {
+            "brand": "Elemax",
+            "name": "SH7600EX Generator",
+            "base_price": 125000,
+            "colors": ["Red"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 7,
+                "fuel": "petrol",
+                "phase": "single",
+                "start_type": "electric",
+                "runtime_h": 8,
+                "silent": "no",
+            },
+        },
+        {
+            "brand": "Kipor",
+            "name": "KDE12STA Silent Diesel",
+            "base_price": 245000,
+            "colors": ["Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 10,
+                "fuel": "diesel",
+                "phase": "single",
+                "start_type": "electric",
+                "runtime_h": 12,
+                "silent": "yes",
+            },
+        },
+        {
+            "brand": "Perkins",
+            "name": "30 kVA Canopy Diesel",
+            "base_price": 980000,
+            "colors": ["Blue", "Yellow"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 30,
+                "fuel": "diesel",
+                "phase": "three",
+                "start_type": "electric",
+                "runtime_h": 14,
+                "silent": "yes",
+            },
+        },
+        {
+            "brand": "Yamaha",
+            "name": "EF2000iS Inverter Generator",
+            "base_price": 92000,
+            "colors": ["Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "power_kva": 2,
+                "fuel": "petrol",
+                "phase": "single",
+                "start_type": "manual",
+                "runtime_h": 10,
+                "silent": "yes",
+            },
+        },
+    ],
+    "solar": [
+        {
+            "brand": "Jinko",
+            "name": "Tiger Neo 450W Panel",
+            "base_price": 14500,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"solar_type": "panel", "power_w": 450, "panel_tech": "mono"},
+        },
+        {
+            "brand": "Longi",
+            "name": "Hi-MO 6 550W Panel",
+            "base_price": 17800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"solar_type": "panel", "power_w": 550, "panel_tech": "mono"},
+        },
+        {
+            "brand": "Canadian Solar",
+            "name": "330W Poly Panel",
+            "base_price": 9200,
+            "colors": ["Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"solar_type": "panel", "power_w": 330, "panel_tech": "poly"},
+        },
+        {
+            "brand": "Felicity",
+            "name": "Solar Home Kit 1 kW",
+            "base_price": 145000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "solar_type": "kit",
+                "power_w": 1000,
+                "panel_tech": "mono",
+                "battery_wh": 2400,
+                "inverter_included": "yes",
+            },
+        },
+        {
+            "brand": "Sun King",
+            "name": "Home 400 Kit",
+            "base_price": 21000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "solar_type": "kit",
+                "power_w": 50,
+                "battery_wh": 240,
+                "inverter_included": "no",
+            },
+        },
+        {
+            "brand": "d.light",
+            "name": "S100 Solar Lantern",
+            "base_price": 1900,
+            "colors": ["Yellow"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {"solar_type": "light", "power_w": 1, "battery_wh": 4},
+        },
+    ],
+    "inverters-batteries": [
+        {
+            "brand": "Felicity",
+            "name": "IVEM 5048 Hybrid Inverter",
+            "base_price": 68000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "inverter",
+                "power_w": 5000,
+                "output_wave": "pure_sine",
+                "solar_input": "yes",
+                "system_voltage": "48v",
+            },
+        },
+        {
+            "brand": "Growatt",
+            "name": "SPF 3000TL Hybrid Inverter",
+            "base_price": 46000,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "inverter",
+                "power_w": 3000,
+                "output_wave": "pure_sine",
+                "solar_input": "yes",
+                "system_voltage": "24v",
+            },
+        },
+        {
+            "brand": "Luminous",
+            "name": "Zelio 1100 Inverter",
+            "base_price": 18500,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "inverter",
+                "power_w": 900,
+                "output_wave": "pure_sine",
+                "solar_input": "no",
+                "system_voltage": "12v",
+            },
+        },
+        {
+            "brand": "Felicity",
+            "name": "LiFePO4 Battery 48V 100Ah",
+            "base_price": 132000,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "battery",
+                "system_voltage": "48v",
+                "battery_chemistry": "lithium",
+                "capacity_ah": 100,
+            },
+        },
+        {
+            "brand": "Ritar",
+            "name": "Deep Cycle Gel Battery 200Ah",
+            "base_price": 36000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "battery",
+                "system_voltage": "12v",
+                "battery_chemistry": "gel",
+                "capacity_ah": 200,
+            },
+        },
+        {
+            "brand": "APC",
+            "name": "Back-UPS 1500VA",
+            "base_price": 24000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "backup_type": "ups",
+                "power_w": 900,
+                "output_wave": "modified_sine",
+            },
+        },
+    ],
+    "cars": [
+        {
+            "brand": "Toyota",
+            "name": "Vitz",
+            "base_price": 1650000,
+            "colors": ["White", "Silver", "Red", "Blue"],
+            "variants": [
+                {"year": 2012, "price_adj": 0},
+                {"year": 2015, "price_adj": 250000},
+                {"year": 2018, "price_adj": 600000},
+            ],
+            "specs": {
+                "engine_size": 1.0,
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "hatchback",
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Corolla",
+            "base_price": 3200000,
+            "colors": ["White", "Silver", "Black", "Gray"],
+            "variants": [
+                {"year": 2014, "price_adj": 0},
+                {"year": 2017, "price_adj": 500000},
+                {"year": 2020, "price_adj": 1100000},
+            ],
+            "specs": {
+                "engine_size": 1.6,
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "sedan",
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Land Cruiser Prado",
+            "base_price": 9800000,
+            "colors": ["White", "Black", "Silver"],
+            "variants": [
+                {"year": 2013, "price_adj": 0},
+                {"year": 2018, "price_adj": 2500000},
+            ],
+            "specs": {
+                "engine_size": 2.8,
+                "drivetrain": "4wd",
+                "seats": 7,
+                "body_type": "suv",
+                "transmission": "automatic",
+                "fuel": "diesel",
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Hilux",
+            "base_price": 6500000,
+            "colors": ["White", "Silver", "Gray"],
+            "variants": [
+                {"year": 2016, "price_adj": 0},
+                {"year": 2021, "price_adj": 1800000},
+            ],
+            "specs": {
+                "engine_size": 2.4,
+                "drivetrain": "4wd",
+                "seats": 5,
+                "body_type": "pickup",
+                "transmission": "manual",
+                "fuel": "diesel",
+            },
+        },
+        {
+            "brand": "Suzuki",
+            "name": "Dzire",
+            "base_price": 2100000,
+            "colors": ["White", "Silver", "Red", "Blue"],
+            "variants": [
+                {"year": 2019, "price_adj": 0},
+                {"year": 2022, "price_adj": 400000},
+            ],
+            "specs": {
+                "engine_size": 1.2,
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "sedan",
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Hyundai",
+            "name": "Tucson",
+            "base_price": 4800000,
+            "colors": ["White", "Black", "Gray", "Blue"],
+            "variants": [
+                {"year": 2016, "price_adj": 0},
+                {"year": 2020, "price_adj": 1200000},
+            ],
+            "specs": {
+                "engine_size": 2.0,
+                "drivetrain": "awd",
+                "seats": 5,
+                "body_type": "suv",
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Hyundai",
+            "name": "Grand i10",
+            "base_price": 1750000,
+            "colors": ["White", "Silver", "Red"],
+            "variants": [
+                {"year": 2018, "price_adj": 0},
+                {"year": 2021, "price_adj": 350000},
+            ],
+            "specs": {
+                "engine_size": 1.2,
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "hatchback",
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Kia",
+            "name": "Picanto",
+            "base_price": 1550000,
+            "colors": ["White", "Red", "Silver"],
+            "variants": [
+                {"year": 2017, "price_adj": 0},
+                {"year": 2020, "price_adj": 300000},
+            ],
+            "specs": {
+                "engine_size": 1.0,
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "hatchback",
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "BYD",
+            "name": "Dolphin",
+            "base_price": 3900000,
+            "colors": ["White", "Blue", "Gray"],
+            "variants": [
+                {"year": 2024, "price_adj": 0},
+                {"year": 2025, "price_adj": 200000},
+            ],
+            "specs": {
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "hatchback",
+                "fuel": "electric",
+            },
+        },
+        {
+            "brand": "Volkswagen",
+            "name": "ID.4",
+            "base_price": 4600000,
+            "colors": ["White", "Gray", "Blue"],
+            "variants": [
+                {"year": 2023, "price_adj": 0},
+                {"year": 2024, "price_adj": 300000},
+            ],
+            "specs": {
+                "drivetrain": "2wd",
+                "seats": 5,
+                "body_type": "suv",
+                "fuel": "electric",
+            },
+        },
+    ],
+    "motorcycles": [
+        {
+            "brand": "Bajaj",
+            "name": "Boxer 150",
+            "base_price": 135000,
+            "colors": ["Black", "Red", "Blue"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 15000},
+            ],
+            "specs": {
+                "motorcycle_type": "standard",
+                "engine_cc": 150,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "TVS",
+            "name": "Apache RTR 160",
+            "base_price": 175000,
+            "colors": ["Black", "Red", "White"],
+            "variants": [
+                {"year": 2021, "price_adj": 0},
+                {"year": 2024, "price_adj": 20000},
+            ],
+            "specs": {
+                "motorcycle_type": "sport",
+                "engine_cc": 160,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Honda",
+            "name": "CG 125",
+            "base_price": 150000,
+            "colors": ["Red", "Black"],
+            "variants": [
+                {"year": 2020, "price_adj": 0},
+                {"year": 2023, "price_adj": 15000},
+            ],
+            "specs": {
+                "motorcycle_type": "standard",
+                "engine_cc": 125,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Yamaha",
+            "name": "YBR 125",
+            "base_price": 160000,
+            "colors": ["Blue", "Black", "Red"],
+            "variants": [
+                {"year": 2021, "price_adj": 0},
+                {"year": 2024, "price_adj": 18000},
+            ],
+            "specs": {
+                "motorcycle_type": "standard",
+                "engine_cc": 125,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Suzuki",
+            "name": "GN 125",
+            "base_price": 140000,
+            "colors": ["Black", "Red"],
+            "variants": [
+                {"year": 2020, "price_adj": 0},
+                {"year": 2023, "price_adj": 14000},
+            ],
+            "specs": {
+                "motorcycle_type": "standard",
+                "engine_cc": 125,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "TVS",
+            "name": "HLX 125",
+            "base_price": 115000,
+            "colors": ["Black", "Blue", "Red"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 10000},
+            ],
+            "specs": {
+                "motorcycle_type": "standard",
+                "engine_cc": 125,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Honda",
+            "name": "Navi",
+            "base_price": 145000,
+            "colors": ["Red", "White"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 12000},
+            ],
+            "specs": {
+                "motorcycle_type": "scooter",
+                "engine_cc": 110,
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Yamaha",
+            "name": "NMAX 155",
+            "base_price": 260000,
+            "colors": ["Black", "Gray", "White"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 25000},
+            ],
+            "specs": {
+                "motorcycle_type": "scooter",
+                "engine_cc": 155,
+                "transmission": "automatic",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Yadea",
+            "name": "G5 Electric Scooter",
+            "base_price": 85000,
+            "colors": ["White", "Black"],
+            "variants": [
+                {"year": 2023, "price_adj": 0},
+                {"year": 2024, "price_adj": 6000},
+            ],
+            "specs": {
+                "motorcycle_type": "scooter",
+                "fuel": "electric",
+                "motor_power": 1.2,
+                "range_km": 70,
+            },
+        },
+    ],
+    "bicycles": [
+        {
+            "brand": "Giant",
+            "name": "Talon 3",
+            "base_price": 48000,
+            "colors": ["Black", "Blue", "Gray"],
+            "variants": [
+                {"frame_size": "m", "price_adj": 0},
+                {"frame_size": "l", "price_adj": 2000},
+            ],
+            "specs": {
+                "brake_type": "disc",
+                "bike_type": "mountain",
+                "wheel_size": 29,
+                "gears": 18,
+            },
+        },
+        {
+            "brand": "Trek",
+            "name": "Marlin 5",
+            "base_price": 56000,
+            "colors": ["Red", "Black"],
+            "variants": [
+                {"frame_size": "m", "price_adj": 0},
+                {"frame_size": "xl", "price_adj": 3000},
+            ],
+            "specs": {
+                "brake_type": "disc",
+                "bike_type": "mountain",
+                "wheel_size": 29,
+                "gears": 16,
+            },
+        },
+        {
+            "brand": "Merida",
+            "name": "Scultura 400",
+            "base_price": 92000,
+            "colors": ["Black", "White"],
+            "variants": [{"frame_size": "m", "price_adj": 0}],
+            "specs": {
+                "brake_type": "rim",
+                "bike_type": "road",
+                "wheel_size": 28,
+                "gears": 22,
+            },
+        },
+        {
+            "brand": "Phoenix",
+            "name": "City Classic",
+            "base_price": 14500,
+            "colors": ["Black", "Blue", "Red"],
+            "variants": [{"frame_size": "m", "price_adj": 0}],
+            "specs": {
+                "brake_type": "rim",
+                "bike_type": "city",
+                "wheel_size": 26,
+                "gears": 1,
+            },
+        },
+        {
+            "brand": "Hero",
+            "name": "Sprint 26T",
+            "base_price": 16800,
+            "colors": ["Green", "Black"],
+            "variants": [{"frame_size": "m", "price_adj": 0}],
+            "specs": {
+                "brake_type": "rim",
+                "bike_type": "city",
+                "wheel_size": 26,
+                "gears": 21,
+            },
+        },
+        {
+            "brand": "Phoenix",
+            "name": "Kids 16",
+            "base_price": 7800,
+            "colors": ["Red", "Blue", "Yellow"],
+            "variants": [{"frame_size": "s", "price_adj": 0}],
+            "specs": {
+                "brake_type": "rim",
+                "bike_type": "kids",
+                "wheel_size": 16,
+                "gears": 1,
+            },
+        },
+        {
+            "brand": "Xiaomi",
+            "name": "HIMO C26 E-bike",
+            "base_price": 68000,
+            "colors": ["Gray", "White"],
+            "variants": [{"frame_size": "m", "price_adj": 0}],
+            "specs": {
+                "brake_type": "disc",
+                "range_km": 60,
+                "bike_type": "electric",
+                "wheel_size": 26,
+                "gears": 6,
+                "motor_power": 0.25,
+            },
+        },
+        {
+            "brand": "Giant",
+            "name": "Explore E+ 2",
+            "base_price": 165000,
+            "colors": ["Black", "Silver"],
+            "variants": [
+                {"frame_size": "m", "price_adj": 0},
+                {"frame_size": "l", "price_adj": 5000},
+            ],
+            "specs": {
+                "brake_type": "disc",
+                "range_km": 120,
+                "bike_type": "electric",
+                "wheel_size": 28,
+                "gears": 10,
+                "motor_power": 0.25,
+                "battery_kwh": 0.5,
+            },
+        },
+    ],
+    "three-wheelers": [
+        {
+            "brand": "Bajaj",
+            "name": "RE 4S",
+            "base_price": 420000,
+            "colors": ["Blue", "Green", "Yellow"],
+            "variants": [
+                {"year": 2021, "price_adj": 0},
+                {"year": 2023, "price_adj": 60000},
+                {"year": 2024, "price_adj": 90000},
+            ],
+            "specs": {
+                "vehicle_use": "passenger",
+                "engine_cc": 236,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Bajaj",
+            "name": "Maxima Z",
+            "base_price": 450000,
+            "colors": ["Yellow", "Green"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 55000},
+            ],
+            "specs": {
+                "vehicle_use": "cargo",
+                "engine_cc": 236,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "TVS",
+            "name": "King Deluxe",
+            "base_price": 395000,
+            "colors": ["Blue", "Yellow", "Green"],
+            "variants": [
+                {"year": 2022, "price_adj": 0},
+                {"year": 2024, "price_adj": 50000},
+            ],
+            "specs": {
+                "vehicle_use": "passenger",
+                "engine_cc": 200,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "Piaggio",
+            "name": "Ape City",
+            "base_price": 380000,
+            "colors": ["Blue", "White"],
+            "variants": [
+                {"year": 2021, "price_adj": 0},
+                {"year": 2023, "price_adj": 45000},
+            ],
+            "specs": {
+                "vehicle_use": "passenger",
+                "engine_cc": 200,
+                "transmission": "manual",
+                "fuel": "petrol",
+            },
+        },
+        {
+            "brand": "TVS",
+            "name": "King EV Max",
+            "base_price": 520000,
+            "colors": ["Blue", "White"],
+            "variants": [{"year": 2024, "price_adj": 0}],
+            "specs": {
+                "vehicle_use": "passenger",
+                "fuel": "electric",
+                "motor_power": 1.2,
+                "battery_kwh": 3,
+            },
+        },
+    ],
+    "trucks-heavy": [
+        {
+            "brand": "Isuzu",
+            "name": "NPR",
+            "base_price": 4200000,
+            "colors": ["White"],
+            "variants": [
+                {"year": 2016, "price_adj": 0},
+                {"year": 2020, "price_adj": 900000},
+            ],
+            "specs": {
+                "vehicle_kind": "truck",
+                "transmission": "manual",
+                "fuel": "diesel",
+                "load_capacity": 4,
+            },
+        },
+        {
+            "brand": "Isuzu",
+            "name": "FSR",
+            "base_price": 6800000,
+            "colors": ["White", "Blue"],
+            "variants": [
+                {"year": 2015, "price_adj": 0},
+                {"year": 2019, "price_adj": 1500000},
+            ],
+            "specs": {
+                "vehicle_kind": "truck",
+                "transmission": "manual",
+                "fuel": "diesel",
+                "load_capacity": 8,
+            },
+        },
+        {
+            "brand": "Sinotruk",
+            "name": "HOWO 371 Dump Truck",
+            "base_price": 9500000,
+            "colors": ["Red", "Yellow"],
+            "variants": [
+                {"year": 2018, "price_adj": 0},
+                {"year": 2022, "price_adj": 2000000},
+            ],
+            "specs": {
+                "vehicle_kind": "truck",
+                "transmission": "manual",
+                "fuel": "diesel",
+                "load_capacity": 25,
+            },
+        },
+        {
+            "brand": "Mercedes-Benz",
+            "name": "Actros",
+            "base_price": 12500000,
+            "colors": ["White", "Red"],
+            "variants": [
+                {"year": 2014, "price_adj": 0},
+                {"year": 2017, "price_adj": 2200000},
+            ],
+            "specs": {
+                "vehicle_kind": "truck",
+                "transmission": "automatic",
+                "fuel": "diesel",
+                "load_capacity": 30,
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Coaster",
+            "base_price": 7200000,
+            "colors": ["White"],
+            "variants": [
+                {"year": 2014, "price_adj": 0},
+                {"year": 2019, "price_adj": 1600000},
+            ],
+            "specs": {
+                "seats": 30,
+                "vehicle_kind": "bus",
+                "transmission": "manual",
+                "fuel": "diesel",
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Hiace Commuter",
+            "base_price": 5900000,
+            "colors": ["White", "Blue"],
+            "variants": [
+                {"year": 2015, "price_adj": 0},
+                {"year": 2019, "price_adj": 1300000},
+            ],
+            "specs": {
+                "seats": 15,
+                "vehicle_kind": "minibus",
+                "transmission": "manual",
+                "fuel": "diesel",
+            },
+        },
+        {
+            "brand": "Volvo",
+            "name": "EC210D Excavator",
+            "base_price": 18000000,
+            "colors": ["Yellow"],
+            "variants": [
+                {"year": 2016, "price_adj": 0},
+                {"year": 2019, "price_adj": 3000000},
+            ],
+            "specs": {
+                "vehicle_kind": "machinery",
+                "transmission": "automatic",
+                "fuel": "diesel",
+            },
+        },
+    ],
+    "auto-parts": [
+        {
+            "brand": "Bridgestone",
+            "name": "Ecopia EP150 Tyre 185-65 R15",
+            "base_price": 6500,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "tyres",
+                "fits_vehicle": "Toyota Vitz, Yaris, Corolla",
+            },
+        },
+        {
+            "brand": "Michelin",
+            "name": "Primacy 4 Tyre 205-55 R16",
+            "base_price": 9800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "tyres",
+                "fits_vehicle": "Toyota Corolla, Hyundai Elantra",
+            },
+        },
+        {
+            "brand": "Varta",
+            "name": "Blue Dynamic 70Ah Battery",
+            "base_price": 11500,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "battery",
+                "fits_vehicle": "Most sedans and SUVs",
+            },
+        },
+        {
+            "brand": "Bosch",
+            "name": "S4 60Ah Car Battery",
+            "base_price": 9200,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "battery",
+                "fits_vehicle": "Toyota Vitz, Suzuki Dzire, Hyundai i10",
+            },
+        },
+        {
+            "brand": "Toyota",
+            "name": "Genuine Oil Filter",
+            "base_price": 650,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "engine",
+                "fits_vehicle": "Toyota Corolla, Hilux, Land Cruiser",
+            },
+        },
+        {
+            "brand": "Denso",
+            "name": "Iridium Spark Plug Set (4)",
+            "base_price": 3200,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "oem",
+                "part_type": "engine",
+                "fits_vehicle": "Toyota, Suzuki and Hyundai petrol engines",
+            },
+        },
+        {
+            "brand": "Philips",
+            "name": "X-tremeVision H4 Headlight Bulbs",
+            "base_price": 2400,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "aftermarket",
+                "part_type": "lights",
+                "fits_vehicle": "Cars with H4 sockets",
+            },
+        },
+        {
+            "brand": "Bosch",
+            "name": "Aerotwin Wiper Blades",
+            "base_price": 1800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "aftermarket",
+                "part_type": "body",
+                "fits_vehicle": "Universal hook fitting",
+            },
+        },
+        {
+            "brand": "Pioneer",
+            "name": "Bluetooth Car Stereo (1-DIN)",
+            "base_price": 7500,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "aftermarket",
+                "part_type": "electronics",
+                "fits_vehicle": "Universal 1-DIN",
+            },
+        },
+        {
+            "brand": "Bajaj",
+            "name": "Genuine Brake Shoe Set",
+            "base_price": 850,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "part_quality": "genuine",
+                "part_type": "other",
+                "fits_vehicle": "Bajaj RE three-wheeler",
+            },
+        },
+    ],
+    # --- fashion ---
+    "mens-clothing": [
+        {
+            "brand": "LC Waikiki",
+            "name": "Slim Fit Oxford Shirt",
+            "base_price": 1890,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "shirt",
+                "sizes": ["S", "M", "L", "XL"],
+                "color": ["White", "Blue"],
+                "material": "Cotton",
+                "fit": "slim",
+            },
+        },
+        {
+            "brand": "Levi's",
+            "name": "511 Slim Jeans",
+            "base_price": 4500,
+            "colors": ["Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "trousers",
+                "sizes": ["30", "32", "34", "36"],
+                "color": ["Blue", "Black"],
+                "material": "Denim",
+                "fit": "slim",
+            },
+        },
+        {
+            "brand": "Defacto",
+            "name": "Two-Piece Wool Suit",
+            "base_price": 12500,
+            "colors": ["Navy"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "suit",
+                "sizes": ["M", "L", "XL"],
+                "color": ["Navy", "Black"],
+                "material": "Wool",
+                "fit": "regular",
+            },
+        },
+        {
+            "brand": "Shiro Meda",
+            "name": "Men's Habesha Kuta Set",
+            "base_price": 5200,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "traditional",
+                "sizes": ["M", "L", "XL", "XXL"],
+                "color": ["White"],
+                "material": "Cotton",
+            },
+        },
+    ],
+    "womens-clothing": [
+        {
+            "brand": "Shiro Meda",
+            "name": "Habesha Kemis",
+            "base_price": 8500,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "traditional",
+                "sizes": ["S", "M", "L"],
+                "color": ["White"],
+                "material": "Cotton",
+            },
+        },
+        {
+            "brand": "Zara",
+            "name": "Floral Midi Dress",
+            "base_price": 3900,
+            "colors": ["Blue"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "dress",
+                "sizes": ["XS", "S", "M", "L"],
+                "color": ["Blue", "Pink"],
+                "material": "Polyester",
+            },
+        },
+        {
+            "brand": "H&M",
+            "name": "Oversized Hoodie",
+            "base_price": 2400,
+            "colors": ["Gray"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "sweater",
+                "sizes": ["S", "M", "L", "XL"],
+                "color": ["Gray", "Black", "Beige"],
+                "material": "Cotton",
+                "fit": "oversized",
+            },
+        },
+        {
+            "brand": "Defacto",
+            "name": "Linen Wrap Skirt",
+            "base_price": 1800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "skirt",
+                "sizes": ["S", "M", "L"],
+                "color": ["Black"],
+                "material": "Linen",
+            },
+        },
+    ],
+    "kids-clothing": [
+        {
+            "brand": "LC Waikiki",
+            "name": "School Uniform Set",
+            "base_price": 1600,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "shirt",
+                "gender": "unisex",
+                "kids_size": ["6–7 years", "8–9 years", "10–11 years"],
+                "color": ["White", "Navy"],
+                "material": "Cotton",
+            },
+        },
+        {
+            "brand": "Carter's",
+            "name": "Baby Cotton Onesie 3-Pack",
+            "base_price": 1200,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "other",
+                "gender": "unisex",
+                "kids_size": ["0–3 months", "3–6 months", "6–12 months"],
+                "color": ["White"],
+                "material": "Cotton",
+            },
+        },
+        {
+            "brand": "LC Waikiki",
+            "name": "Girls' Party Dress",
+            "base_price": 2200,
+            "colors": ["Pink"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "dress",
+                "gender": "girl",
+                "kids_size": ["4–5 years", "6–7 years"],
+                "color": ["Pink"],
+                "material": "Polyester",
+            },
+        },
+        {
+            "brand": "Shiro Meda",
+            "name": "Kids' Habesha Kemis",
+            "base_price": 3200,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "clothing_type": "traditional",
+                "gender": "girl",
+                "kids_size": ["3–4 years", "4–5 years", "6–7 years"],
+                "color": ["White"],
+                "material": "Cotton",
+            },
+        },
+    ],
+    "shoes": [
+        {
+            "brand": "Nike",
+            "name": "Air Force 1 '07",
+            "base_price": 9800,
+            "colors": ["White"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "shoe_type": "sneakers",
+                "gender": "unisex",
+                "shoe_size": ["40", "41", "42", "43", "44"],
+                "color": ["White"],
+                "material": "Leather",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Adidas",
+            "name": "Samba OG",
+            "base_price": 8900,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "shoe_type": "sneakers",
+                "gender": "unisex",
+                "shoe_size": ["39", "40", "41", "42", "43"],
+                "color": ["Black", "White"],
+                "material": "Leather",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Clarks",
+            "name": "Leather Oxford Shoes",
+            "base_price": 7500,
+            "colors": ["Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "shoe_type": "formal",
+                "gender": "men",
+                "shoe_size": ["41", "42", "43", "44"],
+                "color": ["Brown", "Black"],
+                "material": "Leather",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Zara",
+            "name": "Block Heel Sandals",
+            "base_price": 3200,
+            "colors": ["Beige"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "shoe_type": "heels",
+                "gender": "women",
+                "shoe_size": ["36", "37", "38", "39", "40"],
+                "color": ["Beige", "Black"],
+                "material": "Synthetic",
+                "authenticity": "original",
+            },
+        },
+    ],
+    "bags": [
+        {
+            "brand": "Michael Kors",
+            "name": "Jet Set Tote",
+            "base_price": 12500,
+            "colors": ["Brown"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bag_type": "handbag",
+                "gender": "women",
+                "color": ["Brown", "Black"],
+                "material": "Leather",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "JanSport",
+            "name": "SuperBreak Backpack",
+            "base_price": 2800,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bag_type": "backpack",
+                "gender": "unisex",
+                "color": ["Black", "Navy", "Red"],
+                "material": "Fabric",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Guess",
+            "name": "Quilted Crossbody Bag",
+            "base_price": 3600,
+            "colors": ["Pink"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bag_type": "crossbody",
+                "gender": "women",
+                "color": ["Pink", "Black"],
+                "material": "Synthetic",
+                "authenticity": "replica",
+            },
+        },
+        {
+            "brand": "Samsonite",
+            "name": "Spinner Suitcase 68cm",
+            "base_price": 14000,
+            "colors": ["Black"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "bag_type": "luggage",
+                "gender": "unisex",
+                "color": ["Black", "Navy"],
+                "material": "Synthetic",
+                "authenticity": "original",
+            },
+        },
+    ],
+    "watches-jewelry": [
+        {
+            "brand": "Casio",
+            "name": "Edifice EFR-526D",
+            "base_price": 7800,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "jewelry_type": "watch",
+                "gender": "men",
+                "metal": "stainless",
+                "movement": "quartz",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Seiko",
+            "name": "5 Sports Automatic",
+            "base_price": 24000,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "jewelry_type": "watch",
+                "gender": "men",
+                "metal": "stainless",
+                "movement": "automatic",
+                "authenticity": "original",
+            },
+        },
+        {
+            "brand": "Piassa Gold",
+            "name": "21K Gold Chain Necklace",
+            "base_price": 145000,
+            "colors": ["Gold"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "jewelry_type": "necklace",
+                "gender": "women",
+                "metal": "gold",
+                "karat": "21k",
+                "weight_g": 18.5,
+            },
+        },
+        {
+            "brand": "Axum Silver",
+            "name": "Silver Meskel Cross Pendant",
+            "base_price": 4500,
+            "colors": ["Silver"],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "specs": {
+                "jewelry_type": "necklace",
+                "gender": "unisex",
+                "metal": "silver",
+                "weight_g": 9,
+            },
+        },
+    ],
+    # --- property ---
+    "apartments": [
+        {
+            "brand": "Noah Real Estate",
+            "name": "3-Bedroom Apartment, Bole Atlas",
+            "base_price": 18500000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 3 bedrooms · 145 m²",
+            "specs": {
+                "listing_type": "sale",
+                "apartment_type": "apartment",
+                "subcity": "bole",
+                "area_name": "Atlas",
+                "bedrooms": 3,
+                "bathrooms": 2,
+                "size_m2": 145,
+                "floor": 6,
+                "furnishing": "unfurnished",
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "new_build": "yes",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "2-Bedroom Condominium, CMC",
+            "base_price": 28000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 2 bedrooms · 75 m²",
+            "specs": {
+                "listing_type": "rent",
+                "apartment_type": "condominium",
+                "subcity": "yeka",
+                "area_name": "CMC",
+                "bedrooms": 2,
+                "bathrooms": 1,
+                "size_m2": 75,
+                "floor": 3,
+                "furnishing": "semi",
+                "amenities": ["water_tank"],
+                "new_build": "no",
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Furnished Studio near Edna Mall",
+            "base_price": 35000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Studio · 45 m²",
+            "specs": {
+                "listing_type": "rent",
+                "apartment_type": "apartment",
+                "subcity": "bole",
+                "area_name": "Edna Mall",
+                "bedrooms": 0,
+                "bathrooms": 1,
+                "size_m2": 45,
+                "floor": 4,
+                "furnishing": "furnished",
+                "amenities": ["elevator", "backup_power", "security"],
+                "advance_months": 2,
+            },
+        },
+        {
+            "brand": "Ayat Real Estate",
+            "name": "Penthouse with City View, Kazanchis",
+            "base_price": 42000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 4 bedrooms · 260 m²",
+            "specs": {
+                "listing_type": "sale",
+                "apartment_type": "penthouse",
+                "subcity": "kirkos",
+                "area_name": "Kazanchis",
+                "bedrooms": 4,
+                "bathrooms": 3,
+                "size_m2": 260,
+                "floor": 12,
+                "furnishing": "furnished",
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "new_build": "yes",
+                "title_deed": "ready",
+            },
+        },
+    ],
+    "houses": [
+        {
+            "brand": "",
+            "name": "G+1 Villa with Compound, Gerji",
+            "base_price": 65000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 5 bedrooms · 500 m² plot",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "bole",
+                "area_name": "Gerji",
+                "storeys": "g1",
+                "bedrooms": 5,
+                "bathrooms": 4,
+                "size_m2": 380,
+                "plot_m2": 500,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "garden", "water_tank", "security"],
+                "new_build": "no",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "4-Bedroom House, Summit",
+            "base_price": 85000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 4 bedrooms · 300 m² plot",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "yeka",
+                "area_name": "Summit",
+                "storeys": "g1",
+                "bedrooms": 4,
+                "bathrooms": 3,
+                "size_m2": 280,
+                "plot_m2": 300,
+                "furnishing": "semi",
+                "amenities": ["parking", "garden", "water_tank"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "Flintstone Homes",
+            "name": "G+2 Family House, Ayat",
+            "base_price": 38000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 6 bedrooms · 350 m² plot",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "yeka",
+                "area_name": "Ayat",
+                "storeys": "g2",
+                "bedrooms": 6,
+                "bathrooms": 4,
+                "size_m2": 420,
+                "plot_m2": 350,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "garden", "water_tank", "backup_power"],
+                "new_build": "yes",
+                "title_deed": "in_process",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Ground Floor House, Kotebe",
+            "base_price": 30000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 3 bedrooms · 250 m² plot",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "yeka",
+                "area_name": "Kotebe",
+                "storeys": "g0",
+                "bedrooms": 3,
+                "bathrooms": 2,
+                "size_m2": 150,
+                "plot_m2": 250,
+                "furnishing": "unfurnished",
+                "amenities": ["garden", "water_tank"],
+                "advance_months": 6,
+            },
+        },
+    ],
+    "land": [
+        {
+            "brand": "",
+            "name": "Residential Lease Plot, Bole Arabsa",
+            "base_price": 9500000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 250 m² · Residential",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "lemi_kura",
+                "area_name": "Bole Arabsa",
+                "plot_m2": 250,
+                "land_use": "residential",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Commercial Plot on Main Road, Kality",
+            "base_price": 32000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 1,000 m² · Commercial",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "akaky_kaliti",
+                "area_name": "Kality",
+                "plot_m2": 1000,
+                "land_use": "commercial",
+                "title_deed": "ready",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Mixed-Use Plot, Burayu",
+            "base_price": 6800000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · 300 m² · Mixed use",
+            "specs": {
+                "listing_type": "sale",
+                "subcity": "outside_addis",
+                "area_name": "Burayu",
+                "plot_m2": 300,
+                "land_use": "mixed",
+                "title_deed": "in_process",
+            },
+        },
+        {
+            "brand": "",
+            "name": "Farmland for Lease, Sebeta",
+            "base_price": 45000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · 20,000 m² · Agricultural",
+            "specs": {
+                "listing_type": "rent",
+                "subcity": "outside_addis",
+                "area_name": "Sebeta",
+                "plot_m2": 20000,
+                "land_use": "agricultural",
+                "advance_months": 12,
+            },
+        },
+    ],
+    "commercial-property": [
+        {
+            "brand": "",
+            "name": "Office Space on Bole Road",
+            "base_price": 120000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Office · 220 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "office",
+                "subcity": "bole",
+                "area_name": "Bole Road",
+                "size_m2": 220,
+                "floor": 3,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "elevator", "backup_power", "security"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Ground Floor Shop, Piassa",
+            "base_price": 60000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Shop · 60 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "shop",
+                "subcity": "arada",
+                "area_name": "Piassa",
+                "size_m2": 60,
+                "floor": 0,
+                "furnishing": "unfurnished",
+                "amenities": ["security"],
+                "advance_months": 6,
+            },
+        },
+        {
+            "brand": "",
+            "name": "Warehouse with Loading Bay, Kality",
+            "base_price": 180000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For rent · Warehouse · 1,200 m²",
+            "specs": {
+                "listing_type": "rent",
+                "commercial_type": "warehouse",
+                "subcity": "akaky_kaliti",
+                "area_name": "Kality",
+                "size_m2": 1200,
+                "floor": 0,
+                "furnishing": "unfurnished",
+                "amenities": ["parking", "security"],
+                "advance_months": 3,
+            },
+        },
+        {
+            "brand": "Temer Properties",
+            "name": "G+5 Mixed-Use Building, Megenagna",
+            "base_price": 210000000,
+            "colors": [""],
+            "variants": [{"edition": "Standard", "price_adj": 0}],
+            "summary": "For sale · Whole building · 1,800 m²",
+            "specs": {
+                "listing_type": "sale",
+                "commercial_type": "building",
+                "subcity": "yeka",
+                "area_name": "Megenagna",
+                "size_m2": 1800,
+                "amenities": [
+                    "parking",
+                    "elevator",
+                    "water_tank",
+                    "backup_power",
+                    "security",
+                ],
+                "title_deed": "ready",
+            },
+        },
+    ],
 }
 
-# The original 31 sample products preserved for --sample mode or test reconciliation.
+# The original 31 sample products, plus two per vehicle and home category, for --sample
+# mode and test reconciliation.
 SAMPLE_PRODUCTS = [
     {
         "shop": 0,
@@ -2575,17 +6018,20 @@ SAMPLE_PRODUCTS = [
     },
     {
         "shop": 1,
-        "category_slug": "accessories",
+        "category_slug": "wearables",
         "brand": "Xiaomi",
         "name": "Mi Band 8",
         "description": "Midnight Black",
         "price": "2900.00",
         "freshness": "expired",
         "specs": {
-            "display": "1.62″ AMOLED",
-            "battery": "190 mAh",
-            "weight": "27 g",
+            "sensors": ["heart_rate", "spo2", "sleep", "stress"],
+            "calling": "none",
+            "gps": "phone",
+            "battery_days": 16,
             "water_resistance": "5ATM",
+            "wearable_type": "fitness_band",
+            "works_with": "both",
         },
     },
     {
@@ -2690,11 +6136,643 @@ SAMPLE_PRODUCTS = [
             "sim": "Dual Nano",
         },
     },
+    {
+        "shop": 8,
+        "category_slug": "cars",
+        "brand": "Toyota",
+        "name": "Vitz 2014",
+        "description": "White",
+        "price": "1750000.00",
+        "freshness": "fresh",
+        "condition": "used",
+        "specs": {
+            "engine_size": 1.0,
+            "drivetrain": "2wd",
+            "seats": 5,
+            "body_type": "hatchback",
+            "year": 2014,
+            "transmission": "automatic",
+            "fuel": "petrol",
+            "color": "White",
+            "mileage": 98000,
+        },
+    },
+    {
+        "shop": 8,
+        "category_slug": "cars",
+        "brand": "Suzuki",
+        "name": "Dzire 2023",
+        "description": "Silver",
+        "price": "2450000.00",
+        "freshness": "fresh",
+        "specs": {
+            "engine_size": 1.2,
+            "drivetrain": "2wd",
+            "seats": 5,
+            "body_type": "sedan",
+            "year": 2023,
+            "transmission": "manual",
+            "fuel": "petrol",
+            "color": "Silver",
+        },
+    },
+    {
+        "shop": 10,
+        "category_slug": "motorcycles",
+        "brand": "Bajaj",
+        "name": "Boxer 150 2024",
+        "description": "Black",
+        "price": "145000.00",
+        "freshness": "fresh",
+        "specs": {
+            "motorcycle_type": "standard",
+            "year": 2024,
+            "engine_cc": 150,
+            "transmission": "manual",
+            "fuel": "petrol",
+            "color": "Black",
+        },
+    },
+    {
+        "shop": 10,
+        "category_slug": "motorcycles",
+        "brand": "TVS",
+        "name": "Apache RTR 160 2021",
+        "description": "Red",
+        "price": "120000.00",
+        "freshness": "almost_expired",
+        "condition": "used",
+        "specs": {
+            "motorcycle_type": "sport",
+            "year": 2021,
+            "engine_cc": 160,
+            "transmission": "manual",
+            "fuel": "petrol",
+            "color": "Red",
+            "mileage": 21000,
+        },
+    },
+    {
+        "shop": 12,
+        "category_slug": "bicycles",
+        "brand": "Giant",
+        "name": "Talon 3 29er",
+        "description": "Black",
+        "price": "48000.00",
+        "freshness": "fresh",
+        "specs": {
+            "brake_type": "disc",
+            "bike_type": "mountain",
+            "wheel_size": 29,
+            "frame_size": "m",
+            "gears": 18,
+            "color": "Black",
+        },
+    },
+    {
+        "shop": 12,
+        "category_slug": "bicycles",
+        "brand": "Xiaomi",
+        "name": "HIMO C26 E-bike",
+        "description": "Gray",
+        "price": "62000.00",
+        "freshness": "almost_expired",
+        "condition": "used",
+        "specs": {
+            "brake_type": "disc",
+            "range_km": 60,
+            "bike_type": "electric",
+            "wheel_size": 26,
+            "color": "Gray",
+            "motor_power": 0.25,
+            "battery_kwh": 0.5,
+        },
+    },
+    {
+        "shop": 10,
+        "category_slug": "three-wheelers",
+        "brand": "Bajaj",
+        "name": "RE 4S 2023",
+        "description": "Blue",
+        "price": "480000.00",
+        "freshness": "fresh",
+        "specs": {
+            "vehicle_use": "passenger",
+            "year": 2023,
+            "engine_cc": 236,
+            "transmission": "manual",
+            "fuel": "petrol",
+            "color": "Blue",
+        },
+    },
+    {
+        "shop": 10,
+        "category_slug": "three-wheelers",
+        "brand": "TVS",
+        "name": "King Deluxe 2022",
+        "description": "Yellow",
+        "price": "330000.00",
+        "freshness": "fresh",
+        "condition": "used",
+        "specs": {
+            "vehicle_use": "passenger",
+            "year": 2022,
+            "transmission": "manual",
+            "fuel": "petrol",
+            "color": "Yellow",
+            "mileage": 45000,
+        },
+    },
+    {
+        "shop": 9,
+        "category_slug": "trucks-heavy",
+        "brand": "Isuzu",
+        "name": "FSR 2019",
+        "description": "White, 8 ton",
+        "price": "7900000.00",
+        "freshness": "fresh",
+        "condition": "used",
+        "specs": {
+            "vehicle_kind": "truck",
+            "year": 2019,
+            "transmission": "manual",
+            "fuel": "diesel",
+            "load_capacity": 8,
+            "color": "White",
+            "mileage": 160000,
+        },
+    },
+    {
+        "shop": 9,
+        "category_slug": "trucks-heavy",
+        "brand": "Toyota",
+        "name": "Coaster 2019",
+        "description": "White, 30 seats",
+        "price": "8400000.00",
+        "freshness": "expired",
+        "condition": "used",
+        "specs": {
+            "seats": 30,
+            "vehicle_kind": "bus",
+            "year": 2019,
+            "transmission": "manual",
+            "fuel": "diesel",
+            "mileage": 120000,
+        },
+    },
+    {
+        "shop": 11,
+        "category_slug": "auto-parts",
+        "brand": "Bridgestone",
+        "name": "Ecopia EP150 Tyre R15",
+        "description": "185-65 R15",
+        "price": "6500.00",
+        "freshness": "fresh",
+        "specs": {
+            "part_quality": "genuine",
+            "part_type": "tyres",
+            "fits_vehicle": "Toyota Vitz, Yaris",
+        },
+    },
+    {
+        "shop": 11,
+        "category_slug": "auto-parts",
+        "brand": "Varta",
+        "name": "Blue Dynamic 70Ah Battery",
+        "description": "12V, 70Ah",
+        "price": "11500.00",
+        "freshness": "fresh",
+        "specs": {
+            "part_quality": "genuine",
+            "part_type": "battery",
+            "fits_vehicle": "Most sedans and SUVs",
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "furniture",
+        "brand": "",
+        "name": "3-Seater Leather Sofa",
+        "description": "Brown",
+        "price": "68000.00",
+        "freshness": "fresh",
+        "specs": {
+            "furniture_type": "sofa",
+            "material": "Leather",
+            "seats": 3,
+            "dimensions": "210 × 90 × 85 cm",
+            "color": "Brown",
+            "delivery": "free_addis",
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "furniture",
+        "brand": "",
+        "name": "6-Seater Dining Table",
+        "description": "Brown",
+        "price": "54000.00",
+        "freshness": "fresh",
+        "specs": {
+            "furniture_type": "dining_table",
+            "material": "Solid wood",
+            "seats": 6,
+            "color": "Brown",
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "beds-mattresses",
+        "brand": "",
+        "name": "Pocket Spring Mattress",
+        "description": "Queen",
+        "price": "38000.00",
+        "freshness": "fresh",
+        "specs": {
+            "bed_item_type": "mattress",
+            "bed_size": "queen",
+            "mattress_type": "pocket_spring",
+            "thickness_cm": 25,
+            "firmness": "medium",
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "beds-mattresses",
+        "brand": "",
+        "name": "Solid Wood Bed Frame",
+        "description": "Brown",
+        "price": "46000.00",
+        "freshness": "almost_expired",
+        "specs": {
+            "bed_item_type": "bed_frame",
+            "bed_size": "queen",
+            "material": "Solid wood",
+            "color": "Brown",
+        },
+    },
+    {
+        "shop": 14,
+        "category_slug": "appliances",
+        "brand": "Samsung",
+        "name": "345L Top Freezer Refrigerator",
+        "description": "Silver",
+        "price": "82000.00",
+        "freshness": "fresh",
+        "specs": {
+            "appliance_type": "refrigerator",
+            "fridge_style": "top_freezer",
+            "capacity_l": 345,
+            "inverter": "yes",
+            "color": "Silver",
+        },
+    },
+    {
+        "shop": 14,
+        "category_slug": "appliances",
+        "brand": "LG",
+        "name": "8kg Front Load Washing Machine",
+        "description": "White",
+        "price": "76000.00",
+        "freshness": "fresh",
+        "specs": {
+            "appliance_type": "washing_machine",
+            "washer_style": "front_load",
+            "load_kg": 8,
+            "inverter": "yes",
+            "color": "White",
+        },
+    },
+    {
+        "shop": 14,
+        "category_slug": "kitchen-dining",
+        "brand": "",
+        "name": "Electric Mitad 55cm",
+        "description": "Black",
+        "price": "9800.00",
+        "freshness": "fresh",
+        "specs": {"kitchen_type": "electric_mitad", "diameter_cm": 55},
+    },
+    {
+        "shop": 14,
+        "category_slug": "kitchen-dining",
+        "brand": "Tefal",
+        "name": "Non-Stick Cookware Set",
+        "description": "Black, 10 pieces",
+        "price": "12500.00",
+        "freshness": "fresh",
+        "specs": {
+            "kitchen_type": "cookware",
+            "kitchen_material": "Non-stick",
+            "set_pieces": 10,
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "decor-lighting",
+        "brand": "",
+        "name": "Ceramic Table Lamp",
+        "description": "White",
+        "price": "4200.00",
+        "freshness": "fresh",
+        "specs": {
+            "decor_type": "lighting",
+            "light_type": "table_lamp",
+            "color": "White",
+        },
+    },
+    {
+        "shop": 13,
+        "category_slug": "decor-lighting",
+        "brand": "",
+        "name": "Wool Area Rug",
+        "description": "Gray, 160 × 230 cm",
+        "price": "12500.00",
+        "freshness": "expired",
+        "specs": {"decor_type": "rugs", "dimensions": "160 × 230 cm", "color": "Gray"},
+    },
+    {
+        "shop": 15,
+        "category_slug": "generators",
+        "brand": "Honda",
+        "name": "EU22i Inverter Generator",
+        "description": "Red, 2.2 kVA silent",
+        "price": "98000.00",
+        "freshness": "fresh",
+        "specs": {
+            "power_kva": 2.2,
+            "fuel": "petrol",
+            "phase": "single",
+            "start_type": "manual",
+            "runtime_h": 8,
+            "silent": "yes",
+        },
+    },
+    {
+        "shop": 15,
+        "category_slug": "generators",
+        "brand": "Perkins",
+        "name": "30 kVA Canopy Diesel",
+        "description": "Three-phase, used",
+        "price": "760000.00",
+        "freshness": "fresh",
+        "condition": "used",
+        "specs": {
+            "power_kva": 30,
+            "fuel": "diesel",
+            "phase": "three",
+            "start_type": "electric",
+            "silent": "yes",
+            "operating_hours": 2100,
+        },
+    },
+    {
+        "shop": 15,
+        "category_slug": "solar",
+        "brand": "Jinko",
+        "name": "Tiger Neo 450W Panel",
+        "description": "Monocrystalline",
+        "price": "14500.00",
+        "freshness": "fresh",
+        "specs": {"solar_type": "panel", "power_w": 450, "panel_tech": "mono"},
+    },
+    {
+        "shop": 15,
+        "category_slug": "solar",
+        "brand": "Felicity",
+        "name": "Solar Home Kit 1 kW",
+        "description": "Panels, battery and inverter",
+        "price": "145000.00",
+        "freshness": "fresh",
+        "specs": {
+            "solar_type": "kit",
+            "power_w": 1000,
+            "panel_tech": "mono",
+            "battery_wh": 2400,
+            "inverter_included": "yes",
+        },
+    },
+    {
+        "shop": 15,
+        "category_slug": "inverters-batteries",
+        "brand": "Felicity",
+        "name": "IVEM 5048 Hybrid Inverter",
+        "description": "5 kW, 48 V, solar input",
+        "price": "68000.00",
+        "freshness": "fresh",
+        "specs": {
+            "backup_type": "inverter",
+            "power_w": 5000,
+            "output_wave": "pure_sine",
+            "solar_input": "yes",
+            "system_voltage": "48v",
+        },
+    },
+    {
+        "shop": 15,
+        "category_slug": "inverters-batteries",
+        "brand": "Felicity",
+        "name": "LiFePO4 Battery 48V 100Ah",
+        "description": "Lithium, wall-mount",
+        "price": "132000.00",
+        "freshness": "fresh",
+        "specs": {
+            "backup_type": "battery",
+            "system_voltage": "48v",
+            "battery_chemistry": "lithium",
+            "capacity_ah": 100,
+        },
+    },
+    {
+        "shop": 16,
+        "category_slug": "mens-clothing",
+        "brand": "LC Waikiki",
+        "name": "Slim Fit Oxford Shirt",
+        "description": "White or blue, S to XL",
+        "price": "1890.00",
+        "freshness": "fresh",
+        "specs": {
+            "clothing_type": "shirt",
+            "sizes": ["S", "M", "L", "XL"],
+            "color": ["White", "Blue"],
+            "material": "Cotton",
+            "fit": "slim",
+        },
+    },
+    {
+        "shop": 16,
+        "category_slug": "womens-clothing",
+        "brand": "Shiro Meda",
+        "name": "Habesha Kemis",
+        "description": "Hand-woven, tilet border",
+        "price": "8500.00",
+        "freshness": "fresh",
+        "specs": {
+            "clothing_type": "traditional",
+            "sizes": ["S", "M", "L"],
+            "color": ["White"],
+            "material": "Cotton",
+        },
+    },
+    {
+        "shop": 16,
+        "category_slug": "kids-clothing",
+        "brand": "LC Waikiki",
+        "name": "School Uniform Set",
+        "description": "Shirt and trousers, 6 to 11 years",
+        "price": "1600.00",
+        "freshness": "fresh",
+        "specs": {
+            "clothing_type": "shirt",
+            "gender": "unisex",
+            "kids_size": ["6–7 years", "8–9 years", "10–11 years"],
+            "color": ["White", "Navy"],
+            "material": "Cotton",
+        },
+    },
+    {
+        "shop": 16,
+        "category_slug": "shoes",
+        "brand": "Nike",
+        "name": "Air Force 1 '07",
+        "description": "White, EU 40 to 44",
+        "price": "9800.00",
+        "freshness": "fresh",
+        "specs": {
+            "shoe_type": "sneakers",
+            "gender": "unisex",
+            "shoe_size": ["40", "41", "42", "43", "44"],
+            "color": ["White"],
+            "material": "Leather",
+            "authenticity": "original",
+        },
+    },
+    {
+        "shop": 16,
+        "category_slug": "bags",
+        "brand": "JanSport",
+        "name": "SuperBreak Backpack",
+        "description": "Black, navy or red",
+        "price": "2800.00",
+        "freshness": "fresh",
+        "specs": {
+            "bag_type": "backpack",
+            "gender": "unisex",
+            "color": ["Black", "Navy", "Red"],
+            "material": "Fabric",
+            "authenticity": "original",
+        },
+    },
+    {
+        "shop": 17,
+        "category_slug": "watches-jewelry",
+        "brand": "Piassa Gold",
+        "name": "21K Gold Chain Necklace",
+        "description": "18.5 g, 21K",
+        "price": "145000.00",
+        "freshness": "fresh",
+        "specs": {
+            "jewelry_type": "necklace",
+            "gender": "women",
+            "metal": "gold",
+            "karat": "21k",
+            "weight_g": 18.5,
+        },
+    },
+    {
+        "shop": 18,
+        "category_slug": "apartments",
+        "brand": "Noah Real Estate",
+        "name": "3-Bedroom Apartment, Bole Atlas",
+        "description": "For sale · 3 bedrooms · 145 m²",
+        "price": "18500000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "sale",
+            "apartment_type": "apartment",
+            "subcity": "bole",
+            "area_name": "Atlas",
+            "bedrooms": 3,
+            "bathrooms": 2,
+            "size_m2": 145,
+            "floor": 6,
+            "furnishing": "unfurnished",
+            "amenities": [
+                "parking",
+                "elevator",
+                "water_tank",
+                "backup_power",
+                "security",
+            ],
+            "new_build": "yes",
+            "title_deed": "ready",
+        },
+    },
+    {
+        "shop": 18,
+        "category_slug": "apartments",
+        "brand": "",
+        "name": "2-Bedroom Condominium, CMC",
+        "description": "For rent · 2 bedrooms · 75 m²",
+        "price": "28000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "rent",
+            "apartment_type": "condominium",
+            "subcity": "yeka",
+            "area_name": "CMC",
+            "bedrooms": 2,
+            "bathrooms": 1,
+            "size_m2": 75,
+            "floor": 3,
+            "furnishing": "semi",
+            "amenities": ["water_tank"],
+            "new_build": "no",
+            "advance_months": 3,
+        },
+    },
+    {
+        "shop": 19,
+        "category_slug": "land",
+        "brand": "",
+        "name": "Residential Lease Plot, Bole Arabsa",
+        "description": "For sale · 250 m² · Residential",
+        "price": "9500000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "sale",
+            "subcity": "lemi_kura",
+            "area_name": "Bole Arabsa",
+            "plot_m2": 250,
+            "land_use": "residential",
+            "title_deed": "ready",
+        },
+    },
+    {
+        "shop": 18,
+        "category_slug": "commercial-property",
+        "brand": "",
+        "name": "Office Space on Bole Road",
+        "description": "For rent · Office · 220 m²",
+        "price": "120000.00",
+        "freshness": "fresh",
+        "specs": {
+            "listing_type": "rent",
+            "commercial_type": "office",
+            "subcity": "bole",
+            "area_name": "Bole Road",
+            "size_m2": 220,
+            "floor": 3,
+            "furnishing": "unfurnished",
+            "amenities": ["parking", "elevator", "backup_power", "security"],
+            "advance_months": 3,
+        },
+    },
 ]
 
 
 class Command(BaseCommand):
-    help = "Seed realistic shops, procedural products across all 6 categories with public images."
+    help = "Seed realistic shops and procedural products across every category, with images."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -2737,7 +6815,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--sample",
             action="store_true",
-            help="Seed only the minimal 31 starter products for quick testing.",
+            help="Seed only the minimal starter products for quick testing.",
         )
         parser.add_argument(
             "--force",
@@ -2792,15 +6870,18 @@ class Command(BaseCommand):
             self.stdout.write("Cleanup complete.")
 
         # Ensure shops exist. Sample mode is meant to be minimal, so it creates
-        # only the shops its own products reference -- seeding all eight would
-        # leave five with no listings at all, which the ops health page then
-        # reports as unreachable shops that were never really there.
-        shops_to_seed = SHOPS
+        # only the shops its own products reference -- seeding all of them
+        # would leave several with no listings at all, which the ops health
+        # page then reports as unreachable shops that were never really there.
+        # Keyed by index into SHOPS, which is what the seed data refers to.
         if sample_mode:
-            shops_to_seed = SHOPS[: max(p["shop"] for p in SAMPLE_PRODUCTS) + 1]
+            shop_indexes = sorted({p["shop"] for p in SAMPLE_PRODUCTS})
+        else:
+            shop_indexes = range(len(SHOPS))
 
-        shop_objs = []
-        for sdata in shops_to_seed:
+        shop_objs = {}
+        for index in shop_indexes:
+            sdata = SHOPS[index]
             shop, created = Shop.objects.get_or_create(
                 slug=sdata["slug"],
                 defaults={
@@ -2814,29 +6895,26 @@ class Command(BaseCommand):
                     "owner": user,
                 },
             )
-            shop_objs.append(shop)
+            shop_objs[index] = shop
+
+        # Every category exists, with the same definitions as `seed_catalog`.
+        category_cache = {
+            category.slug: category for category, _ in ensure_categories()
+        }
+        # Added, never replaced: categories an owner picked in Shop settings
+        # survive a reseed.
+        for index, shop in shop_objs.items():
+            shop.categories.add(
+                *(category_cache[slug] for slug in shop_category_slugs(index))
+            )
 
         if sample_mode:
-            self.stdout.write("Running in sample mode (31 products across 3 shops)...")
+            self.stdout.write(
+                f"Running in sample mode ({len(SAMPLE_PRODUCTS)} products across "
+                f"{len(shop_objs)} shops)..."
+            )
             self._seed_sample(shop_objs, images_per_product, force_images, image_source)
             return
-
-        # Ensure all 6 categories exist
-        category_cache = {}
-        category_order = [
-            ("phones", "Phones", 0),
-            ("laptops", "Laptops", 1),
-            ("audio", "Audio", 2),
-            ("tablets", "Tablets", 3),
-            ("cameras", "Cameras", 4),
-            ("accessories", "Accessories", 5),
-        ]
-        for cslug, cname, corder in category_order:
-            cat, _ = Category.objects.get_or_create(
-                slug=cslug,
-                defaults={"name": cname, "display_order": corder},
-            )
-            category_cache[cslug] = cat
 
         ensure_taxonomy()
         for cat in category_cache.values():
@@ -2877,15 +6955,19 @@ class Command(BaseCommand):
                 price_adj = Decimal(str(variant_cfg.get("price_adj", 0)))
                 final_price = base_price + price_adj
 
-                # Condition: 70% New, 20% Used, 10% Refurbished
+                # Condition: 70% New, 20% Used, 10% Refurbished. Vehicles are
+                # never "refurbished": that share is new for them.
                 cond_seed = (idx * 7 + 3) % 10
-                if cond_seed in (0, 1):
+                if cat_slug in PROPERTY_CATEGORIES:
+                    condition = ProductCondition.NEW
+                    cond_note = ""
+                elif cond_seed in (0, 1):
                     condition = ProductCondition.USED
                     final_price = (final_price * Decimal("0.78")).quantize(
                         Decimal("100.00")
                     )
                     cond_note = "Used - Very Good"
-                elif cond_seed == 2:
+                elif cond_seed == 2 and cat_slug not in NEVER_REFURBISHED:
                     condition = ProductCondition.REFURBISHED
                     final_price = (final_price * Decimal("0.88")).quantize(
                         Decimal("100.00")
@@ -2908,6 +6990,8 @@ class Command(BaseCommand):
 
                 # Specific variant name and description
                 spec_summary_parts = []
+                if "year" in variant_cfg:
+                    spec_summary_parts.append(str(variant_cfg["year"]))
                 if "storage" in variant_cfg:
                     spec_summary_parts.append(variant_cfg["storage"])
                 if "ram" in variant_cfg:
@@ -2932,7 +7016,11 @@ class Command(BaseCommand):
                 else:
                     item_name = base_name
 
-                item_description = f"{color} · {cond_note}"
+                item_description = (
+                    model_def["summary"]
+                    if cat_slug in PROPERTY_CATEGORIES
+                    else f"{color} · {cond_note}"
+                )
 
                 # Merge model specs with variant overrides
                 full_specs = dict(model_def.get("specs", {}))
@@ -2942,14 +7030,17 @@ class Command(BaseCommand):
 
                 # Distribute products across appropriate shops
                 # Cameras prefer shop 4 (Piassa Camera & Sound)
-                if cat_slug == "cameras" and (idx % 3 == 0):
+                if cat_slug in SHOPS_BY_CATEGORY:
+                    choices = SHOPS_BY_CATEGORY[cat_slug]
+                    shop = shop_objs[choices[idx % len(choices)]]
+                elif cat_slug == "cameras" and (idx % 3 == 0):
                     shop = shop_objs[4]
                 elif cat_slug in ("laptops", "tablets") and (idx % 4 == 0):
                     shop = shop_objs[3]  # Megenagna Digital
                 elif cat_slug == "accessories" and (idx % 4 == 0):
                     shop = shop_objs[1]  # Merkato Wholesale
                 else:
-                    shop = shop_objs[idx % len(shop_objs)]
+                    shop = shop_objs[idx % ELECTRONICS_SHOP_COUNT]
 
                 # Deterministic unique slug
                 slug_source = f"{shop.slug}-{brand}-{base_name}-{color}-{idx}"
@@ -3044,6 +7135,7 @@ class Command(BaseCommand):
                 image_row.delete()
 
         written = 0
+        image_key = image_pool_key(category_slug, product.specs)
         for order, view in enumerate(PRODUCT_IMAGE_VIEWS[:images_per_product]):
             img_bytes = get_category_image_bytes(
                 category_slug=category_slug,
@@ -3053,6 +7145,7 @@ class Command(BaseCommand):
                 variant_idx=variant_idx,
                 source_mode=image_source,
                 view=view,
+                image_key=image_key,
             )
             img_obj = ProductImage(
                 product=product,
@@ -3068,23 +7161,25 @@ class Command(BaseCommand):
         return written
 
     def _seed_sample(self, shop_objs, images_per_product, force_images, image_source):
-        """Seeds the minimal 31 starter products for tests and quick dev runs."""
+        """Seeds the minimal starter products for tests and quick dev runs."""
         count = 0
         updated = 0
         img_count = 0
 
+        # The categories exist already (`handle` ensures them for both modes).
         ensure_taxonomy()
         for data in SAMPLE_PRODUCTS:
             shop = shop_objs[data["shop"]]
             category = Category.objects.get(slug=data["category_slug"])
-            slug = f"{shop.slug}-{data['brand']}-{data['name']}".lower().replace(
-                " ", "-"
-            )
+            # slugify, not a space replace: names carry commas and
+            # apostrophes ("Air Force 1 '07", "Apartment, Bole Atlas").
+            slug = slugify(f"{shop.slug}-{data['brand']}-{data['name']}")
+            condition = data.get("condition", ProductCondition.NEW)
             specs = seed_specs(
                 category,
                 data["specs"],
                 text=f"{data['brand']} {data['name']} {data.get('description', '')}",
-                condition=ProductCondition.NEW,
+                condition=condition,
                 seed=slug,
             )
 
@@ -3097,6 +7192,7 @@ class Command(BaseCommand):
                     "name": data["name"],
                     "description": data.get("description", ""),
                     "price": data["price"],
+                    "condition": condition,
                     "specs": specs,
                     "last_confirmed_at": timezone.now()
                     - SEED_CONFIRMATION_AGE[data.get("freshness", "fresh")],

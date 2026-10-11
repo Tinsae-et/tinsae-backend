@@ -150,6 +150,9 @@ class ProductType(BaseModel):
     # The brands the listing form offers. A list for now; a Brand model can
     # replace it once brands need their own pages or aliases.
     brands = models.JSONField(default=list, blank=True)
+    # Phones, cars and fridges are bought by brand; a locally made sofa or a
+    # rug usually has none, and a required brand would only collect "N/A".
+    brand_required = models.BooleanField(default=True)
 
     class Meta(BaseModel.Meta):
         ordering = ["key"]
@@ -190,6 +193,10 @@ class ProductTypeAttribute(BaseModel):
         default="key",
     )
     recommended = models.BooleanField(default=False)
+    # Several values instead of one, stored as a list: the sizes or colours a
+    # shirt is available in. Per type, not per attribute: colour is one value
+    # on a phone and several on a shirt.
+    multiple = models.BooleanField(default=False)
     placeholder = models.CharField(max_length=80, blank=True)
     hint = models.CharField(max_length=160, blank=True)
     display_order = models.PositiveIntegerField(default=0)
@@ -214,6 +221,12 @@ class Category(BaseModel):
         "self", null=True, blank=True, related_name="children", on_delete=models.PROTECT
     )
     display_order = models.PositiveIntegerField(default=0)
+    # How menus present the category: an icon name from the frontend's icon
+    # set ("car", "sofa") and a one-line tagline ("Cars · Motorcycles ·
+    # Bicycles"). Set by `seed_catalog`, so a new category needs no frontend
+    # change to show up properly.
+    icon = models.CharField(max_length=30, blank=True)
+    tagline = models.CharField(max_length=120, blank=True)
     # Decides the listing form and the spec validation for this category. A
     # category without one takes listings with free-form specs, as before.
     product_type = models.ForeignKey(
@@ -302,10 +315,14 @@ class Product(BaseModel):
         Category, related_name="products", on_delete=models.PROTECT
     )
     description = models.TextField(blank=True, null=True)
-    brand = models.CharField(max_length=100)
+    # Blank for unbranded goods; whether a category demands one is
+    # `ProductType.brand_required`, checked when a merchant saves a listing.
+    brand = models.CharField(max_length=100, blank=True, default="")
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=200, unique=True, blank=True)
-    price = models.DecimalField(max_digits=10, decimal_places=2)
+    # 14 digits: a villa or a building in Addis sells for well over the
+    # 100M ETB that 10 digits held.
+    price = models.DecimalField(max_digits=14, decimal_places=2)
     currency = models.CharField(max_length=3, default="ETB")
     condition = models.CharField(
         max_length=20,
@@ -366,7 +383,7 @@ class Product(BaseModel):
         return get_freshness(self.last_confirmed_at)
 
     def __str__(self) -> str:
-        return f"{self.brand} {self.name}"
+        return f"{self.brand} {self.name}".strip()
 
     def save(self, *args, **kwargs):
         if self.status in (ProductStatus.SOLD, ProductStatus.DRAFT):

@@ -10,6 +10,35 @@ Rules the sync enforces, because listings already store these keys:
 - an option dropped from the code is deactivated, never deleted.
 """
 
-from .electronics import ATTRIBUTES, PRODUCT_TYPES
+from . import electronics, fashion, home, power, property, vehicles
+
+
+def _merge(*parts):
+    """One dict from several modules; a key defined twice is a mistake."""
+    merged = {}
+    for part in parts:
+        overlap = merged.keys() & part.keys()
+        if overlap:
+            raise ValueError(f"Taxonomy keys defined twice: {sorted(overlap)}")
+        merged.update(part)
+    return merged
+
+
+ATTRIBUTES = _merge(
+    electronics.ATTRIBUTES,
+    vehicles.ATTRIBUTES,
+    home.ATTRIBUTES,
+    power.ATTRIBUTES,
+    fashion.ATTRIBUTES,
+    property.ATTRIBUTES,
+)
+PRODUCT_TYPES = _merge(
+    electronics.PRODUCT_TYPES,
+    vehicles.PRODUCT_TYPES,
+    home.PRODUCT_TYPES,
+    power.PRODUCT_TYPES,
+    fashion.PRODUCT_TYPES,
+    property.PRODUCT_TYPES,
+)
 
 __all__ = ["ATTRIBUTES", "PRODUCT_TYPES"]

@@ -12,6 +12,7 @@ from decimal import Decimal
 from django.db.models import Prefetch
 
 from .models import AttributeOption, AttributeType, Category, ProductTypeAttribute
+from .taxonomy import PRODUCT_TYPES
 
 # Free-text keys the form writes outside the schema.
 ALWAYS_ALLOWED_KEYS = {"variant"}
@@ -76,6 +77,7 @@ def category_schema(category: Category | None) -> dict | None:
             "control": link.control or None,
             "section": link.section,
             "recommended": link.recommended,
+            "multiple": link.multiple,
             "options": None,
         }
         # Enum: the closed list. Text: suggestions to type from (processor).
@@ -89,12 +91,58 @@ def category_schema(category: Category | None) -> dict | None:
             ]
         fields.append(field)
 
+    presentation = PRODUCT_TYPES.get(product_type.key, {})
     return {
         "category": category.slug,
         "product_type": product_type.key,
         "brands": list(product_type.brands or []),
+        "brand_required": product_type.brand_required,
+        # Presentation, read from the taxonomy code rather than the database:
+        # not rules, so they need no sync. Example name and variant for the
+        # form; whether "New / Used" applies (not to a house); what the brand
+        # box asks for ("Developer").
+        "listing_examples": presentation.get("listing_examples", {}),
+        "has_condition": presentation.get("has_condition", True),
+        "brand_label": presentation.get("brand_label", "Brand"),
         "fields": fields,
     }
+
+
+def group_schema(category: Category | None) -> dict | None:
+    """For a sale-or-rent parent, the fields every subcategory's type shares.
+
+    "Property & Rentals" has no form of its own, but all four of its types ask
+    for sale or rent and the sub-city, so a buyer can filter the whole group
+    by them. Used for filtering and counts only, never for the listing form.
+
+    Only for property: other groups ("Vehicles & Auto") stay unfilterable by
+    spec, because a car and a tyre share nothing a buyer would pick between.
+    """
+    if category is None or category.product_type_id is not None:
+        return None
+    children = list(category.children.select_related("product_type"))
+    if not children or not all(
+        child.product_type_id and sells_or_rents(child.product_type.key)
+        for child in children
+    ):
+        return None
+    schemas = [category_schema(child) for child in children]
+    if not schemas or any(schema is None for schema in schemas):
+        return None
+    shared = set.intersection(
+        *({(f["key"], f["type"]) for f in schema["fields"]} for schema in schemas)
+    )
+    return {
+        "category": category.slug,
+        "product_type": category.slug,
+        "fields": [f for f in schemas[0]["fields"] if (f["key"], f["type"]) in shared],
+    }
+
+
+def sells_or_rents(product_type_key: str | None) -> bool:
+    """Whether listings of this type are for sale or for rent (property)."""
+    fields = PRODUCT_TYPES.get(product_type_key or "", {}).get("fields", [])
+    return any(f.get("attribute") == "listing_type" for f in fields)
 
 
 def as_text(field: dict, value):
@@ -121,24 +169,40 @@ def normalize_specs(schema: dict, specs):
     out = dict(specs)
     for field in schema["fields"]:
         value = out.get(field["key"])
-        if field["type"] != AttributeType.TEXT or not isinstance(value, str):
+        if field["type"] != AttributeType.TEXT:
             continue
-        value = " ".join(value.split())
-        folded = value.casefold()
-        for option in field["options"] or []:
-            if folded in (option["label"].casefold(), option["value"].casefold()):
-                value = option["label"]
-                break
-        out[field["key"]] = value
+        if isinstance(value, str):
+            out[field["key"]] = _tidy_text(field, value)
+        elif field.get("multiple") and isinstance(value, list):
+            # Each item tidied, then repeats dropped: "black" and "Black"
+            # are one colour, kept once, in the order given.
+            tidied = [_tidy_text(field, v) if isinstance(v, str) else v for v in value]
+            out[field["key"]] = list(dict.fromkeys(tidied))
     return out
+
+
+def _tidy_text(field: dict, value: str) -> str:
+    value = " ".join(value.split())
+    folded = value.casefold()
+    for option in field["options"] or []:
+        if folded in (option["label"].casefold(), option["value"].casefold()):
+            return option["label"]
+    return value
 
 
 def matches_condition(condition: dict | None, values: dict) -> bool:
     """Whether every key in a `show_if` / `required_if` holds an allowed value."""
     if not condition:
         return True
+
+    def holds(value, allowed):
+        # A multi-value spec meets the condition when any of its values does.
+        if isinstance(value, list):
+            return any(str(v) in allowed for v in value)
+        return str(value) in allowed
+
     return all(
-        str(values.get(key, "")) in allowed for key, allowed in condition.items()
+        holds(values.get(key, ""), allowed) for key, allowed in condition.items()
     )
 
 
@@ -175,7 +239,7 @@ def validate_specs(
 
     for key, field in defined.items():
         visible = matches_condition(field["show_if"], values)
-        present = key in specs and specs[key] not in (None, "")
+        present = key in specs and specs[key] not in (None, "", [])
         unchanged = present and key in existing and existing[key] == specs[key]
 
         if not visible:
@@ -201,7 +265,33 @@ def validate_specs(
     return errors
 
 
+# More than any real size run or colour range; stops a runaway list.
+MAX_VALUES = 30
+
+
 def check_value(field: dict, value) -> str | None:
+    """The error message for a value against its field, or None when valid.
+
+    A multiple field takes a list, every item checked as a single value would
+    be; anything else takes one value.
+    """
+    if not field.get("multiple"):
+        return _check_one(field, value)
+    label = field["label"]
+    if not isinstance(value, list):
+        return f"{label}: send a list of values."
+    if len(value) > MAX_VALUES:
+        return f"{label}: at most {MAX_VALUES} values."
+    if len({str(v) for v in value}) != len(value):
+        return f"{label}: each value once."
+    for item in value:
+        message = _check_one(field, item)
+        if message:
+            return message
+    return None
+
+
+def _check_one(field: dict, value) -> str | None:
     """The error message for one value against its field, or None when valid."""
     label = field["label"]
     if field["type"] == AttributeType.ENUM:
@@ -214,9 +304,9 @@ def check_value(field: dict, value) -> str | None:
         if isinstance(value, bool) or not isinstance(value, int | float):
             return f"{label} must be a number."
         if field["min"] is not None and value < field["min"]:
-            return f"{label} must be at least {field['min']:g}."
+            return f"{label} must be at least {field['min']:n}."
         if field["max"] is not None and value > field["max"]:
-            return f"{label} must be at most {field['max']:g}."
+            return f"{label} must be at most {field['max']:n}."
         return None
     if not isinstance(value, str):
         return f"{label} must be text."

@@ -1,12 +1,66 @@
 from rest_framework import serializers
 
 from .models import Category, Product, ProductImage
+from .specs import sells_or_rents
 
 
 class CategorySerializer(serializers.ModelSerializer):
+    # Whether listings here have a spec form and spec filters: true for
+    # "Cars", false for the "Vehicles & Auto" parent that only groups them.
+    has_specs = serializers.SerializerMethodField()
+
     class Meta:
         model = Category
-        fields = ["id", "name", "slug", "parent", "display_order"]
+        fields = [
+            "id",
+            "name",
+            "slug",
+            "parent",
+            "display_order",
+            "has_specs",
+            "icon",
+            "tagline",
+        ]
+
+    def get_has_specs(self, obj):
+        return obj.product_type_id is not None
+
+
+class CategoryNavSerializer(CategorySerializer):
+    """A category as menus need it, with what its listings are.
+
+    Only the category list uses it, where product types and children are
+    prefetched; on every product's nested category it would cost a query each.
+    """
+
+    # Listings here are for sale or for rent (property): pages offer a
+    # "For rent | For sale" switch. A parent is when all its children are.
+    sale_or_rent = serializers.SerializerMethodField()
+
+    class Meta(CategorySerializer.Meta):
+        fields = [*CategorySerializer.Meta.fields, "sale_or_rent"]
+
+    def get_sale_or_rent(self, obj):
+        if obj.product_type_id is not None:
+            return sells_or_rents(obj.product_type.key)
+        children = obj.children.all()
+        return bool(children) and all(
+            child.product_type_id is not None and sells_or_rents(child.product_type.key)
+            for child in children
+        )
+
+
+class CategoryTreeSerializer(CategoryNavSerializer):
+    """A category with its subcategories, for navigation.
+
+    Only the category list uses it: nesting `children` into every product's
+    category would cost a query per product.
+    """
+
+    children = CategoryNavSerializer(many=True, read_only=True)
+
+    class Meta(CategoryNavSerializer.Meta):
+        fields = [*CategoryNavSerializer.Meta.fields, "children"]
 
 
 class ProductImageSerializer(serializers.ModelSerializer):
@@ -89,7 +143,8 @@ class ProductSerializer(serializers.ModelSerializer):
         return request.build_absolute_uri(url) if request else url
 
     def get_title(self, obj):
-        return f"{obj.brand} {obj.name}"
+        # An unbranded listing is just its name, without a leading space.
+        return f"{obj.brand} {obj.name}".strip()
 
     def get_images(self, obj):
         # Ordering belongs to the viewset's Prefetch — re-sorting here would

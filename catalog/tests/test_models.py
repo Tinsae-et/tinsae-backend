@@ -40,22 +40,43 @@ class CategoryModelTest(TestCase):
         from django.core.management import call_command
 
         call_command("seed_catalog")
+        count = Category.objects.count()
         call_command("seed_catalog")
-        self.assertEqual(Category.objects.count(), 6)
+        self.assertEqual(Category.objects.count(), count)
 
     def test_seed_shop_data_sample_mode(self):
         from django.core.management import call_command
 
         call_command("seed_catalog")
         call_command("seed_shop_data", sample=True, no_images=True)
-        self.assertEqual(Product.objects.count(), 31)
+        self.assertEqual(Product.objects.count(), 69)
 
     def test_seed_shop_data_procedural_mode(self):
         from django.core.management import call_command
 
         call_command("seed_catalog")
         call_command("seed_shop_data", per_category=2, no_images=True)
-        self.assertEqual(Product.objects.count(), 12)
+        # 2 for each of the 34 categories that take listings (10 electronics,
+        # 6 vehicles, 5 furniture & appliances, 3 power & solar, 6 fashion,
+        # 4 property); group parents ("Vehicles & Auto", "Computers"...) have
+        # no products.
+        self.assertEqual(Product.objects.count(), 68)
+
+    def test_seeded_shops_can_list_in_the_categories_they_sell(self):
+        from django.core.management import call_command
+
+        call_command("seed_catalog")
+        for options in ({"sample": True}, {"per_category": 1}):
+            with self.subTest(options):
+                call_command("seed_shop_data", no_images=True, **options)
+                # Without these the seed merchant's listing form offers no
+                # category at all.
+                for product in Product.objects.select_related("shop", "category"):
+                    self.assertIn(
+                        product.category,
+                        product.shop.categories.all(),
+                        f"{product.shop.slug} cannot list {product.category.slug}",
+                    )
 
 
 class ProductModelTest(TestCase):
