@@ -73,6 +73,7 @@ class ProductTypeAttributeInline(admin.TabularInline):
         "attribute",
         "label",
         "required",
+        "multiple",
         "required_if",
         "show_if",
         "options",

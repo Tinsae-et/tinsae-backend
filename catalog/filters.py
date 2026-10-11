@@ -110,10 +110,12 @@ def spec_filters(params, schema: dict | None) -> dict[str, Q]:
                 # A list matches when it holds any picked value: "size M"
                 # finds the shirt sold in S to XL. JSON containment, so it
                 # is exact; the picked values come from the facet counts,
-                # which are stored values.
+                # which are stored values. A single value saved before the
+                # field took lists matches too, as the counts include it.
                 q = Q()
                 for value in spec["values"]:
                     q |= Q(**{f"specs__{key}__contains": [value]})
+                    q |= Q(**{f"specs__{key}": value})
                 filters[key] = q
             elif field["type"] == "enum":
                 filters[key] = Q(**{f"specs__{key}__in": spec["values"]})

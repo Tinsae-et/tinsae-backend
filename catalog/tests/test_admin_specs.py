@@ -51,3 +51,25 @@ class ProductAdminSpecsTest(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         self.assertEqual(form.cleaned_data["specs"]["color"], "White")
+
+    def test_list_specs_are_tidied_and_accepted(self):
+        shirts = Category.objects.get(slug="mens-clothing")
+        form = self._form(
+            '{"clothing_type": "shirt", "sizes": ["m", " l "], "color": ["navy"]}',
+            category=shirts.pk,
+            brand="",
+            slug="admin-shirt",
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.cleaned_data["specs"]["sizes"], ["M", "L"])
+        self.assertEqual(form.cleaned_data["specs"]["color"], ["Navy"])
+
+    def test_a_single_value_where_a_list_belongs_is_rejected(self):
+        shirts = Category.objects.get(slug="mens-clothing")
+        form = self._form(
+            '{"clothing_type": "shirt", "sizes": "M"}',
+            category=shirts.pk,
+            slug="admin-shirt",
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("sizes", str(form.errors["specs"]))

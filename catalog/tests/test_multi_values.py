@@ -84,3 +84,17 @@ class MultiValueSpecTest(TestCase):
         facets = self.client.get(f"{FACETS}?category=wearables").data
         counts = {v["value"]: v["count"] for v in facets["specs"]["sensors"]["values"]}
         self.assertEqual(counts, {"heart_rate": 2, "ecg": 1, "spo2": 1})
+
+    def test_a_single_value_saved_before_lists_still_filters_and_counts(self):
+        from catalog.models import Product
+
+        self._post(["ecg"], name="Listed")
+        legacy = Product.objects.get(name="Listed")
+        # As stored before the field took lists.
+        Product.objects.filter(pk=legacy.pk).update(specs={"sensors": "ecg"})
+        data = self.client.get(f"{PRODUCTS}?category=wearables&spec_sensors=ecg").data
+        self.assertEqual([p["title"] for p in data["results"]], ["Apple Listed"])
+        facets = self.client.get(f"{FACETS}?category=wearables").data
+        self.assertEqual(
+            facets["specs"]["sensors"]["values"], [{"value": "ecg", "count": 1}]
+        )
