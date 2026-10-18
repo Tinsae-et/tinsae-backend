@@ -16,7 +16,7 @@ class Migration(migrations.Migration):
             field=models.CharField(
                 blank=True,
                 choices=[("buyer", "Buyer"), ("shop", "Shop")],
-                db_default=models.Value(""),
+                db_default="",
                 default="",
                 max_length=20,
             ),
