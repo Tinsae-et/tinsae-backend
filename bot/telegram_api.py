@@ -115,10 +115,17 @@ def _call(method: str, payload: dict, timeout: int = DEFAULT_TIMEOUT):
     return body.get("result", {})
 
 
-def send_message(chat_id, text: str, reply_markup: dict | None = None) -> dict:
+def send_message(
+    chat_id,
+    text: str,
+    reply_markup: dict | None = None,
+    disable_notification: bool = False,
+) -> dict:
     payload = {"chat_id": str(chat_id), "text": text}
     if reply_markup is not None:
         payload["reply_markup"] = reply_markup
+    if disable_notification:
+        payload["disable_notification"] = True
     return _call("sendMessage", payload)
 
 

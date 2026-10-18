@@ -31,6 +31,7 @@ INSTALLED_APPS = [
     "core",
     "catalog",
     "bot",
+    "notifications",
     "inquiries",
     "ops",
 ]
@@ -282,3 +283,13 @@ QUIET_HOURS_END = env.int("QUIET_HOURS_END", default=7)
 # Pruning retention periods
 PROCESSED_UPDATE_RETENTION_DAYS = env.int("PROCESSED_UPDATE_RETENTION_DAYS", default=7)
 OUTBOX_RETENTION_DAYS = env.int("OUTBOX_RETENTION_DAYS", default=30)
+
+# In-app notification retention: rows older than this threshold are deleted daily
+# by `purge_old_notifications` so the table bounds its growth over time.
+NOTIFICATION_RETENTION_DAYS = env.int("NOTIFICATION_RETENTION_DAYS", default=90)
+
+# Minutes an unread in-app notification waits before being batched into an email
+# digest. Gives buyers time to read and act on the in-app message first.
+NOTIFICATION_EMAIL_DELAY_MINUTES = env.int(
+    "NOTIFICATION_EMAIL_DELAY_MINUTES", default=15
+)

@@ -127,6 +127,20 @@ def post_update_shop_verification_status(sender, instance, **kwargs):
             instance.shop.is_verified = False
             instance.shop.save(update_fields=["is_verified"])
 
+    if instance.state in ("approved", "rejected"):
+        from notifications.services import notify
+
+        notify(
+            instance.shop.owner,
+            "verification_reviewed",
+            {
+                "shop_id": instance.shop_id,
+                "shop_slug": instance.shop.slug,
+                "request_id": instance.pk,
+                "state": instance.state,
+            },
+        )
+
 
 @receiver(pre_save, sender=VerificationRequest)
 def pre_update_shop_verification_status(sender, instance, **kwargs):

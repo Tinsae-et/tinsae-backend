@@ -85,10 +85,17 @@ class OutboundMessageAdmin(admin.ModelAdmin):
         "status",
         "attempts",
         "next_attempt_at",
+        "send_silently_at_night",
         "telegram_message_id",
         "created_at",
     ]
-    list_filter = ["status", "kind", "created_at", "next_attempt_at"]
+    list_filter = [
+        "status",
+        "kind",
+        "send_silently_at_night",
+        "created_at",
+        "next_attempt_at",
+    ]
     search_fields = ["chat_id", "dedupe_key", "telegram_message_id", "last_error"]
     readonly_fields = ["created_at", "updated_at", "claimed_at"]
     actions = ["requeue_messages"]

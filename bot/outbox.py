@@ -19,6 +19,7 @@ def enqueue(
     kind: str,
     payload: dict,
     dedupe_key: str,
+    send_silently_at_night: bool = False,
 ) -> OutboundMessage | None:
     """Enqueue an outbound message for delivery.
 
@@ -35,6 +36,7 @@ def enqueue(
                 kind=kind,
                 payload=payload,
                 dedupe_key=dedupe_key,
+                send_silently_at_night=send_silently_at_night,
                 status="queued",
                 next_attempt_at=timezone.now(),
             )
