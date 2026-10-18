@@ -20,6 +20,18 @@ from .services import prune
 User = get_user_model()
 
 
+def pin_daytime(testcase):
+    """Make drain_outbox see daytime for the rest of this test.
+
+    For tests about sending, retries and errors -- not quiet hours. Without it
+    they read the real clock and fail whenever the suite runs between 21:00 and
+    07:00 EAT. QuietHoursTests pin their own times and must not use this.
+    """
+    patcher = patch("bot.sender.is_quiet_hours", return_value=False)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+
+
 class OutboxEnqueueTests(TestCase):
     def test_enqueue_creates_queued_message(self):
         msg = enqueue(
@@ -129,6 +141,7 @@ class TelegramApiSendMessageTests(TestCase):
 )
 class SenderDrainTests(TestCase):
     def setUp(self):
+        pin_daytime(self)
         self.user = User.objects.create_user(
             username="merchant", password="password123"
         )
@@ -289,6 +302,7 @@ class SenderDrainTests(TestCase):
 )
 class ConcurrentDrainTests(TestCase):
     def setUp(self):
+        pin_daytime(self)
         self.user = User.objects.create_user(
             username="merchant_concurrent", password="password123"
         )
@@ -363,6 +377,9 @@ class OutboundMessageAdminTests(TestCase):
 @override_settings(TELEGRAM_BOT_TOKEN="", TELEGRAM_MOCK_SEND=False)
 class UnconfiguredSenderTests(TestCase):
     """A missing token must never look like a successful send."""
+
+    def setUp(self):
+        pin_daytime(self)
 
     def test_unconfigured_token_marks_dead_not_sent(self):
         msg = enqueue("555000", "prompt", {"text": "Hello"}, "no-token")
