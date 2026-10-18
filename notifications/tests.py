@@ -646,6 +646,14 @@ class NotificationScheduleCommandTests(TestCase):
         self.assertEqual(digest_pt.task, "notifications.tasks.send_email_digests")
         self.assertTrue(digest_pt.enabled)
 
+        reminder_pt = PeriodicTask.objects.get(
+            name="notifications-remind-unanswered-inquiries"
+        )
+        self.assertEqual(
+            reminder_pt.task, "inquiries.tasks.remind_unanswered_inquiries"
+        )
+        self.assertTrue(reminder_pt.enabled)
+
         purge_pt = PeriodicTask.objects.get(
             name="notifications-purge-old-notifications"
         )
@@ -657,6 +665,12 @@ class NotificationScheduleCommandTests(TestCase):
         self.assertEqual(
             PeriodicTask.objects.filter(
                 name="notifications-send-email-digests"
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            PeriodicTask.objects.filter(
+                name="notifications-remind-unanswered-inquiries"
             ).count(),
             1,
         )

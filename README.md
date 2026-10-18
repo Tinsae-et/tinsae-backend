@@ -424,6 +424,7 @@ That registers, all in `Africa/Addis_Ababa`:
 | Task | When |
 | --- | --- |
 | `notifications.tasks.send_email_digests` | hourly at :00 |
+| `inquiries.tasks.remind_unanswered_inquiries` | hourly at :30 |
 | `notifications.tasks.purge_old_notifications` | 04:00 daily |
 
 ### Telegram bot processes

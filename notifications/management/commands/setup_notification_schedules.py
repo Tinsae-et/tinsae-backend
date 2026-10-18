@@ -32,7 +32,36 @@ class Command(BaseCommand):
         digest_action = "Created" if digest_created else "Updated"
         self.stdout.write(
             self.style.SUCCESS(
-                f"{digest_action} PeriodicTask '{digest_task.name}' -> {digest_task.task} (hourly at :00 {tz}, enabled={digest_task.enabled})"
+                f"{digest_action} PeriodicTask '{digest_task.name}' -> "
+                f"{digest_task.task} (hourly at :00 {tz}, "
+                f"enabled={digest_task.enabled})"
+            )
+        )
+
+        # Remind shops of unanswered buyer inquiries (24h-7d): hourly at minute 30
+        reminder_crontab, _ = CrontabSchedule.objects.get_or_create(
+            minute="30",
+            hour="*",
+            day_of_week="*",
+            day_of_month="*",
+            month_of_year="*",
+            timezone=tz,
+        )
+        reminder_task, reminder_created = PeriodicTask.objects.update_or_create(
+            name="notifications-remind-unanswered-inquiries",
+            defaults={
+                "task": "inquiries.tasks.remind_unanswered_inquiries",
+                "crontab": reminder_crontab,
+                "interval": None,
+                "enabled": True,
+            },
+        )
+        reminder_action = "Created" if reminder_created else "Updated"
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"{reminder_action} PeriodicTask '{reminder_task.name}' -> "
+                f"{reminder_task.task} (hourly at :30 {tz}, "
+                f"enabled={reminder_task.enabled})"
             )
         )
 
@@ -57,6 +86,7 @@ class Command(BaseCommand):
         purge_action = "Created" if purge_created else "Updated"
         self.stdout.write(
             self.style.SUCCESS(
-                f"{purge_action} PeriodicTask '{purge_task.name}' -> {purge_task.task} (04:00 {tz}, enabled={purge_task.enabled})"
+                f"{purge_action} PeriodicTask '{purge_task.name}' -> "
+                f"{purge_task.task} (04:00 {tz}, enabled={purge_task.enabled})"
             )
         )

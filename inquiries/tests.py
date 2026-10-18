@@ -1,19 +1,23 @@
+from datetime import timedelta
 from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
+from bot.models import OutboundMessage
 from catalog.models import Category, Product, ProductStatus
 from inquiries import selectors
-from inquiries.models import Inquiry, InquiryMessage
+from inquiries.models import Inquiry, InquiryMessage, SenderRole
 from inquiries.services import (
-    NEW_MESSAGE,
     close_inquiry,
     mark_read,
+    remind_unanswered_inquiries,
     send_message,
     start_inquiry,
 )
+from notifications.models import Notification
 from shops.models import Shop
 from users.models import User
 
@@ -49,14 +53,12 @@ class InquiryTestCase(TestCase):
         )
 
     def _start(self, buyer=None, shop=None, body="Is this available?", **kwargs):
-        with self.captureOnCommitCallbacks(execute=True):
-            return start_inquiry(
-                buyer or self.buyer, shop or self.shop, body, WEB, **kwargs
-            )
+        return start_inquiry(
+            buyer or self.buyer, shop or self.shop, body, WEB, **kwargs
+        )
 
     def _send(self, user, inquiry_id, body="Hello", sent_via=WEB):
-        with self.captureOnCommitCallbacks(execute=True):
-            return send_message(user, inquiry_id, body, sent_via)
+        return send_message(user, inquiry_id, body, sent_via)
 
 
 class StartInquiryTests(InquiryTestCase):
@@ -66,17 +68,43 @@ class StartInquiryTests(InquiryTestCase):
         inquiry.refresh_from_db()
         message = inquiry.messages.get()
         self.assertEqual(message.sender_role, InquiryMessage.SenderRole.BUYER)
+        self.assertEqual(inquiry.last_sender_role, SenderRole.BUYER)
         self.assertEqual(message.sent_via, WEB)
         self.assertEqual(inquiry.product, self.product)
         self.assertEqual(inquiry.status, Inquiry.Status.OPEN)
         self.assertEqual(inquiry.shop_unread, 1)
         self.assertEqual(inquiry.buyer_unread, 0)
 
-    def test_notifies_the_shop(self):
-        inquiry = self._start()
+    def test_notifies_the_shop_owner(self):
+        inquiry = self._start(product=self.product, body="Interested!")
 
+        message = inquiry.messages.get()
         self.notify.assert_called_once_with(
-            self.shop, NEW_MESSAGE, inquiry=inquiry, message=inquiry.messages.get()
+            self.owner,
+            "inquiry_message",
+            {
+                "message_id": message.pk,
+                "inquiry_id": inquiry.pk,
+                "shop_id": self.shop.pk,
+                "product_name": "Phone A",
+                "body": "Interested!",
+            },
+        )
+
+    def test_notifies_the_shop_owner_without_product(self):
+        inquiry = self._start(body="General inquiry")
+
+        message = inquiry.messages.get()
+        self.notify.assert_called_once_with(
+            self.owner,
+            "inquiry_message",
+            {
+                "message_id": message.pk,
+                "inquiry_id": inquiry.pk,
+                "shop_id": self.shop.pk,
+                "product_name": "",
+                "body": "General inquiry",
+            },
         )
 
     def test_writing_again_continues_the_open_conversation(self):
@@ -174,21 +202,33 @@ class SendMessageTests(InquiryTestCase):
 
         self.inquiry.refresh_from_db()
         self.assertEqual(message.sender_role, InquiryMessage.SenderRole.SHOP)
+        self.assertEqual(self.inquiry.last_sender_role, SenderRole.SHOP)
         self.assertEqual(message.sent_via, TELEGRAM)
         self.assertEqual(self.inquiry.buyer_unread, 1)
         self.assertEqual(self.inquiry.shop_unread, 1)
         self.notify.assert_called_once_with(
-            self.buyer, NEW_MESSAGE, inquiry=mock.ANY, message=message
+            self.buyer,
+            "inquiry_reply",
+            {"message_id": message.pk, "inquiry_id": self.inquiry.pk},
         )
 
     def test_buyer_follow_up_notifies_the_shop(self):
-        message = self._send(self.buyer, self.inquiry.pk)
+        message = self._send(self.buyer, self.inquiry.pk, "Still there?")
 
         self.inquiry.refresh_from_db()
         self.assertEqual(message.sender_role, InquiryMessage.SenderRole.BUYER)
+        self.assertEqual(self.inquiry.last_sender_role, SenderRole.BUYER)
         self.assertEqual(self.inquiry.shop_unread, 2)
         self.notify.assert_called_once_with(
-            self.shop, NEW_MESSAGE, inquiry=mock.ANY, message=message
+            self.owner,
+            "inquiry_message",
+            {
+                "message_id": message.pk,
+                "inquiry_id": self.inquiry.pk,
+                "shop_id": self.shop.pk,
+                "product_name": "Phone A",
+                "body": "Still there?",
+            },
         )
 
     def test_updates_last_message_at(self):
@@ -221,18 +261,6 @@ class SendMessageTests(InquiryTestCase):
         self.inquiry.refresh_from_db()
         self.assertEqual(self.inquiry.shop_unread, 1)
         self.assertEqual(self.inquiry.messages.count(), 1)
-        self.notify.assert_not_called()
-
-    def test_no_notification_if_the_transaction_rolls_back(self):
-        with self.captureOnCommitCallbacks(execute=True) as callbacks:
-            try:
-                with transaction.atomic():
-                    send_message(self.buyer, self.inquiry.pk, "Hello", WEB)
-                    raise RuntimeError
-            except RuntimeError:
-                pass
-
-        self.assertEqual(callbacks, [])
         self.notify.assert_not_called()
 
 
@@ -389,3 +417,224 @@ class IsolationTests(InquiryTestCase):
         self.assertEqual(message.sender_role, InquiryMessage.SenderRole.BUYER)
         with self.assertRaises(Inquiry.DoesNotExist):
             selectors.get_inquiry_for_shop(self.shop, inquiry.pk)
+
+
+class RealNotificationEndToEndTests(TestCase):
+    def setUp(self):
+        self.buyer = User.objects.create_user(username="buyer_e2e", password="pass")
+        self.owner = User.objects.create_user(username="owner_e2e", password="pass")
+        self.shop = Shop.objects.create(
+            name="E2E Shop",
+            owner=self.owner,
+            telegram_chat_id="998877",
+        )
+        self.category = Category.objects.create(name="Phones", slug="phones-e2e")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Acme",
+            name="Phone E2E",
+            price="1500.00",
+        )
+
+    def test_buyer_message_to_shop_with_telegram_chat_id_creates_notification_and_outbox(
+        self,
+    ):
+        inquiry = start_inquiry(
+            self.buyer,
+            self.shop,
+            "Is Phone E2E in stock?",
+            WEB,
+            product=self.product,
+        )
+
+        notif = Notification.objects.get(recipient=self.owner, kind="inquiry_message")
+        self.assertEqual(notif.payload["product_name"], "Phone E2E")
+        self.assertEqual(notif.payload["body"], "Is Phone E2E in stock?")
+        self.assertEqual(notif.payload["inquiry_id"], inquiry.pk)
+
+        outbox = OutboundMessage.objects.get(chat_id="998877")
+        self.assertTrue(outbox.send_silently_at_night)
+        self.assertEqual(outbox.kind, "notify:inquiry_message")
+        self.assertIn("Phone E2E", outbox.payload["text"])
+        self.assertIn("Is Phone E2E in stock?", outbox.payload["text"])
+
+    def test_no_notification_if_the_transaction_rolls_back(self):
+        # Real notify, not a mock: the point is that the notification and its
+        # Telegram outbox row share the message's transaction.
+        inquiry = start_inquiry(
+            self.buyer, self.shop, "Hello", WEB, product=self.product
+        )
+        notifications_before = Notification.objects.count()
+        outbox_before = OutboundMessage.objects.count()
+
+        with self.assertRaises(RuntimeError), transaction.atomic():
+            send_message(self.buyer, inquiry.pk, "Still there?", WEB)
+            raise RuntimeError("simulated error")
+
+        self.assertEqual(Notification.objects.count(), notifications_before)
+        self.assertEqual(OutboundMessage.objects.count(), outbox_before)
+
+    def test_shop_reply_creates_inquiry_reply_notification_for_buyer(self):
+        inquiry = start_inquiry(
+            self.buyer,
+            self.shop,
+            "Hello",
+            WEB,
+            product=self.product,
+        )
+        Notification.objects.all().delete()
+
+        reply = send_message(self.owner, inquiry.pk, "Yes, in stock!", WEB)
+
+        notif = Notification.objects.get(recipient=self.buyer, kind="inquiry_reply")
+        self.assertEqual(notif.payload["inquiry_id"], inquiry.pk)
+        self.assertEqual(notif.payload["message_id"], reply.pk)
+
+
+class RemindUnansweredInquiriesTests(TestCase):
+    def setUp(self):
+        self.buyer = User.objects.create_user(username="buyer_rem", password="pass")
+        self.owner = User.objects.create_user(username="owner_rem", password="pass")
+        self.shop = Shop.objects.create(
+            name="Reminder Shop",
+            owner=self.owner,
+            telegram_chat_id="554433",
+        )
+        self.category = Category.objects.create(name="Shoes", slug="shoes-rem")
+        self.product = Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Acme",
+            name="Running Shoes",
+            price="2000.00",
+        )
+        self.now = timezone.now()
+
+    def _create_inquiry(self, **kwargs):
+        defaults = {
+            "buyer": self.buyer,
+            "shop": self.shop,
+            "product": self.product,
+            "status": Inquiry.Status.OPEN,
+            "last_sender_role": SenderRole.BUYER,
+            "last_message_at": self.now - timedelta(hours=25),
+        }
+        defaults.update(kwargs)
+        return Inquiry.objects.create(**defaults)
+
+    def test_buyer_wrote_25h_ago_creates_one_reminder_and_returns_one(self):
+        inquiry = self._create_inquiry()
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 1)
+        notif = Notification.objects.get(
+            recipient=self.owner, kind="inquiry_unanswered"
+        )
+        self.assertEqual(notif.payload["inquiry_id"], inquiry.pk)
+        self.assertEqual(notif.payload["shop_id"], self.shop.pk)
+        self.assertEqual(notif.payload["product_name"], "Running Shoes")
+        self.assertEqual(notif.dedupe_key, f"inquiry_unanswered:{inquiry.pk}")
+
+    def test_running_again_creates_no_second_reminder_and_returns_zero(self):
+        self._create_inquiry()
+        self.assertEqual(remind_unanswered_inquiries(now=self.now), 1)
+
+        # Second run immediately
+        self.assertEqual(remind_unanswered_inquiries(now=self.now), 0)
+        self.assertEqual(
+            Notification.objects.filter(kind="inquiry_unanswered").count(), 1
+        )
+
+    def test_shop_wrote_last_creates_no_reminder(self):
+        self._create_inquiry(last_sender_role=SenderRole.SHOP)
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 0)
+        self.assertFalse(
+            Notification.objects.filter(kind="inquiry_unanswered").exists()
+        )
+
+    def test_buyer_wrote_2h_ago_creates_no_reminder(self):
+        self._create_inquiry(last_message_at=self.now - timedelta(hours=2))
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 0)
+        self.assertFalse(
+            Notification.objects.filter(kind="inquiry_unanswered").exists()
+        )
+
+    def test_buyer_wrote_8_days_ago_creates_no_reminder(self):
+        self._create_inquiry(last_message_at=self.now - timedelta(days=8))
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 0)
+        self.assertFalse(
+            Notification.objects.filter(kind="inquiry_unanswered").exists()
+        )
+
+    def test_closed_inquiry_creates_no_reminder(self):
+        self._create_inquiry(status=Inquiry.Status.CLOSED)
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 0)
+        self.assertFalse(
+            Notification.objects.filter(kind="inquiry_unanswered").exists()
+        )
+
+    def test_blank_last_sender_role_creates_no_reminder(self):
+        self._create_inquiry(last_sender_role="")
+
+        created_count = remind_unanswered_inquiries(now=self.now)
+
+        self.assertEqual(created_count, 0)
+        self.assertFalse(
+            Notification.objects.filter(kind="inquiry_unanswered").exists()
+        )
+
+    def test_query_count_is_bounded_and_does_not_grow_with_candidates(self):
+        # Create 3 distinct inquiries that are already reminded
+        inquiries = []
+        for i in range(3):
+            buyer = User.objects.create_user(username=f"buyer_qc_{i}", password="pass")
+            inq = Inquiry.objects.create(
+                buyer=buyer,
+                shop=self.shop,
+                status=Inquiry.Status.OPEN,
+                last_sender_role=SenderRole.BUYER,
+                last_message_at=self.now - timedelta(hours=25),
+            )
+            Notification.objects.create(
+                recipient=self.owner,
+                kind="inquiry_unanswered",
+                payload={"inquiry_id": inq.pk, "shop_id": self.shop.pk},
+                link=f"/dashboard/inquiries/{inq.pk}",
+                dedupe_key=f"inquiry_unanswered:{inq.pk}",
+            )
+            inquiries.append(inq)
+
+        # When checking already-reminded candidates, remind_unanswered_inquiries
+        # issues exactly 2 queries (1 to fetch candidates with select_related,
+        # 1 bulk query to fetch existing dedupe keys). It does NOT query per candidate.
+        with self.assertNumQueries(2):
+            result = remind_unanswered_inquiries(now=self.now)
+            self.assertEqual(result, 0)
+
+        # Now delete 2 of the inquiries and verify the query count with 1 candidate
+        # is still exactly 2 queries (constant bound).
+        Inquiry.objects.filter(pk__in=[inquiries[1].pk, inquiries[2].pk]).delete()
+        Notification.objects.filter(
+            dedupe_key__in=[
+                f"inquiry_unanswered:{inquiries[1].pk}",
+                f"inquiry_unanswered:{inquiries[2].pk}",
+            ]
+        ).delete()
+
+        with self.assertNumQueries(2):
+            result = remind_unanswered_inquiries(now=self.now)
+            self.assertEqual(result, 0)

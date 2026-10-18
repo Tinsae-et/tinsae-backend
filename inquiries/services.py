@@ -7,19 +7,21 @@ selectors -- so a foreign ID fails exactly like a missing one, and the caller's
 role (buyer or shop) is derived from the row, never trusted from the caller.
 """
 
-from functools import partial
+from datetime import timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from catalog.models import ProductStatus
-from core.notify import notify
+from notifications.models import Notification
+from notifications.services import notify
 
-from .models import MAX_BODY_LENGTH, Inquiry, InquiryMessage
+from .models import MAX_BODY_LENGTH, Inquiry, InquiryMessage, SenderRole
 from .selectors import inquiries_for_participant, role_of
 
-NEW_MESSAGE = "inquiry_message"
+UNANSWERED_AFTER = timedelta(hours=24)
+UNANSWERED_LOOKBACK = timedelta(days=7)
 
 
 def _validate_message(body, sent_via):
@@ -42,7 +44,7 @@ def _lock_for(user, inquiry_id):
     """
     return (
         inquiries_for_participant(user)
-        .select_related("shop")
+        .select_related("shop__owner", "buyer", "product")
         .select_for_update(of=("self",))
         .get(pk=inquiry_id)
     )
@@ -65,7 +67,10 @@ def _open_or_reopen(buyer, shop, product):
     conversation = _same_conversation(buyer, shop, product)
 
     inquiry = (
-        conversation.filter(status=Inquiry.Status.OPEN).select_for_update().first()
+        conversation.filter(status=Inquiry.Status.OPEN)
+        .select_related("shop__owner", "buyer", "product")
+        .select_for_update(of=("self",))
+        .first()
     )
     if inquiry is not None:
         return inquiry
@@ -75,7 +80,8 @@ def _open_or_reopen(buyer, shop, product):
             inquiry = (
                 conversation.filter(status=Inquiry.Status.CLOSED)
                 .order_by("-last_message_at")
-                .select_for_update()
+                .select_related("shop__owner", "buyer", "product")
+                .select_for_update(of=("self",))
                 .first()
             )
             if inquiry is not None:
@@ -84,7 +90,12 @@ def _open_or_reopen(buyer, shop, product):
                 return inquiry
             return Inquiry.objects.create(buyer=buyer, shop=shop, product=product)
     except IntegrityError:
-        return conversation.filter(status=Inquiry.Status.OPEN).select_for_update().get()
+        return (
+            conversation.filter(status=Inquiry.Status.OPEN)
+            .select_related("shop__owner", "buyer", "product")
+            .select_for_update(of=("self",))
+            .get()
+        )
 
 
 def _append_message(inquiry, sender_role, body, sent_via):
@@ -107,16 +118,16 @@ def _append_message(inquiry, sender_role, body, sent_via):
         inquiry.status = Inquiry.Status.OPEN
 
     inquiry.last_message_at = timezone.now()
-    if sender_role == InquiryMessage.SenderRole.BUYER:
+    inquiry.last_sender_role = sender_role
+    if sender_role == SenderRole.BUYER:
         inquiry.shop_unread += 1
-        recipient = inquiry.shop
     else:
         inquiry.buyer_unread += 1
-        recipient = inquiry.buyer
     inquiry.save(
         update_fields=[
             "status",
             "last_message_at",
+            "last_sender_role",
             "buyer_unread",
             "shop_unread",
             "updated_at",
@@ -125,10 +136,26 @@ def _append_message(inquiry, sender_role, body, sent_via):
     message = InquiryMessage.objects.create(
         inquiry=inquiry, sender_role=sender_role, body=body, sent_via=sent_via
     )
-    # After commit, so a rolled-back message never produces a notification.
-    transaction.on_commit(
-        partial(notify, recipient, NEW_MESSAGE, inquiry=inquiry, message=message)
-    )
+    # Inside the transaction so the notification and Telegram outbox row
+    # commit or roll back with the message (transactional outbox pattern).
+    if sender_role == SenderRole.BUYER:
+        notify(
+            inquiry.shop.owner,
+            "inquiry_message",
+            {
+                "message_id": message.pk,
+                "inquiry_id": inquiry.pk,
+                "shop_id": inquiry.shop_id,
+                "product_name": inquiry.product.name if inquiry.product_id else "",
+                "body": body,
+            },
+        )
+    else:
+        notify(
+            inquiry.buyer,
+            "inquiry_reply",
+            {"message_id": message.pk, "inquiry_id": inquiry.pk},
+        )
     return message
 
 
@@ -150,7 +177,7 @@ def start_inquiry(buyer, shop, body, sent_via, product=None):
             raise ValidationError({"product": "This product is not available."})
 
     inquiry = _open_or_reopen(buyer, shop, product)
-    _append_message(inquiry, InquiryMessage.SenderRole.BUYER, body, sent_via)
+    _append_message(inquiry, SenderRole.BUYER, body, sent_via)
     return inquiry
 
 
@@ -166,7 +193,7 @@ def send_message(user, inquiry_id, body, sent_via):
 def mark_read(user, inquiry_id):
     """Clear `user`'s side of the unread counter."""
     inquiry = _lock_for(user, inquiry_id)
-    if role_of(user, inquiry) == InquiryMessage.SenderRole.BUYER:
+    if role_of(user, inquiry) == SenderRole.BUYER:
         inquiry.buyer_unread = 0
         inquiry.save(update_fields=["buyer_unread", "updated_at"])
     else:
@@ -183,3 +210,55 @@ def close_inquiry(user, inquiry_id):
         inquiry.status = Inquiry.Status.CLOSED
         inquiry.save(update_fields=["status", "updated_at"])
     return inquiry
+
+
+def remind_unanswered_inquiries(now=None) -> int:
+    """Nudge shops about conversations where the buyer is still waiting.
+
+    Open inquiries whose last message is the buyer's and is 24h–7d old.
+    The notification's dedupe key makes this once per conversation; the 7-day
+    lookback keeps each run bounded and stops the first deploy reminding shops
+    about months-old threads. Returns how many reminders were created.
+    """
+    now = now or timezone.now()
+    candidates = list(
+        Inquiry.objects.filter(
+            status=Inquiry.Status.OPEN,
+            last_sender_role=SenderRole.BUYER,
+            last_message_at__lte=now - UNANSWERED_AFTER,
+            last_message_at__gte=now - UNANSWERED_LOOKBACK,
+        ).select_related("shop__owner", "product")
+    )
+    if not candidates:
+        return 0
+
+    # Skip already-reminded inquiries in Python to avoid an INSERT + rollback
+    # per candidate every hour. The notification dedupe key still guards races.
+    candidate_keys = [f"inquiry_unanswered:{i.pk}" for i in candidates]
+    reminded_keys = set(
+        Notification.objects.filter(
+            kind="inquiry_unanswered",
+            dedupe_key__in=candidate_keys,
+        ).values_list("dedupe_key", flat=True)
+    )
+
+    reminders_created = 0
+    for inquiry in candidates:
+        if f"inquiry_unanswered:{inquiry.pk}" in reminded_keys:
+            continue
+        with transaction.atomic():
+            notification = notify(
+                inquiry.shop.owner,
+                "inquiry_unanswered",
+                {
+                    "inquiry_id": inquiry.pk,
+                    "shop_id": inquiry.shop_id,
+                    "product_name": (
+                        inquiry.product.name if inquiry.product_id else ""
+                    ),
+                },
+            )
+            if notification is not None:
+                reminders_created += 1
+
+    return reminders_created

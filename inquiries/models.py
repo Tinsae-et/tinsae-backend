@@ -8,6 +8,11 @@ from core.models import BaseModel
 MAX_BODY_LENGTH = 1000
 
 
+class SenderRole(models.TextChoices):
+    BUYER = "buyer", "Buyer"
+    SHOP = "shop", "Shop"
+
+
 class Inquiry(BaseModel):
     """One conversation between a buyer and a shop, optionally about a product.
 
@@ -42,6 +47,15 @@ class Inquiry(BaseModel):
         default=Status.OPEN,
     )
     last_message_at = models.DateTimeField(default=timezone.now)
+    # Blank means "no message recorded since this field was added"; the reminder
+    # job skips those, which is fine because of its 7-day lookback. No backfill.
+    last_sender_role = models.CharField(
+        max_length=20,
+        choices=SenderRole.choices,
+        blank=True,
+        default="",
+        db_default="",
+    )
     buyer_unread = models.PositiveIntegerField(default=0)
     shop_unread = models.PositiveIntegerField(default=0)
 
@@ -53,6 +67,11 @@ class Inquiry(BaseModel):
             ),
             models.Index(
                 fields=["shop", "-last_message_at"], name="inquiry_shop_inbox_idx"
+            ),
+            models.Index(
+                fields=["last_message_at"],
+                condition=Q(status="open", last_sender_role="buyer"),
+                name="inquiry_unanswered_idx",
             ),
         ]
         constraints = [
@@ -78,9 +97,7 @@ class Inquiry(BaseModel):
 
 
 class InquiryMessage(BaseModel):
-    class SenderRole(models.TextChoices):
-        BUYER = "buyer", "Buyer"
-        SHOP = "shop", "Shop"
+    SenderRole = SenderRole
 
     class SentVia(models.TextChoices):
         WEB = "web", "Web"
