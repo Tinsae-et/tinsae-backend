@@ -411,6 +411,22 @@ To re-register the client command menu (the ☰ button):
 docker compose exec backend python manage.py sync_bot_commands
 ```
 
+### Notification schedules (Celery Beat)
+
+Periodic tasks for the notification service (email digests and 90-day retention purge):
+
+```bash
+docker compose exec backend python manage.py setup_notification_schedules
+```
+
+That registers, all in `Africa/Addis_Ababa`:
+
+| Task | When |
+| --- | --- |
+| `notifications.tasks.send_email_digests` | hourly at :00 |
+| `inquiries.tasks.remind_unanswered_inquiries` | hourly at :30 |
+| `notifications.tasks.purge_old_notifications` | 04:00 daily |
+
 ### Telegram bot processes
 
 Three long-running services, all started by `docker compose up`:
@@ -499,6 +515,16 @@ docker compose exec backend python manage.py setup_bot_schedules
 ```
 
 See *Bot schedules (Celery Beat)* above for the full table.
+
+#### Notification periodic schedules
+
+The notification service schedules (email digests, 90-day retention purge) are registered by:
+
+```bash
+docker compose exec backend python manage.py setup_notification_schedules
+```
+
+See *Notification schedules (Celery Beat)* above for the full table.
 
 #### Verifying Celery locally
 

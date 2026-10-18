@@ -232,6 +232,9 @@ class OutboundMessage(BaseModel):
     last_error = models.TextField(blank=True)
     telegram_message_id = models.CharField(max_length=100, blank=True, null=True)
     dedupe_key = models.CharField(max_length=255, unique=True)
+    # If True, this message is sent immediately even during quiet hours, but
+    # silently (disable_notification=True on Telegram). Used for buyer inquiries.
+    send_silently_at_night = models.BooleanField(default=False, db_default=False)
 
     class Meta(BaseModel.Meta):
         ordering = ["-created_at"]

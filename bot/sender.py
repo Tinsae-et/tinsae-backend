@@ -3,7 +3,8 @@
 Employs a claim-then-send pattern:
 1. Reclaim any rows stuck in 'sending' due to worker crashes.
 2. In a short transaction, claim up to 25 'queued' rows using select_for_update(skip_locked=True)
-   and mark them 'sending'.
+   and mark them 'sending'. During quiet hours, only rows flagged with
+   send_silently_at_night=True are claimed, and they are sent silently.
 3. Outside the transaction, send each row, respecting rate limits and handling
    Telegram error classifications.
 """
@@ -98,11 +99,17 @@ def drain_outbox(
 ) -> int:
     """Drain due queued outbound messages and send them via Telegram.
 
+    During quiet hours (default 21:00-07:00 Africa/Addis_Ababa), only messages
+    with send_silently_at_night=True are drained, and they are sent silently
+    (disable_notification=True). All other messages remain queued until 07:00.
+
     Returns the number of messages processed in this batch.
     """
-    if respect_quiet_hours and is_quiet_hours():
-        logger.info("Quiet hours active; outbox draining deferred.")
-        return 0
+    quiet = respect_quiet_hours and is_quiet_hours()
+    if quiet:
+        logger.info(
+            "Quiet hours active; draining only messages with send_silently_at_night=True."
+        )
 
     now = timezone.now()
 
@@ -119,11 +126,15 @@ def drain_outbox(
 
     # 2. Claim in a short atomic transaction
     with transaction.atomic():
-        messages = list(
-            OutboundMessage.objects.select_for_update(skip_locked=True)
-            .filter(status="queued", next_attempt_at__lte=now)
-            .order_by("next_attempt_at")[:batch_size]
+        queued = OutboundMessage.objects.select_for_update(skip_locked=True).filter(
+            status="queued", next_attempt_at__lte=now
         )
+        if quiet:
+            # Only messages a person is waiting on go out at night, and silently.
+            # Everything else stays queued and drains on the first run after 07:00.
+            queued = queued.filter(send_silently_at_night=True)
+
+        messages = list(queued.order_by("next_attempt_at")[:batch_size])
         if not messages:
             return 0
 
@@ -179,15 +190,20 @@ def drain_outbox(
         try:
             if mock_send:
                 logger.info(
-                    "[Mock Telegram] Send message to chat %s: %r", chat_id, text
+                    "[Mock Telegram] Send message %s to chat %s",
+                    message.pk,
+                    chat_id,
                 )
                 result = {"message_id": 12345}
             else:
-                result = telegram_api.send_message(
-                    chat_id=chat_id,
-                    text=text,
-                    reply_markup=reply_markup,
-                )
+                send_kwargs = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "reply_markup": reply_markup,
+                }
+                if quiet:
+                    send_kwargs["disable_notification"] = True
+                result = telegram_api.send_message(**send_kwargs)
             message.status = "sent"
 
             message.attempts += 1

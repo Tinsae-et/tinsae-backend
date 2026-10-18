@@ -20,6 +20,18 @@ from .services import prune
 User = get_user_model()
 
 
+def pin_daytime(testcase):
+    """Make drain_outbox see daytime for the rest of this test.
+
+    For tests about sending, retries and errors -- not quiet hours. Without it
+    they read the real clock and fail whenever the suite runs between 21:00 and
+    07:00 EAT. QuietHoursTests pin their own times and must not use this.
+    """
+    patcher = patch("bot.sender.is_quiet_hours", return_value=False)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+
+
 class OutboxEnqueueTests(TestCase):
     def test_enqueue_creates_queued_message(self):
         msg = enqueue(
@@ -105,12 +117,31 @@ class TransportErrorClassificationTests(TestCase):
         self.assertNotIsInstance(err, telegram_api.TelegramBadRequest)
 
 
+class TelegramApiSendMessageTests(TestCase):
+    @patch("bot.telegram_api._call")
+    def test_send_message_omits_disable_notification_when_false(self, mock_call):
+        telegram_api.send_message("123", "Hello", disable_notification=False)
+        mock_call.assert_called_once_with(
+            "sendMessage",
+            {"chat_id": "123", "text": "Hello"},
+        )
+
+    @patch("bot.telegram_api._call")
+    def test_send_message_includes_disable_notification_when_true(self, mock_call):
+        telegram_api.send_message("123", "Hello", disable_notification=True)
+        mock_call.assert_called_once_with(
+            "sendMessage",
+            {"chat_id": "123", "text": "Hello", "disable_notification": True},
+        )
+
+
 @override_settings(
     TELEGRAM_BOT_TOKEN="test-token",
     TELEGRAM_MOCK_SEND=False,
 )
 class SenderDrainTests(TestCase):
     def setUp(self):
+        pin_daytime(self)
         self.user = User.objects.create_user(
             username="merchant", password="password123"
         )
@@ -271,6 +302,7 @@ class SenderDrainTests(TestCase):
 )
 class ConcurrentDrainTests(TestCase):
     def setUp(self):
+        pin_daytime(self)
         self.user = User.objects.create_user(
             username="merchant_concurrent", password="password123"
         )
@@ -345,6 +377,9 @@ class OutboundMessageAdminTests(TestCase):
 @override_settings(TELEGRAM_BOT_TOKEN="", TELEGRAM_MOCK_SEND=False)
 class UnconfiguredSenderTests(TestCase):
     """A missing token must never look like a successful send."""
+
+    def setUp(self):
+        pin_daytime(self)
 
     def test_unconfigured_token_marks_dead_not_sent(self):
         msg = enqueue("555000", "prompt", {"text": "Hello"}, "no-token")
@@ -471,6 +506,83 @@ class QuietHoursTests(TestCase):
         self.assertEqual(outcome, "applied")
         req.refresh_from_db()
         self.assertEqual(req.status, "confirmed")
+
+    def test_drain_outbox_quiet_hours_sends_silent_and_holds_normal(self):
+        msg_silent = enqueue(
+            "888111",
+            "notify:inquiry_message",
+            {"text": "Silent text"},
+            "qh-silent-1",
+            send_silently_at_night=True,
+        )
+        msg_normal = enqueue(
+            "888111",
+            "prompt",
+            {"text": "Normal text"},
+            "qh-normal-1",
+            send_silently_at_night=False,
+        )
+        dt_night = datetime(2026, 9, 30, 22, 0, tzinfo=self.tz)
+        OutboundMessage.objects.filter(pk__in=[msg_silent.pk, msg_normal.pk]).update(
+            next_attempt_at=dt_night - timedelta(minutes=1)
+        )
+
+        with (
+            patch("bot.sender.timezone.now", return_value=dt_night),
+            patch(
+                "bot.telegram_api.send_message", return_value={"message_id": 777}
+            ) as mock_send,
+        ):
+            count = drain_outbox(rate_limit=False, respect_quiet_hours=True)
+
+        self.assertEqual(count, 1)
+        mock_send.assert_called_once_with(
+            chat_id="888111",
+            text="Silent text",
+            reply_markup=None,
+            disable_notification=True,
+        )
+        msg_silent.refresh_from_db()
+        msg_normal.refresh_from_db()
+        self.assertEqual(msg_silent.status, "sent")
+        self.assertEqual(msg_normal.status, "queued")
+
+    def test_drain_outbox_daytime_sends_both_with_disable_notification_false(self):
+        msg_silent = enqueue(
+            "888111",
+            "notify:inquiry_message",
+            {"text": "Silent text"},
+            "qh-silent-2",
+            send_silently_at_night=True,
+        )
+        msg_normal = enqueue(
+            "888111",
+            "prompt",
+            {"text": "Normal text"},
+            "qh-normal-2",
+            send_silently_at_night=False,
+        )
+        dt_morning = datetime(2026, 9, 30, 8, 0, tzinfo=self.tz)
+        OutboundMessage.objects.filter(pk__in=[msg_silent.pk, msg_normal.pk]).update(
+            next_attempt_at=dt_morning - timedelta(minutes=1)
+        )
+
+        with (
+            patch("bot.sender.timezone.now", return_value=dt_morning),
+            patch(
+                "bot.telegram_api.send_message", return_value={"message_id": 888}
+            ) as mock_send,
+        ):
+            count = drain_outbox(rate_limit=False, respect_quiet_hours=True)
+
+        self.assertEqual(count, 2)
+        msg_silent.refresh_from_db()
+        msg_normal.refresh_from_db()
+        self.assertEqual(msg_silent.status, "sent")
+        self.assertEqual(msg_normal.status, "sent")
+
+        for call in mock_send.call_args_list:
+            self.assertFalse(call.kwargs.get("disable_notification", False))
 
 
 class PruneTests(TestCase):

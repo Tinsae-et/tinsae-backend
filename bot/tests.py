@@ -52,6 +52,7 @@ from bot.services import (
     shop_status,
     start_review,
 )
+from bot.tests_outbox import pin_daytime
 from catalog.models import Category, ConfirmationStatus, Product, ProductStatus
 from catalog.services import apply_confirmation
 from shops.models import Shop
@@ -126,6 +127,12 @@ class BotTestCase(TestCase):
 
 
 class SendPromptTests(BotTestCase):
+    def setUp(self):
+        super().setUp()
+        # These tests drain the outbox to inspect the sent prompt; pin daytime
+        # so they don't fail when the suite runs during quiet hours.
+        pin_daytime(self)
+
     def test_prompt_enqueues_outbox_message_transactionally(self):
         request = send_confirmation_prompt(self.stale_product)
         self.assertIsNotNone(request)

@@ -19,11 +19,12 @@ class InquiryAdmin(admin.ModelAdmin):
         "shop",
         "product",
         "status",
+        "last_sender_role",
         "last_message_at",
         "buyer_unread",
         "shop_unread",
     ]
-    list_filter = ["status"]
+    list_filter = ["status", "last_sender_role"]
     search_fields = ["buyer__username", "shop__name", "product__name"]
     raw_id_fields = ["buyer", "shop", "product"]
     readonly_fields = ["created_at", "updated_at"]
