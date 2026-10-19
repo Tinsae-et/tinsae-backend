@@ -4,12 +4,20 @@ from unittest import mock
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.urls import reverse
 from django.utils import timezone
+from rest_framework.test import APIClient
 
 from bot.models import OutboundMessage
 from catalog.models import Category, Product, ProductStatus
 from inquiries import selectors
 from inquiries.models import Inquiry, InquiryMessage, SenderRole
+from inquiries.serializers import (
+    BuyerInquiryRequestSerializer,
+    InquiryMessageSerializer,
+    InquirySerializer,
+    ShopInquiryReplySerializer,
+)
 from inquiries.services import (
     close_inquiry,
     mark_read,
@@ -647,3 +655,237 @@ class RemindUnansweredInquiriesTests(TestCase):
         with self.assertNumQueries(2):
             result = remind_unanswered_inquiries(now=self.now)
             self.assertEqual(result, 0)
+
+
+class InquirySerializerTests(InquiryTestCase):
+    def test_inquiry_serializer_returns_nested_shop_product_and_messages(self):
+        inquiry = self._start(product=self.product, body="Hello")
+
+        data = InquirySerializer(instance=inquiry).data
+
+        self.assertEqual(data["shop"]["id"], self.shop.pk)
+        self.assertEqual(data["product"]["id"], self.product.pk)
+        self.assertEqual(data["messages"][0]["body"], "Hello")
+        self.assertEqual(data["messages"][0]["sender_role"], SenderRole.BUYER)
+
+    def test_inquiry_serializer_returns_null_for_missing_product(self):
+        inquiry = self._start()
+
+        self.assertIsNone(InquirySerializer(instance=inquiry).data["product"])
+
+    def test_inquiry_response_fields_are_read_only(self):
+        serializer = InquirySerializer(
+            data={
+                "buyer": self.other_buyer.pk,
+                "shop": self.shop.pk,
+                "status": Inquiry.Status.CLOSED,
+                "buyer_unread": 900,
+                "shop_unread": 900,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data, {})
+
+    def test_message_serializer_includes_message_fields(self):
+        inquiry = self._start(body="Question")
+        message = inquiry.messages.get()
+
+        data = InquiryMessageSerializer(instance=message).data
+
+        self.assertEqual(data["inquiry"], inquiry.pk)
+        self.assertEqual(data["body"], "Question")
+        self.assertEqual(data["sent_via"], WEB)
+        self.assertEqual(data["sender_role"], SenderRole.BUYER)
+
+    def test_buyer_request_serializer_resolves_shop_and_optional_product(self):
+        serializer = BuyerInquiryRequestSerializer(
+            data={
+                "shop": self.shop.pk,
+                "product": self.product.pk,
+                "body": "Question",
+                "sent_via": WEB,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["shop"], self.shop)
+        self.assertEqual(serializer.validated_data["product"], self.product)
+
+    def test_buyer_request_serializer_validates_required_and_choice_fields(self):
+        serializer = BuyerInquiryRequestSerializer(
+            data={"shop": self.shop.pk, "body": "", "sent_via": "sms"}
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("body", serializer.errors)
+        self.assertIn("sent_via", serializer.errors)
+
+    def test_buyer_request_serializer_rejects_unknown_shop_and_product(self):
+        serializer = BuyerInquiryRequestSerializer(
+            data={
+                "shop": 999999,
+                "product": 999999,
+                "body": "Question",
+                "sent_via": WEB,
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("shop", serializer.errors)
+        self.assertIn("product", serializer.errors)
+
+    def test_shop_reply_serializer_resolves_buyer_and_optional_product(self):
+        serializer = ShopInquiryReplySerializer(
+            data={
+                "buyer": self.buyer.pk,
+                "product": self.product.pk,
+                "body": "Reply",
+                "sent_via": WEB,
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["buyer"], self.buyer)
+        self.assertEqual(serializer.validated_data["product"], self.product)
+
+
+class InquiryViewTests(InquiryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+
+    def test_buyer_endpoints_require_authentication(self):
+        self.assertEqual(self.client.get(reverse("buyer-list")).status_code, 401)
+        response = self.client.post(
+            reverse("buyer-list"),
+            {"shop": self.shop.pk, "body": "Question", "sent_via": WEB},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 401)
+
+    def test_buyer_create_returns_serialized_inquiry(self):
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.post(
+            reverse("buyer-list"),
+            {
+                "shop": self.shop.pk,
+                "product": self.product.pk,
+                "body": "Is this in stock?",
+                "sent_via": WEB,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["buyer"], self.buyer.pk)
+        self.assertEqual(response.data["shop"]["id"], self.shop.pk)
+        self.assertEqual(response.data["product"]["id"], self.product.pk)
+        self.assertEqual(response.data["messages"][0]["body"], "Is this in stock?")
+
+    def test_buyer_create_returns_validation_errors_for_bad_input(self):
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.post(
+            reverse("buyer-list"),
+            {"shop": self.shop.pk, "body": "Question", "sent_via": "sms"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("sent_via", response.data)
+        self.assertFalse(Inquiry.objects.exists())
+
+    def test_buyer_list_is_scoped_to_authenticated_buyer(self):
+        mine = self._start()
+        theirs = self._start(buyer=self.other_buyer)
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(reverse("buyer-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [mine.pk])
+        self.assertNotIn(theirs.pk, [row["id"] for row in response.data])
+
+    def test_buyer_retrieve_marks_only_buyer_messages_read(self):
+        inquiry = self._start()
+        Inquiry.objects.filter(pk=inquiry.pk).update(buyer_unread=2, shop_unread=3)
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(reverse("buyer-detail", args=[inquiry.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        inquiry.refresh_from_db()
+        self.assertEqual(inquiry.buyer_unread, 0)
+        self.assertEqual(inquiry.shop_unread, 3)
+
+    def test_buyer_cannot_retrieve_another_buyers_inquiry(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.other_buyer)
+
+        response = self.client.get(reverse("buyer-detail", args=[inquiry.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_buyer_can_close_their_inquiry(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.post(
+            reverse("buyer-close", args=[inquiry.pk]), format="json"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        inquiry.refresh_from_db()
+        self.assertEqual(inquiry.status, Inquiry.Status.CLOSED)
+
+    def test_buyer_unreads_returns_count(self):
+        inquiry = self._start()
+        Inquiry.objects.filter(pk=inquiry.pk).update(buyer_unread=4)
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(reverse("buyer-unreads"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"buyer_unread__sum": 4})
+
+    def test_shop_list_is_scoped_to_owned_shop(self):
+        mine = self._start()
+        theirs = self._start(shop=self.other_shop)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("shop-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [mine.pk])
+        self.assertNotIn(theirs.pk, [row["id"] for row in response.data])
+
+    def test_shop_create_returns_serialized_inquiry(self):
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.post(
+            reverse("shop-list"),
+            {
+                "buyer": self.buyer.pk,
+                "product": self.product.pk,
+                "body": "Is this in stock?",
+                "sent_via": WEB,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["buyer"], self.buyer.pk)
+        self.assertEqual(response.data["shop"]["id"], self.shop.pk)
+        self.assertEqual(response.data["product"]["id"], self.product.pk)
+
+    def test_shop_unreads_returns_count(self):
+        inquiry = self._start()
+        Inquiry.objects.filter(pk=inquiry.pk).update(shop_unread=5)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("shop-unreads"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"shop_unread__sum": 5})
