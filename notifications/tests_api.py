@@ -1,15 +1,22 @@
 """Tests for notifications API endpoints: list, unread count, mark one, mark all."""
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import TestCase
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.test import APIClient
 
+from bot.models import OutboundMessage
+from notifications.kinds import KINDS, TELEGRAM, Kind
+from notifications.management.commands.seed_notifications import SAMPLE_PAYLOADS
 from notifications.models import Notification
+from notifications.serializers import NotificationSerializer
 from notifications.views import (
     NotificationListView,
     NotificationMarkAllReadView,
@@ -42,7 +49,7 @@ class NotificationApiTestCase(TestCase):
         recipient=None,
         kind="inquiry_message",
         payload=None,
-        link="/dashboard/inquiries/1",
+        link="/shop/dashboard/inquiries/1",
         read=False,
         created_at=None,
         **kwargs,
@@ -139,22 +146,22 @@ class NotificationListViewTests(NotificationApiTestCase):
         n_msg_prod = self._create_notification(
             kind="inquiry_message",
             payload={"product_name": "Leather Shoes", "body": "Are these available?"},
-            link="/dashboard/inquiries/10",
+            link="/shop/dashboard/inquiries/10",
         )
         n_msg_bare = self._create_notification(
             kind="inquiry_message",
             payload={"body": "Hello there"},
-            link="/dashboard/inquiries/11",
+            link="/shop/dashboard/inquiries/11",
         )
         n_msg_empty = self._create_notification(
             kind="inquiry_message",
             payload={},
-            link="/dashboard/inquiries/12",
+            link="/shop/dashboard/inquiries/12",
         )
         n_msg_long = self._create_notification(
             kind="inquiry_message",
             payload={"body": "x" * 200},
-            link="/dashboard/inquiries/13",
+            link="/shop/dashboard/inquiries/13",
         )
 
         # 2. inquiry_reply (with shop, without shop, truncated body)
@@ -181,12 +188,12 @@ class NotificationListViewTests(NotificationApiTestCase):
         n_unans_prod = self._create_notification(
             kind="inquiry_unanswered",
             payload={"product_name": "Running Shoes"},
-            link="/dashboard/inquiries/30",
+            link="/shop/dashboard/inquiries/30",
         )
         n_unans_bare = self._create_notification(
             kind="inquiry_unanswered",
             payload={},
-            link="/dashboard/inquiries/31",
+            link="/shop/dashboard/inquiries/31",
         )
 
         # 4. verification_reviewed (approved vs rejected)
@@ -213,7 +220,7 @@ class NotificationListViewTests(NotificationApiTestCase):
         self.assertEqual(r["title"], "New message about Leather Shoes")
         self.assertEqual(r["body"], "Are these available?")
         self.assertEqual(
-            r["cta"], {"label": "Reply", "href": "/dashboard/inquiries/10"}
+            r["cta"], {"label": "Reply", "href": "/shop/dashboard/inquiries/10"}
         )
 
         # Check inquiry_message without product
@@ -254,7 +261,7 @@ class NotificationListViewTests(NotificationApiTestCase):
         self.assertEqual(r["title"], "A buyer is waiting for your reply")
         self.assertEqual(r["body"], "About Running Shoes")
         self.assertEqual(
-            r["cta"], {"label": "Reply", "href": "/dashboard/inquiries/30"}
+            r["cta"], {"label": "Reply", "href": "/shop/dashboard/inquiries/30"}
         )
 
         # Check inquiry_unanswered without product
@@ -362,6 +369,14 @@ class NotificationMarkReadViewTests(NotificationApiTestCase):
         foreign.refresh_from_db()
         self.assertIsNone(foreign.read_at)
 
+    def test_mark_one_unauthenticated_returns_401(self):
+        notif = self._create_notification()
+        self.client.force_authenticate(user=None)
+        response = self.client.post(f"/api/v1/notifications/{notif.pk}/read/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        notif.refresh_from_db()
+        self.assertIsNone(notif.read_at)
+
     def test_mark_one_get_returns_405(self):
         notif = self._create_notification()
         response = self.client.get(f"/api/v1/notifications/{notif.pk}/read/")
@@ -403,9 +418,156 @@ class NotificationMarkAllReadViewTests(NotificationApiTestCase):
         self.assertIsNone(other1.read_at)
         self.assertIsNone(other2.read_at)
 
+    def test_mark_all_unauthenticated_returns_401(self):
+        notif = self._create_notification()
+        self.client.force_authenticate(user=None)
+        response = self.client.post("/api/v1/notifications/read-all/")
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        notif.refresh_from_db()
+        self.assertIsNone(notif.read_at)
+
     def test_mark_all_get_returns_405(self):
         response = self.client.get("/api/v1/notifications/read-all/")
         self.assertEqual(response.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+
+class ChannelOnlyKindTests(NotificationApiTestCase):
+    """A kind without IN_APP still gets a row from notify(); it must stay hidden."""
+
+    def test_channel_only_kind_is_excluded_everywhere(self):
+        telegram_only = Kind(
+            name="telegram_only",
+            channels=(TELEGRAM,),
+            dedupe_key=lambda p: "k",
+            link=lambda p: "/x",
+            telegram_text=lambda p, url: "text",
+        )
+        with patch.dict(KINDS, {"telegram_only": telegram_only}):
+            hidden = self._create_notification(kind="telegram_only")
+            visible = self._create_notification(kind="inquiry_reply")
+
+            listed = self.client.get("/api/v1/notifications/")
+            self.assertEqual(
+                [item["id"] for item in listed.data["results"]], [visible.pk]
+            )
+
+            count = self.client.get("/api/v1/notifications/unread-count/")
+            self.assertEqual(count.data, {"unread_count": 1})
+
+            mark_one = self.client.post(f"/api/v1/notifications/{hidden.pk}/read/")
+            self.assertEqual(mark_one.status_code, status.HTTP_404_NOT_FOUND)
+
+            mark_all = self.client.post("/api/v1/notifications/read-all/")
+            self.assertEqual(mark_all.data, {"updated": 1})
+
+        hidden.refresh_from_db()
+        self.assertIsNone(hidden.read_at)
+
+
+class NotificationContractTests(NotificationApiTestCase):
+    """Pins the shape the frontend codes against (NOTIFICATIONS-INTEGRATION.md).
+
+    The frontend drops items whose `type` it doesn't know, so a renamed or new
+    type would silently hide them. If one of these fails, the frontend needs the
+    same change.
+    """
+
+    EXPECTED_TYPES = {
+        "inquiry_message": "message",
+        "inquiry_reply": "reply",
+        "inquiry_unanswered": "message",
+        "verification_reviewed": "verify",
+    }
+
+    def test_item_has_exactly_the_agreed_keys(self):
+        notif = self._create_notification(kind="inquiry_reply")
+        data = NotificationSerializer(notif).data
+        self.assertEqual(
+            set(data),
+            {"id", "kind", "type", "unread", "created_at", "title", "body", "cta"},
+        )
+        self.assertEqual(set(data["cta"]), {"label", "href"})
+        self.assertIsInstance(data["id"], int)
+        self.assertIsInstance(data["unread"], bool)
+
+    def test_kind_to_type_mapping(self):
+        self.assertEqual(set(KINDS), set(self.EXPECTED_TYPES))
+        for name, expected_type in self.EXPECTED_TYPES.items():
+            with self.subTest(kind=name):
+                self.assertEqual(KINDS[name].in_app({}).type, expected_type)
+
+    def test_title_and_body_are_plain_text(self):
+        # React escapes on render; pre-escaped text would show "&amp;".
+        notif = self._create_notification(
+            kind="inquiry_reply",
+            payload={"shop_name": "Tom & Jerry <b>", "body": '5 > 3 & "ok"'},
+        )
+        data = NotificationSerializer(notif).data
+        self.assertEqual(data["title"], "Tom & Jerry <b> replied")
+        self.assertEqual(data["body"], '5 > 3 & "ok"')
+
+
+class NotificationLinkSafetyTests(TestCase):
+    """Links become hrefs in the frontend: always a relative, server-built path."""
+
+    HOSTILE = "//evil.example/x"
+
+    def test_every_kind_builds_a_relative_path(self):
+        for name, spec in KINDS.items():
+            for payload in SAMPLE_PAYLOADS[name]:
+                with self.subTest(kind=name, payload=payload):
+                    link = spec.link(payload)
+                    self.assertTrue(link.startswith("/"), link)
+                    self.assertFalse(link.startswith("//"), link)
+
+    def test_free_text_in_payload_never_reaches_the_link(self):
+        for name, spec in KINDS.items():
+            payload = dict(SAMPLE_PAYLOADS[name][0])
+            clean = spec.link(payload)
+            for key, value in payload.items():
+                if isinstance(value, str):
+                    payload[key] = self.HOSTILE
+            payload["shop_slug"] = self.HOSTILE
+            with self.subTest(kind=name):
+                self.assertEqual(spec.link(payload), clean)
+
+    def test_non_numeric_id_is_rejected(self):
+        with self.assertRaises(ValueError):
+            KINDS["inquiry_reply"].link({"inquiry_id": self.HOSTILE})
+
+
+class SeedNotificationsCommandTests(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="seeduser", password="pw12345")
+
+    @override_settings(DEBUG=False)
+    def test_refuses_without_debug(self):
+        with self.assertRaises(CommandError):
+            call_command("seed_notifications", user="seeduser")
+        self.assertFalse(Notification.objects.exists())
+
+    @override_settings(DEBUG=True)
+    def test_unknown_user_is_an_error(self):
+        with self.assertRaises(CommandError):
+            call_command("seed_notifications", user="nobody")
+
+    @override_settings(DEBUG=True)
+    def test_seeds_one_read_and_one_unread_per_kind_without_sending(self):
+        call_command("seed_notifications", user="seeduser")
+        # Re-running must not trip the dedupe constraint.
+        call_command("seed_notifications", user="seeduser")
+
+        rows = Notification.objects.filter(recipient=self.user)
+        self.assertEqual(rows.count(), 2 * 2 * len(KINDS))
+        for name in KINDS:
+            with self.subTest(kind=name):
+                self.assertEqual(
+                    rows.filter(kind=name, read_at__isnull=True).count(), 2
+                )
+                self.assertEqual(
+                    rows.filter(kind=name, read_at__isnull=False).count(), 2
+                )
+        self.assertFalse(OutboundMessage.objects.exists())
 
 
 class ViewConfigurationTests(TestCase):

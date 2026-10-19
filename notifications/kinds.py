@@ -128,15 +128,17 @@ class Kind:
             )
 
 
-# Link paths: inquiry links are TBD until the conversation UI exists;
-# verification link points to the frontend verification flow.
+# Link paths are agreed with the frontend: merchant pages live under
+# /shop/dashboard/, buyer pages at the root. Links are built here from
+# server-assigned IDs only, never from free text in the payload, because the
+# frontend renders them as hrefs. They are stored on the row at creation, so
+# changing a path here needs a data migration for existing rows.
 KINDS: dict[str, Kind] = {
     "inquiry_message": Kind(
         name="inquiry_message",
         channels=(IN_APP, TELEGRAM),
         dedupe_key=lambda p: f"inquiry_message:{p['message_id']}",
-        # TBD: confirm path with frontend
-        link=lambda p: f"/dashboard/inquiries/{p['inquiry_id']}",
+        link=lambda p: f"/shop/dashboard/inquiries/{int(p['inquiry_id'])}",
         telegram_text=_inquiry_message_telegram_text,
         telegram_silent_at_night=True,
         email_batched=False,
@@ -146,8 +148,7 @@ KINDS: dict[str, Kind] = {
         name="inquiry_reply",
         channels=(IN_APP, EMAIL),
         dedupe_key=lambda p: f"inquiry_reply:{p['message_id']}",
-        # TBD: confirm path with frontend
-        link=lambda p: f"/inquiries/{p['inquiry_id']}",
+        link=lambda p: f"/inquiries/{int(p['inquiry_id'])}",
         telegram_text=None,
         telegram_silent_at_night=False,
         email_batched=True,
@@ -157,8 +158,7 @@ KINDS: dict[str, Kind] = {
         name="inquiry_unanswered",
         channels=(IN_APP, TELEGRAM),
         dedupe_key=lambda p: f"inquiry_unanswered:{p['inquiry_id']}",
-        # TBD: confirm path with frontend
-        link=lambda p: f"/dashboard/inquiries/{p['inquiry_id']}",
+        link=lambda p: f"/shop/dashboard/inquiries/{int(p['inquiry_id'])}",
         telegram_text=_inquiry_unanswered_telegram_text,
         telegram_silent_at_night=False,
         email_batched=False,
@@ -175,6 +175,17 @@ KINDS: dict[str, Kind] = {
         in_app=_verification_reviewed_in_app,
     ),
 }
+
+
+def in_app_kinds() -> list[str]:
+    """Kind names shown in the in-app feed.
+
+    notify() writes a row for every kind, so a Telegram- or email-only kind
+    would otherwise appear in the feed with an empty title. Rows whose kind no
+    longer exists are excluded too. Computed per call (the dict is tiny) so tests
+    can patch KINDS.
+    """
+    return [name for name, spec in KINDS.items() if IN_APP in spec.channels]
 
 
 def get_kind(name: str) -> Kind:
