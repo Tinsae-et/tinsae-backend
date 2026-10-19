@@ -1,8 +1,10 @@
 """Tests for the notifications service, channel delivery, deduplication, and lifecycle."""
 
+import importlib
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.apps import apps as django_apps
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.core.management import call_command
@@ -87,7 +89,7 @@ class NotificationServiceTests(TestCase):
         self.assertIsNotNone(n1)
         self.assertEqual(n1.recipient, self.shop_owner)
         self.assertEqual(n1.kind, "inquiry_message")
-        self.assertEqual(n1.link, "/dashboard/inquiries/1")
+        self.assertEqual(n1.link, "/shop/dashboard/inquiries/1")
         self.assertEqual(n1.dedupe_key, "inquiry_message:101")
 
         outbox1 = OutboundMessage.objects.get(
@@ -98,7 +100,7 @@ class NotificationServiceTests(TestCase):
         self.assertTrue(outbox1.send_silently_at_night)
         self.assertIn("Leather Shoes", outbox1.payload.get("text", ""))
         self.assertIn("Do you have size 42?", outbox1.payload.get("text", ""))
-        self.assertIn("/dashboard/inquiries/1", outbox1.payload.get("text", ""))
+        self.assertIn("/shop/dashboard/inquiries/1", outbox1.payload.get("text", ""))
 
         # 2. inquiry_reply
         n2 = notify(
@@ -134,7 +136,7 @@ class NotificationServiceTests(TestCase):
         self.assertIsNotNone(n3)
         self.assertEqual(n3.recipient, self.shop_owner)
         self.assertEqual(n3.kind, "inquiry_unanswered")
-        self.assertEqual(n3.link, "/dashboard/inquiries/1")
+        self.assertEqual(n3.link, "/shop/dashboard/inquiries/1")
         self.assertEqual(n3.dedupe_key, "inquiry_unanswered:1")
 
         outbox3 = OutboundMessage.objects.get(
@@ -646,6 +648,55 @@ class VerificationNotificationTests(TestCase):
             dedupe_key=f"verification:{vr.pk}:rejected",
         )
         self.assertEqual(rejected_notif.payload["state"], "rejected")
+
+
+class FixMerchantInquiryLinksMigrationTests(TestCase):
+    """0003 rewrites stored merchant links to /shop/dashboard/inquiries/."""
+
+    def setUp(self):
+        self.migration = importlib.import_module(
+            "notifications.migrations.0003_fix_merchant_inquiry_links"
+        )
+        self.user = User.objects.create_user(username="mig_user", password="pw12345")
+
+    def _row(self, kind, link):
+        return Notification.objects.create(
+            recipient=self.user,
+            kind=kind,
+            payload={},
+            link=link,
+            dedupe_key=f"{kind}:{link}",
+        )
+
+    def test_forwards_and_backwards(self):
+        message = self._row("inquiry_message", "/dashboard/inquiries/1")
+        unanswered = self._row("inquiry_unanswered", "/dashboard/inquiries/2")
+        reply = self._row("inquiry_reply", "/inquiries/3")
+        verify = self._row("verification_reviewed", "/shop/dashboard/get-verified")
+        already = self._row("inquiry_message", "/shop/dashboard/inquiries/4")
+
+        self.migration.forwards(django_apps, None)
+        expected = {
+            message: "/shop/dashboard/inquiries/1",
+            unanswered: "/shop/dashboard/inquiries/2",
+            reply: "/inquiries/3",
+            verify: "/shop/dashboard/get-verified",
+            already: "/shop/dashboard/inquiries/4",
+        }
+        for row, link in expected.items():
+            row.refresh_from_db()
+            self.assertEqual(row.link, link)
+
+        # Running forwards twice must not prefix "/shop" again.
+        self.migration.forwards(django_apps, None)
+        already.refresh_from_db()
+        self.assertEqual(already.link, "/shop/dashboard/inquiries/4")
+
+        self.migration.backwards(django_apps, None)
+        message.refresh_from_db()
+        verify.refresh_from_db()
+        self.assertEqual(message.link, "/dashboard/inquiries/1")
+        self.assertEqual(verify.link, "/shop/dashboard/get-verified")
 
 
 class NotificationScheduleCommandTests(TestCase):
