@@ -51,6 +51,10 @@ class Notification(BaseModel):
                 name="notif_email_pending_idx",
                 condition=Q(email_sent_at__isnull=True, read_at__isnull=True),
             ),
+            Index(
+                fields=["recipient", "-created_at"],
+                name="notif_recipient_recent_idx",
+            ),
         ]
 
     def __str__(self) -> str:

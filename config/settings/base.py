@@ -148,6 +148,9 @@ REST_FRAMEWORK = {
         # this caps guesses against one *destination* across successive codes,
         # which is what an attacker actually grinds.
         "otp_verify": "20/hour",
+        # The bell polls every 60s per open tab, and a view without a scope
+        # is unthrottled.
+        "notifications": "120/min",
     },
 }
 

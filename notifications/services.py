@@ -45,16 +45,42 @@ def notify(user, kind: str, payload: dict) -> Notification | None:
 def mark_read(user, notification_id: int) -> Notification:
     """Mark a notification as read, scoped to the recipient user.
 
-    Raises Notification.DoesNotExist if notification_id does not exist
-    or belongs to another user (preventing IDOR probing).
+    Raises Notification.DoesNotExist if notification_id does not exist,
+    belongs to another user (preventing IDOR probing), or is of an unknown kind.
     """
-    notification = Notification.objects.get(pk=notification_id, recipient=user)
+    notification = Notification.objects.get(
+        pk=notification_id,
+        recipient=user,
+        kind__in=KINDS.keys(),
+    )
     if notification.read_at is None:
         now = timezone.now()
         notification.read_at = now
         notification.updated_at = now
         notification.save(update_fields=["read_at", "updated_at"])
     return notification
+
+
+def unread_count(user) -> int:
+    """Return the number of unread notifications for `user` among known kinds."""
+    return Notification.objects.filter(
+        recipient=user,
+        read_at__isnull=True,
+        kind__in=KINDS.keys(),
+    ).count()
+
+
+def mark_all_read(user) -> int:
+    """Mark all unread notifications of known kinds for `user` as read.
+
+    Runs a single bulk UPDATE without loading rows into memory.
+    """
+    now = timezone.now()
+    return Notification.objects.filter(
+        recipient=user,
+        read_at__isnull=True,
+        kind__in=KINDS.keys(),
+    ).update(read_at=now, updated_at=now)
 
 
 def send_email_digests() -> int:

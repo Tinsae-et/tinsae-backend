@@ -12,7 +12,7 @@ from django.utils import timezone
 from django_celery_beat.models import PeriodicTask
 
 from bot.models import OutboundMessage
-from notifications.kinds import TELEGRAM, Kind
+from notifications.kinds import IN_APP, TELEGRAM, Kind
 from notifications.models import Notification
 from notifications.services import (
     mark_read,
@@ -40,6 +40,16 @@ class KindValidationTests(TestCase):
                 dedupe_key=lambda p: "k",
                 link=lambda p: "/link",
                 telegram_text=None,
+            )
+
+    def test_kind_with_in_app_requires_in_app_renderer(self):
+        with self.assertRaises(ValueError):
+            Kind(
+                name="invalid_kind",
+                channels=(IN_APP,),
+                dedupe_key=lambda p: "k",
+                link=lambda p: "/link",
+                in_app=None,
             )
 
 
@@ -149,7 +159,7 @@ class NotificationServiceTests(TestCase):
         self.assertIsNotNone(n4)
         self.assertEqual(n4.recipient, self.shop_owner)
         self.assertEqual(n4.kind, "verification_reviewed")
-        self.assertEqual(n4.link, f"/dashboard/shop/{self.shop.slug}/verification")
+        self.assertEqual(n4.link, "/shop/dashboard/get-verified")
         self.assertEqual(n4.dedupe_key, "verification:50:approved")
 
         outbox4 = OutboundMessage.objects.get(
