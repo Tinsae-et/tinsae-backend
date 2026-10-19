@@ -1,97 +1,122 @@
-"""Seed one read and one unread notification of every kind for a user (dev only)."""
+"""Create real notifications by playing a buyer-shop conversation (dev only)."""
+
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
+from django.db.models import Max
 from django.utils import timezone
 
-from notifications.kinds import KINDS
+from catalog.models import Product, ProductStatus
+from inquiries.models import Inquiry, InquiryMessage
+from inquiries.services import (
+    UNANSWERED_AFTER,
+    remind_unanswered_inquiries,
+    send_message,
+    start_inquiry,
+)
 from notifications.models import Notification
 
-# Realistic payloads, shaped like the real notify() call sites. The IDs are
-# fake, so inquiry links lead to a 404 — this is for rendering the feed, not
-# for following the CTA.
-SAMPLE_PAYLOADS: dict[str, list[dict]] = {
-    "inquiry_message": [
-        {
-            "message_id": 1,
-            "inquiry_id": 1,
-            "product_name": "iPhone 13 128GB",
-            "body": "Is this still available? Can I come see it today?",
-        },
-        {"message_id": 2, "inquiry_id": 2, "product_name": "", "body": "Hello!"},
-    ],
-    "inquiry_reply": [
-        {
-            "message_id": 3,
-            "inquiry_id": 3,
-            "shop_name": "Bole Electronics",
-            "body": "Yes, it is in stock. We close at 8pm.",
-        },
-        {"message_id": 4, "inquiry_id": 4, "shop_name": "", "body": "In stock."},
-    ],
-    "inquiry_unanswered": [
-        {"inquiry_id": 5, "product_name": "Samsung A54"},
-        {"inquiry_id": 6, "product_name": ""},
-    ],
-    "verification_reviewed": [
-        {"request_id": 1, "state": "approved"},
-        {"request_id": 2, "state": "rejected"},
-    ],
-}
+WEB = InquiryMessage.SentVia.WEB
 
 
 class Command(BaseCommand):
     help = (
-        "Create one unread and one read notification of every kind for a user, "
-        "so the frontend feed can be tested without the inquiry flow. DEBUG only."
+        "Play a real conversation between a buyer and a seller's shop through the "
+        "inquiry services, so every notification comes from notify() exactly as "
+        "in production: the seller gets inquiry_message and inquiry_unanswered, "
+        "the buyer gets inquiry_reply. Telegram delivery is real too (if the shop "
+        "is linked and the bot runs). DEBUG only."
     )
 
     def add_arguments(self, parser):
-        parser.add_argument("--user", required=True, help="Recipient's username.")
+        parser.add_argument("--buyer", required=True, help="Buyer's username.")
+        parser.add_argument("--seller", required=True, help="Shop owner's username.")
 
     def handle(self, *args, **options):
-        # Fake rows in a real user's feed would be indistinguishable from real
-        # ones, so this never runs outside development.
+        # It writes real inquiries and messages and can message a real Telegram
+        # chat, so it never runs outside development.
         if not settings.DEBUG:
             raise CommandError("seed_notifications only runs with DEBUG=True.")
 
+        buyer = self._user(options["buyer"])
+        seller = self._user(options["seller"])
+        if buyer.pk == seller.pk:
+            raise CommandError("--buyer and --seller must be different users.")
+        shop = seller.shops.order_by("created_at").first()
+        if shop is None:
+            raise CommandError(f"User {options['seller']!r} owns no shop.")
+
+        # Two different conversation keys are needed: one the shop answers, one
+        # left waiting for the reminder. With fewer than two products the
+        # product-less conversation fills in; with none, there is only one key.
+        products = list(
+            Product.objects.filter(shop=shop)
+            .exclude(status=ProductStatus.DRAFT)
+            .order_by("-created_at")[:2]
+        )
+        about = (products + [None])[:2]
+
+        last_pk = Notification.objects.aggregate(last=Max("pk"))["last"] or 0
+
+        try:
+            with transaction.atomic():
+                self._answered_conversation(buyer, seller, shop, about[0])
+                if len(about) > 1:
+                    self._waiting_conversation(buyer, shop, about[1])
+                else:
+                    self.stdout.write(
+                        "Shop has no listings; skipped the unanswered reminder."
+                    )
+        except ValidationError as exc:
+            raise CommandError(f"Inquiry service refused: {exc.messages}") from None
+
+        created = (
+            Notification.objects.filter(pk__gt=last_pk, recipient__in=[buyer, seller])
+            .select_related("recipient")
+            .order_by("pk")
+        )
+        for notification in created:
+            self.stdout.write(
+                f"  {notification.recipient.username}: {notification.kind} "
+                f"-> {notification.link}"
+            )
+        self.stdout.write(self.style.SUCCESS(f"Created {len(created)} notifications."))
+
+    def _user(self, username):
         User = get_user_model()
         try:
-            user = User.objects.get(username=options["user"])
+            return User.objects.get(username=username)
         except User.DoesNotExist:
-            raise CommandError(f"No user with username {options['user']!r}.") from None
+            raise CommandError(f"No user with username {username!r}.") from None
 
-        missing = set(KINDS) - set(SAMPLE_PAYLOADS)
-        if missing:
-            raise CommandError(f"No sample payload for kinds: {sorted(missing)}")
-
-        # Rows are written directly, not through notify(): notify() hands them to
-        # channels, which would send real Telegram messages and emails. The
-        # timestamp in the dedupe key lets the command be re-run.
-        now = timezone.now()
-        stamp = now.strftime("%Y%m%d%H%M%S%f")
-        rows = []
-        for name, (unread_payload, read_payload) in SAMPLE_PAYLOADS.items():
-            spec = KINDS[name]
-            for i, (payload, read_at) in enumerate(
-                [(unread_payload, None), (read_payload, now)]
-            ):
-                rows.append(
-                    Notification(
-                        recipient=user,
-                        kind=name,
-                        payload=payload,
-                        link=spec.link(payload),
-                        dedupe_key=f"seed:{name}:{stamp}:{i}",
-                        read_at=read_at,
-                    )
-                )
-        Notification.objects.bulk_create(rows)
-
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Created {len(rows)} notifications for user {user.pk} "
-                f"({len(SAMPLE_PAYLOADS)} kinds, one unread and one read each)."
-            )
+    def _answered_conversation(self, buyer, seller, shop, product):
+        inquiry = start_inquiry(
+            buyer,
+            shop,
+            "Hi, is this still available? Can I see it today?",
+            WEB,
+            product,
         )
+        send_message(
+            seller, inquiry.pk, "Yes, it's in stock. We're open until 8pm.", WEB
+        )
+        self.stdout.write(f"Inquiry {inquiry.pk}: buyer asked, shop replied.")
+
+    def _waiting_conversation(self, buyer, shop, product):
+        inquiry = start_inquiry(
+            buyer, shop, "What's your best price on this one?", WEB, product
+        )
+        # The reminder fires after the buyer has waited 24h. Backdating the one
+        # timestamp the job reads is the only shortcut here; the reminder itself
+        # comes from the real job. It is dedupe-keyed per inquiry, so a re-run
+        # only adds a new buyer message, not a second reminder. The job also
+        # reminds any other open inquiry in this database that is due.
+        Inquiry.objects.filter(pk=inquiry.pk).update(
+            last_message_at=timezone.now() - UNANSWERED_AFTER - timedelta(hours=1)
+        )
+        remind_unanswered_inquiries()
+        self.stdout.write(f"Inquiry {inquiry.pk}: buyer asked, shop hasn't replied.")
