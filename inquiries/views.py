@@ -2,12 +2,13 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db.models import Sum
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from shops.models import Shop
 
+from .models import Inquiry
 from .selectors import inquiries_for_buyer, inquiries_for_shop
 from .serializers import (
     BuyerInquiryRequestSerializer,
@@ -50,14 +51,20 @@ class BuyerInquiryViewSet(viewsets.ModelViewSet):
 
     def retrieve(self, request, *args, **kwargs):
         pk = self.kwargs["pk"]
-        instance = mark_read(self.request.user, pk)
+        try:
+            instance = mark_read(self.request.user, pk)
+        except Inquiry.DoesNotExist as exc:
+            raise NotFound("Inquiry not found.") from exc
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
         pk = self.kwargs["pk"]
-        instance = close_inquiry(self.request.user, pk)
+        try:
+            instance = close_inquiry(self.request.user, pk)
+        except Inquiry.DoesNotExist as exc:
+            raise NotFound("Inquiry not found.") from exc
         serializer = self.get_serializer(instance)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -87,7 +94,10 @@ class ShopInquiryViewSet(viewsets.ModelViewSet):
 
     def retrieve(self, request, *args, **kwargs):
         pk = self.kwargs["pk"]
-        instance = mark_read(self.request.user, pk)
+        try:
+            instance = mark_read(self.request.user, pk)
+        except Inquiry.DoesNotExist as exc:
+            raise NotFound("Inquiry not found.") from exc
         serializer = self.get_serializer(instance)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
@@ -114,7 +124,10 @@ class ShopInquiryViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
         pk = self.kwargs["pk"]
-        instance = close_inquiry(self.request.user, pk)
+        try:
+            instance = close_inquiry(self.request.user, pk)
+        except Inquiry.DoesNotExist as exc:
+            raise NotFound("Inquiry not found.") from exc
         serializer = self.get_serializer(instance)
         return Response(serializer.data, status=status.HTTP_200_OK)
 

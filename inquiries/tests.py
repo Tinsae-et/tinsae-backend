@@ -805,8 +805,9 @@ class InquiryViewTests(InquiryTestCase):
         response = self.client.get(reverse("buyer-list"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([row["id"] for row in response.data], [mine.pk])
-        self.assertNotIn(theirs.pk, [row["id"] for row in response.data])
+        results = response.data["results"]
+        self.assertEqual([row["id"] for row in results], [mine.pk])
+        self.assertNotIn(theirs.pk, [row["id"] for row in results])
 
     def test_buyer_retrieve_marks_only_buyer_messages_read(self):
         inquiry = self._start()
@@ -858,8 +859,9 @@ class InquiryViewTests(InquiryTestCase):
         response = self.client.get(reverse("shop-list"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual([row["id"] for row in response.data], [mine.pk])
-        self.assertNotIn(theirs.pk, [row["id"] for row in response.data])
+        results = response.data["results"]
+        self.assertEqual([row["id"] for row in results], [mine.pk])
+        self.assertNotIn(theirs.pk, [row["id"] for row in results])
 
     def test_shop_create_returns_serialized_inquiry(self):
         self.client.force_authenticate(self.owner)
