@@ -154,7 +154,13 @@ def _append_message(inquiry, sender_role, body, sent_via):
         notify(
             inquiry.buyer,
             "inquiry_reply",
-            {"message_id": message.pk, "inquiry_id": inquiry.pk},
+            {
+                "message_id": message.pk,
+                "inquiry_id": inquiry.pk,
+                "shop_name": inquiry.shop.name,
+                "product_name": (inquiry.product.name if inquiry.product_id else ""),
+                "body": body,
+            },
         )
     return message
 

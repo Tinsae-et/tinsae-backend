@@ -209,7 +209,13 @@ class SendMessageTests(InquiryTestCase):
         self.notify.assert_called_once_with(
             self.buyer,
             "inquiry_reply",
-            {"message_id": message.pk, "inquiry_id": self.inquiry.pk},
+            {
+                "message_id": message.pk,
+                "inquiry_id": self.inquiry.pk,
+                "shop_name": "Test Shop",
+                "product_name": "Phone A",
+                "body": "In stock.",
+            },
         )
 
     def test_buyer_follow_up_notifies_the_shop(self):
@@ -490,6 +496,9 @@ class RealNotificationEndToEndTests(TestCase):
         notif = Notification.objects.get(recipient=self.buyer, kind="inquiry_reply")
         self.assertEqual(notif.payload["inquiry_id"], inquiry.pk)
         self.assertEqual(notif.payload["message_id"], reply.pk)
+        self.assertEqual(notif.payload["shop_name"], "E2E Shop")
+        self.assertEqual(notif.payload["product_name"], "Phone E2E")
+        self.assertEqual(notif.payload["body"], "Yes, in stock!")
 
 
 class RemindUnansweredInquiriesTests(TestCase):
