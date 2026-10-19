@@ -1,5 +1,6 @@
 """Tests for notifications API endpoints: list, unread count, mark one, mark all."""
 
+import io
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -12,9 +13,9 @@ from django.utils import timezone
 from rest_framework import permissions, status
 from rest_framework.test import APIClient
 
-from bot.models import OutboundMessage
+from catalog.models import Category, Product
+from inquiries.models import Inquiry
 from notifications.kinds import KINDS, TELEGRAM, Kind
-from notifications.management.commands.seed_notifications import SAMPLE_PAYLOADS
 from notifications.models import Notification
 from notifications.serializers import NotificationSerializer
 from notifications.views import (
@@ -23,6 +24,7 @@ from notifications.views import (
     NotificationMarkReadView,
     NotificationUnreadCountView,
 )
+from shops.models import Shop
 
 User = get_user_model()
 
@@ -507,10 +509,32 @@ class NotificationContractTests(NotificationApiTestCase):
         self.assertEqual(data["body"], '5 > 3 & "ok"')
 
 
+# Payloads shaped like the real notify() call sites, one or two per kind.
+SAMPLE_PAYLOADS: dict[str, list[dict]] = {
+    "inquiry_message": [
+        {"message_id": 1, "inquiry_id": 1, "product_name": "Phone", "body": "Hi"},
+        {"message_id": 2, "inquiry_id": 2, "product_name": "", "body": "Hello"},
+    ],
+    "inquiry_reply": [
+        {"message_id": 3, "inquiry_id": 3, "shop_name": "Bole", "body": "In stock"},
+    ],
+    "inquiry_unanswered": [
+        {"inquiry_id": 5, "shop_id": 1, "product_name": "Phone"},
+    ],
+    "verification_reviewed": [
+        {"shop_id": 1, "shop_slug": "bole", "request_id": 1, "state": "approved"},
+        {"shop_id": 1, "shop_slug": "bole", "request_id": 2, "state": "rejected"},
+    ],
+}
+
+
 class NotificationLinkSafetyTests(TestCase):
     """Links become hrefs in the frontend: always a relative, server-built path."""
 
     HOSTILE = "//evil.example/x"
+
+    def test_every_kind_has_a_sample(self):
+        self.assertEqual(set(SAMPLE_PAYLOADS), set(KINDS))
 
     def test_every_kind_builds_a_relative_path(self):
         for name, spec in KINDS.items():
@@ -536,38 +560,90 @@ class NotificationLinkSafetyTests(TestCase):
             KINDS["inquiry_reply"].link({"inquiry_id": self.HOSTILE})
 
 
+@override_settings(DEBUG=True)
 class SeedNotificationsCommandTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="seeduser", password="pw12345")
+        self.buyer = User.objects.create_user(username="seedbuyer", password="pw1")
+        self.seller = User.objects.create_user(username="seedseller", password="pw1")
+        self.shop = Shop.objects.create(name="Seed Shop", owner=self.seller)
+        self.category = Category.objects.create(name="Phones", slug="phones")
+
+    def _product(self, name):
+        return Product.objects.create(
+            shop=self.shop,
+            category=self.category,
+            brand="Acme",
+            name=name,
+            price="1000.00",
+        )
+
+    def _seed(self):
+        call_command(
+            "seed_notifications",
+            buyer="seedbuyer",
+            seller="seedseller",
+            stdout=io.StringIO(),
+        )
+
+    def _kinds(self, user):
+        return sorted(
+            Notification.objects.filter(recipient=user).values_list("kind", flat=True)
+        )
 
     @override_settings(DEBUG=False)
     def test_refuses_without_debug(self):
         with self.assertRaises(CommandError):
-            call_command("seed_notifications", user="seeduser")
+            self._seed()
+        self.assertFalse(Inquiry.objects.exists())
         self.assertFalse(Notification.objects.exists())
 
-    @override_settings(DEBUG=True)
-    def test_unknown_user_is_an_error(self):
-        with self.assertRaises(CommandError):
-            call_command("seed_notifications", user="nobody")
+    def test_input_errors(self):
+        stranger = User.objects.create_user(username="noshop", password="pw1")
+        cases = {
+            "unknown buyer": {"buyer": "nobody", "seller": "seedseller"},
+            "unknown seller": {"buyer": "seedbuyer", "seller": "nobody"},
+            "same user": {"buyer": "seedseller", "seller": "seedseller"},
+            "seller owns no shop": {"buyer": "seedbuyer", "seller": stranger.username},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label), self.assertRaises(CommandError):
+                call_command("seed_notifications", **kwargs)
+        self.assertFalse(Notification.objects.exists())
 
-    @override_settings(DEBUG=True)
-    def test_seeds_one_read_and_one_unread_per_kind_without_sending(self):
-        call_command("seed_notifications", user="seeduser")
-        # Re-running must not trip the dedupe constraint.
-        call_command("seed_notifications", user="seeduser")
+    def test_each_side_gets_only_its_own_kinds_with_real_links(self):
+        self._product("Phone A")
+        self._product("Phone B")
+        self._seed()
 
-        rows = Notification.objects.filter(recipient=self.user)
-        self.assertEqual(rows.count(), 2 * 2 * len(KINDS))
-        for name in KINDS:
-            with self.subTest(kind=name):
-                self.assertEqual(
-                    rows.filter(kind=name, read_at__isnull=True).count(), 2
-                )
-                self.assertEqual(
-                    rows.filter(kind=name, read_at__isnull=False).count(), 2
-                )
-        self.assertFalse(OutboundMessage.objects.exists())
+        self.assertEqual(self._kinds(self.buyer), ["inquiry_reply"])
+        self.assertEqual(
+            self._kinds(self.seller), ["inquiry_message"] * 2 + ["inquiry_unanswered"]
+        )
+        # Every link points at an inquiry that exists, on the right side's path.
+        prefixes = {
+            self.buyer.pk: "/inquiries/",
+            self.seller.pk: "/shop/dashboard/inquiries/",
+        }
+        for notification in Notification.objects.all():
+            inquiry_id = notification.payload["inquiry_id"]
+            self.assertTrue(Inquiry.objects.filter(pk=inquiry_id).exists())
+            prefix = prefixes[notification.recipient_id]
+            self.assertEqual(notification.link, f"{prefix}{inquiry_id}")
+
+    def test_shop_without_listings_skips_the_reminder(self):
+        self._seed()
+        self.assertEqual(self._kinds(self.buyer), ["inquiry_reply"])
+        self.assertEqual(self._kinds(self.seller), ["inquiry_message"])
+
+    def test_rerun_continues_the_conversations_without_a_second_reminder(self):
+        self._product("Phone A")
+        self._seed()
+        self._seed()
+        self.assertEqual(Inquiry.objects.count(), 2)
+        self.assertEqual(self._kinds(self.buyer), ["inquiry_reply"] * 2)
+        self.assertEqual(
+            self._kinds(self.seller), ["inquiry_message"] * 4 + ["inquiry_unanswered"]
+        )
 
 
 class ViewConfigurationTests(TestCase):
