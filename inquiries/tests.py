@@ -622,7 +622,7 @@ class RemindUnansweredInquiriesTests(TestCase):
                 recipient=self.owner,
                 kind="inquiry_unanswered",
                 payload={"inquiry_id": inq.pk, "shop_id": self.shop.pk},
-                link=f"/dashboard/inquiries/{inq.pk}",
+                link=f"/shop/dashboard/inquiries/{inq.pk}",
                 dedupe_key=f"inquiry_unanswered:{inq.pk}",
             )
             inquiries.append(inq)
