@@ -64,15 +64,17 @@ class BuyerInquiryRequestSerializer(serializers.Serializer):
         queryset=Product.objects.all(), required=False, allow_null=True
     )
     body = serializers.CharField(max_length=MAX_BODY_LENGTH)
-    sent_via = serializers.ChoiceField(choices=InquiryMessage.SentVia.choices)
-
-
-class ShopInquiryReplySerializer(serializers.Serializer):
-    product = serializers.PrimaryKeyRelatedField(
-        queryset=Product.objects.all(), required=False, allow_null=True
+    sent_via = serializers.ChoiceField(
+        choices=InquiryMessage.SentVia.choices,
+        default=InquiryMessage.SentVia.WEB,
+        required=False,
     )
+
+
+class InquiryReplySerializer(serializers.Serializer):
     body = serializers.CharField(max_length=MAX_BODY_LENGTH)
-    sent_via = serializers.ChoiceField(choices=InquiryMessage.SentVia.choices)
-    buyer = serializers.PrimaryKeyRelatedField(
-        queryset=User.objects.all(),
+    sent_via = serializers.ChoiceField(
+        choices=InquiryMessage.SentVia.choices,
+        default=InquiryMessage.SentVia.WEB,
+        required=False,
     )

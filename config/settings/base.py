@@ -151,6 +151,7 @@ REST_FRAMEWORK = {
         # The bell polls every 60s per open tab, and a view without a scope
         # is unthrottled.
         "notifications": "120/min",
+        "inquiries": "60/min",
     },
 }
 

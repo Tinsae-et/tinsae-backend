@@ -15,8 +15,8 @@ from inquiries.models import Inquiry, InquiryMessage, SenderRole
 from inquiries.serializers import (
     BuyerInquiryRequestSerializer,
     InquiryMessageSerializer,
+    InquiryReplySerializer,
     InquirySerializer,
-    ShopInquiryReplySerializer,
 )
 from inquiries.services import (
     close_inquiry,
@@ -735,19 +735,11 @@ class InquirySerializerTests(InquiryTestCase):
         self.assertIn("shop", serializer.errors)
         self.assertIn("product", serializer.errors)
 
-    def test_shop_reply_serializer_resolves_buyer_and_optional_product(self):
-        serializer = ShopInquiryReplySerializer(
-            data={
-                "buyer": self.buyer.pk,
-                "product": self.product.pk,
-                "body": "Reply",
-                "sent_via": WEB,
-            }
-        )
-
+    def test_reply_serializer_validates_body_and_defaults_sent_via(self):
+        serializer = InquiryReplySerializer(data={"body": "Hello"})
         self.assertTrue(serializer.is_valid(), serializer.errors)
-        self.assertEqual(serializer.validated_data["buyer"], self.buyer)
-        self.assertEqual(serializer.validated_data["product"], self.product)
+        self.assertEqual(serializer.validated_data["body"], "Hello")
+        self.assertEqual(serializer.validated_data["sent_via"], WEB)
 
 
 class InquiryViewTests(InquiryTestCase):
@@ -829,6 +821,23 @@ class InquiryViewTests(InquiryTestCase):
 
         self.assertEqual(response.status_code, 404)
 
+    def test_buyer_reply_appends_message_and_increments_shop_unread(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.post(
+            reverse("buyer-reply", args=[inquiry.pk]),
+            {"body": "Can I pick it up today?"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        inquiry.refresh_from_db()
+        self.assertEqual(inquiry.shop_unread, 2)
+        self.assertEqual(inquiry.last_sender_role, SenderRole.BUYER)
+        self.assertEqual(inquiry.messages.count(), 2)
+        self.assertEqual(inquiry.messages.last().body, "Can I pick it up today?")
+
     def test_buyer_can_close_their_inquiry(self):
         inquiry = self._start()
         self.client.force_authenticate(self.buyer)
@@ -849,7 +858,7 @@ class InquiryViewTests(InquiryTestCase):
         response = self.client.get(reverse("buyer-unreads"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"buyer_unread__sum": 4})
+        self.assertEqual(response.data, {"unread_count": 4})
 
     def test_shop_list_is_scoped_to_owned_shop(self):
         mine = self._start()
@@ -863,24 +872,81 @@ class InquiryViewTests(InquiryTestCase):
         self.assertEqual([row["id"] for row in results], [mine.pk])
         self.assertNotIn(theirs.pk, [row["id"] for row in results])
 
-    def test_shop_create_returns_serialized_inquiry(self):
+    def test_shop_cannot_retrieve_another_shops_inquiry(self):
+        inquiry = self._start(shop=self.other_shop)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("shop-detail", args=[inquiry.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_buyer_cannot_retrieve_inquiry_via_shop_endpoint(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.get(reverse("shop-detail", args=[inquiry.pk]))
+        self.assertEqual(response.status_code, 404)
+
+    def test_shop_reply_appends_message_and_increments_buyer_unread(self):
+        inquiry = self._start()
         self.client.force_authenticate(self.owner)
 
         response = self.client.post(
-            reverse("shop-list"),
-            {
-                "buyer": self.buyer.pk,
-                "product": self.product.pk,
-                "body": "Is this in stock?",
-                "sent_via": WEB,
-            },
+            reverse("shop-reply", args=[inquiry.pk]),
+            {"body": "Yes, Phone A is currently in stock!"},
             format="json",
         )
 
-        self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data["buyer"], self.buyer.pk)
-        self.assertEqual(response.data["shop"]["id"], self.shop.pk)
-        self.assertEqual(response.data["product"]["id"], self.product.pk)
+        self.assertEqual(response.status_code, 200, response.data)
+        inquiry.refresh_from_db()
+        self.assertEqual(inquiry.buyer_unread, 1)
+        self.assertEqual(inquiry.last_sender_role, SenderRole.SHOP)
+        self.assertEqual(inquiry.messages.count(), 2)
+        self.assertEqual(
+            inquiry.messages.last().body, "Yes, Phone A is currently in stock!"
+        )
+        self.assertEqual(inquiry.messages.last().sender_role, SenderRole.SHOP)
+
+    def test_shop_list_filters_by_open_and_unread(self):
+        inquiry1 = self._start()  # open, shop_unread=1
+        inquiry2 = self._start(product=self.second_product)
+        close_inquiry(self.owner, inquiry2.pk)
+        Inquiry.objects.filter(pk=inquiry2.pk).update(shop_unread=0)
+
+        self.client.force_authenticate(self.owner)
+
+        # Filter open=true
+        resp = self.client.get(reverse("shop-list"), {"open": "true"})
+        self.assertEqual(resp.status_code, 200)
+        ids = [r["id"] for r in resp.data["results"]]
+        self.assertIn(inquiry1.pk, ids)
+        self.assertNotIn(inquiry2.pk, ids)
+
+        # Filter open=false
+        resp = self.client.get(reverse("shop-list"), {"open": "false"})
+        self.assertEqual(resp.status_code, 200)
+        ids = [r["id"] for r in resp.data["results"]]
+        self.assertNotIn(inquiry1.pk, ids)
+        self.assertIn(inquiry2.pk, ids)
+
+        # Filter unread=true
+        resp = self.client.get(reverse("shop-list"), {"unread": "true"})
+        self.assertEqual(resp.status_code, 200)
+        ids = [r["id"] for r in resp.data["results"]]
+        self.assertIn(inquiry1.pk, ids)
+        self.assertNotIn(inquiry2.pk, ids)
+
+    def test_inquiries_cannot_be_deleted(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.buyer)
+        self.assertEqual(
+            self.client.delete(reverse("buyer-detail", args=[inquiry.pk])).status_code,
+            405,
+        )
+        self.client.force_authenticate(self.owner)
+        self.assertEqual(
+            self.client.delete(reverse("shop-detail", args=[inquiry.pk])).status_code,
+            405,
+        )
 
     def test_shop_unreads_returns_count(self):
         inquiry = self._start()
@@ -890,4 +956,4 @@ class InquiryViewTests(InquiryTestCase):
         response = self.client.get(reverse("shop-unreads"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data, {"shop_unread__sum": 5})
+        self.assertEqual(response.data, {"unread_count": 5})
