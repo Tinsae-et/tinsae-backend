@@ -46,6 +46,11 @@ class Shop(BaseModel):
         ],
     )
     telegram_chat_id = models.CharField(max_length=50, blank=True)
+    telegram_username = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text="Public Telegram handle (e.g. abebe_shop) for direct buyer messaging.",
+    )
     blocked_at = models.DateTimeField(
         null=True,
         blank=True,
@@ -73,6 +78,12 @@ class Shop(BaseModel):
         return self.name
 
     def save(self, *args, **kwargs):
+        if self.telegram_username:
+            val = self.telegram_username.strip()
+            for prefix in ("https://t.me/", "http://t.me/", "t.me/", "@"):
+                if val.startswith(prefix):
+                    val = val[len(prefix) :]
+            self.telegram_username = val.strip("/").strip()
         if self.slug:
             return super().save(*args, **kwargs)
         # slugify() strips non-Latin scripts entirely, so an Amharic-only name

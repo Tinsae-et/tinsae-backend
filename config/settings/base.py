@@ -152,6 +152,8 @@ REST_FRAMEWORK = {
         # is unthrottled.
         "notifications": "120/min",
         "inquiries": "60/min",
+        "contact_intent": "30/min",
+        "phone_reveal": "15/hour",
     },
 }
 

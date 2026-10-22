@@ -3,10 +3,11 @@ from django.db.models import Sum
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
-from .models import Inquiry, InquiryMessage
+from .models import ContactChannel, Inquiry, InquiryMessage
 from .selectors import (
     get_inquiry_for_buyer,
     inquiries_for_buyer,
@@ -14,10 +15,18 @@ from .selectors import (
 )
 from .serializers import (
     BuyerInquiryRequestSerializer,
+    ContactIntentSerializer,
     InquiryReplySerializer,
     InquirySerializer,
 )
-from .services import close_inquiry, mark_read, send_message, start_inquiry
+from .services import (
+    close_inquiry,
+    mark_read,
+    record_contact_intent,
+    send_message,
+    start_inquiry,
+)
+from .throttles import PhoneRevealUserThrottle
 
 
 class BuyerInquiryViewSet(
@@ -55,6 +64,22 @@ class BuyerInquiryViewSet(
         except DjangoValidationError as exc:
             detail = exc.message_dict if hasattr(exc, "message_dict") else exc.messages
             raise ValidationError(detail) from exc
+
+        client_ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[
+            0
+        ].strip() or request.META.get("REMOTE_ADDR", "")
+        user_agent = request.META.get("HTTP_USER_AGENT", "")
+        try:
+            record_contact_intent(
+                shop=data["shop"],
+                channel=ContactChannel.IN_APP,
+                user=request.user,
+                product=data.get("product"),
+                client_ip=client_ip,
+                user_agent=user_agent,
+            )
+        except Exception:
+            pass
 
         serializer = InquirySerializer(inquiry, context=self.get_serializer_context())
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -206,3 +231,48 @@ class ShopInquiryViewSet(
             or 0
         )
         return Response({"unread_count": total}, status=status.HTTP_200_OK)
+
+
+class ContactIntentView(APIView):
+    """Record a buyer's intent to contact a shop and return the target action link.
+
+    Channel options:
+    - phone: requires authenticated user, returns `tel:<number>`.
+    - telegram: returns `https://t.me/<username>`.
+    - in_app: returns `in_app`.
+
+    Bot defenses:
+    - Honeypot check rejects automated bots that populate hidden inputs.
+    - User-Agent filter blocks automated scraping frameworks.
+    - PhoneRevealUserThrottle limits per-user phone number reveals.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [PhoneRevealUserThrottle]
+    throttle_scope = "contact_intent"
+
+    def post(self, request):
+        serializer = ContactIntentSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        client_ip = request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[
+            0
+        ].strip() or request.META.get("REMOTE_ADDR", "")
+        user_agent = request.META.get("HTTP_USER_AGENT", "")
+
+        try:
+            result = record_contact_intent(
+                shop=data["shop"],
+                channel=data["channel"],
+                user=request.user,
+                product=data.get("product"),
+                client_ip=client_ip,
+                user_agent=user_agent,
+                honeypot=data.get("honeypot", ""),
+            )
+        except DjangoValidationError as exc:
+            detail = exc.message_dict if hasattr(exc, "message_dict") else exc.messages
+            raise ValidationError(detail) from exc
+
+        return Response(result, status=status.HTTP_200_OK)

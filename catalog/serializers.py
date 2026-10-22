@@ -79,6 +79,7 @@ class ProductImageSerializer(serializers.ModelSerializer):
 
 class ProductSerializer(serializers.ModelSerializer):
     title = serializers.SerializerMethodField()
+    shop_id = serializers.IntegerField(source="shop.id", read_only=True)
     shop_name = serializers.CharField(source="shop.name", read_only=True)
     shop_slug = serializers.CharField(source="shop.slug", read_only=True)
     shop_verified = serializers.BooleanField(source="shop.is_verified", read_only=True)
@@ -123,6 +124,7 @@ class ProductSerializer(serializers.ModelSerializer):
             "price",
             "currency",
             "condition",
+            "shop_id",
             "shop_name",
             "shop_slug",
             "shop_verified",

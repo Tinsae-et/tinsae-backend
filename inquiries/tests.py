@@ -11,7 +11,12 @@ from rest_framework.test import APIClient
 from bot.models import OutboundMessage
 from catalog.models import Category, Product, ProductStatus
 from inquiries import selectors
-from inquiries.models import Inquiry, InquiryMessage, SenderRole
+from inquiries.models import (
+    ContactIntent,
+    Inquiry,
+    InquiryMessage,
+    SenderRole,
+)
 from inquiries.serializers import (
     BuyerInquiryRequestSerializer,
     InquiryMessageSerializer,
@@ -21,6 +26,7 @@ from inquiries.serializers import (
 from inquiries.services import (
     close_inquiry,
     mark_read,
+    record_contact_intent,
     remind_unanswered_inquiries,
     send_message,
     start_inquiry,
@@ -697,6 +703,7 @@ class InquirySerializerTests(InquiryTestCase):
         self.assertEqual(data["body"], "Question")
         self.assertEqual(data["sent_via"], WEB)
         self.assertEqual(data["sender_role"], SenderRole.BUYER)
+        self.assertIn("created_at", data)
 
     def test_buyer_request_serializer_resolves_shop_and_optional_product(self):
         serializer = BuyerInquiryRequestSerializer(
@@ -957,3 +964,184 @@ class InquiryViewTests(InquiryTestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, {"unread_count": 5})
+
+
+class ContactIntentTests(InquiryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.shop.phone = "+251911223344"
+        self.shop.telegram_username = "test_shop_tg"
+        self.shop.save()
+
+    def test_phone_contact_requires_authentication(self):
+        client = APIClient()
+        response = client.post(
+            reverse("contact-intent"),
+            {"shop": self.shop.pk, "channel": "phone"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(ContactIntent.objects.exists())
+
+    def test_phone_contact_succeeds_for_authenticated_buyer(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+
+        response = client.post(
+            reverse("contact-intent"),
+            {
+                "shop": self.shop.pk,
+                "product": self.product.pk,
+                "channel": "phone",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["channel"], "phone")
+        self.assertEqual(response.data["target"], "tel:+251911223344")
+        self.assertEqual(response.data["phone"], "+251911223344")
+
+        intent = ContactIntent.objects.get()
+        self.assertEqual(intent.shop, self.shop)
+        self.assertEqual(intent.product, self.product)
+        self.assertEqual(intent.user, self.buyer)
+        self.assertEqual(intent.channel, "phone")
+
+    def test_telegram_contact_returns_deep_link(self):
+        client = APIClient()
+        response = client.post(
+            reverse("contact-intent"),
+            {"shop": self.shop.pk, "channel": "telegram"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["channel"], "telegram")
+        self.assertEqual(response.data["target"], "https://t.me/test_shop_tg")
+        self.assertEqual(response.data["telegram_url"], "https://t.me/test_shop_tg")
+
+        intent = ContactIntent.objects.get()
+        self.assertEqual(intent.channel, "telegram")
+
+    def test_honeypot_rejects_bots(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+        response = client.post(
+            reverse("contact-intent"),
+            {"shop": self.shop.pk, "channel": "phone", "honeypot": "spam-bot"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(ContactIntent.objects.exists())
+
+    def test_blocked_user_agent_rejects_automated_crawlers(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+        response = client.post(
+            reverse("contact-intent"),
+            {"shop": self.shop.pk, "channel": "phone"},
+            HTTP_USER_AGENT="python-requests/2.28.1",
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(ContactIntent.objects.exists())
+
+    def test_foreign_product_validation(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+        response = client.post(
+            reverse("contact-intent"),
+            {
+                "shop": self.shop.pk,
+                "product": self.foreign_product.pk,
+                "channel": "phone",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("product", response.data)
+
+    def test_shop_missing_phone_or_telegram(self):
+        empty_shop = Shop.objects.create(name="Empty Shop", owner=self.other_owner)
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+
+        resp_phone = client.post(
+            reverse("contact-intent"),
+            {"shop": empty_shop.pk, "channel": "phone"},
+            format="json",
+        )
+        self.assertEqual(resp_phone.status_code, 400)
+
+        resp_tg = client.post(
+            reverse("contact-intent"),
+            {"shop": empty_shop.pk, "channel": "telegram"},
+            format="json",
+        )
+        self.assertEqual(resp_tg.status_code, 400)
+
+    def test_telegram_username_sanitization_on_shop_save(self):
+        shop1 = Shop.objects.create(
+            name="Handle Shop",
+            owner=self.owner,
+            telegram_username="@my_handle",
+        )
+        self.assertEqual(shop1.telegram_username, "my_handle")
+
+        shop2 = Shop.objects.create(
+            name="URL Shop",
+            owner=self.owner,
+            telegram_username="https://t.me/url_handle/",
+        )
+        self.assertEqual(shop2.telegram_username, "url_handle")
+
+    def test_shop_public_serializer_phone_gated_by_authentication(self):
+        from rest_framework.test import APIRequestFactory
+
+        from shops.serializers import ShopPublicSerializer
+
+        factory = APIRequestFactory()
+
+        # Anonymous request
+        anon_req = factory.get("/")
+        anon_data = ShopPublicSerializer(self.shop, context={"request": anon_req}).data
+        self.assertEqual(anon_data["phone"], "")
+        self.assertEqual(anon_data["telegram_username"], "test_shop_tg")
+
+        # Authenticated request
+        auth_req = factory.get("/")
+        auth_req.user = self.buyer
+        auth_data = ShopPublicSerializer(self.shop, context={"request": auth_req}).data
+        self.assertEqual(auth_data["phone"], "+251911223344")
+
+    def test_contact_intent_selectors(self):
+        from inquiries.selectors import (
+            contact_intents_count_for_product,
+            contact_intents_count_for_shop,
+        )
+
+        record_contact_intent(self.shop, "telegram", user=None, product=self.product)
+        record_contact_intent(self.shop, "phone", user=self.buyer, product=self.product)
+
+        self.assertEqual(contact_intents_count_for_shop(self.shop), 2)
+        self.assertEqual(contact_intents_count_for_product(self.product), 2)
+        self.assertEqual(contact_intents_count_for_product(self.second_product), 0)
+
+    def test_contact_intent_accepts_slugs_and_infers_shop(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+        # Using shop slug
+        resp = client.post(
+            reverse("contact-intent"),
+            {"shop": self.shop.slug, "channel": "telegram"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Using product slug, omitting shop (infers shop from product)
+        resp2 = client.post(
+            reverse("contact-intent"),
+            {"product": self.product.slug, "channel": "telegram"},
+            format="json",
+        )
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(resp2.data["target"], "https://t.me/test_shop_tg")

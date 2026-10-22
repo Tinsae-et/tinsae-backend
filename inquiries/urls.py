@@ -7,4 +7,7 @@ router = DefaultRouter()
 router.register("buyer", views.BuyerInquiryViewSet, basename="buyer")
 router.register("shop", views.ShopInquiryViewSet, basename="shop")
 
-urlpatterns = [path("", include(router.urls))]
+urlpatterns = [
+    path("contact/", views.ContactIntentView.as_view(), name="contact-intent"),
+    path("", include(router.urls)),
+]

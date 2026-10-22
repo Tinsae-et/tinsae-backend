@@ -7,9 +7,10 @@ selectors -- so a foreign ID fails exactly like a missing one, and the caller's
 role (buyer or shop) is derived from the row, never trusted from the caller.
 """
 
+import hashlib
 from datetime import timedelta
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -17,7 +18,14 @@ from catalog.models import ProductStatus
 from notifications.models import Notification
 from notifications.services import notify
 
-from .models import MAX_BODY_LENGTH, Inquiry, InquiryMessage, SenderRole
+from .models import (
+    MAX_BODY_LENGTH,
+    ContactChannel,
+    ContactIntent,
+    Inquiry,
+    InquiryMessage,
+    SenderRole,
+)
 from .selectors import inquiries_for_participant, role_of
 
 UNANSWERED_AFTER = timedelta(hours=24)
@@ -268,3 +276,88 @@ def remind_unanswered_inquiries(now=None) -> int:
                 reminders_created += 1
 
     return reminders_created
+
+
+BLOCKED_USER_AGENTS = (
+    "python-requests",
+    "aiohttp",
+    "scrapy",
+    "curl",
+    "wget",
+    "httpclient",
+    "python-urllib",
+)
+
+
+def _hash_ip(ip: str) -> str:
+    if not ip:
+        return ""
+    return hashlib.sha256(ip.encode("utf-8")).hexdigest()
+
+
+def record_contact_intent(
+    shop,
+    channel: str,
+    user=None,
+    product=None,
+    client_ip: str = "",
+    user_agent: str = "",
+    honeypot: str = "",
+) -> dict:
+    """Record a buyer's intent to contact a shop and return the target link.
+
+    Enforces bot defense and privacy protections:
+    1. Honeypot check: automated scripts populating hidden fields are rejected.
+    2. User-Agent filter: automated scraping libraries are blocked.
+    3. Auth-gate for phone: phone numbers are revealed only to authenticated users.
+    """
+    if honeypot:
+        raise ValidationError({"detail": "Invalid request."})
+
+    ua_lower = (user_agent or "").lower()
+    if any(blocked in ua_lower for blocked in BLOCKED_USER_AGENTS):
+        raise ValidationError({"detail": "Automated requests are not allowed."})
+
+    if product is not None and product.shop_id != shop.pk:
+        raise ValidationError({"product": "This product is not sold by this shop."})
+
+    is_authenticated = bool(user and getattr(user, "is_authenticated", False))
+
+    if channel == ContactChannel.PHONE:
+        if not is_authenticated:
+            raise PermissionDenied(
+                "Please sign in to view the shop's phone number and call."
+            )
+        if not shop.phone:
+            raise ValidationError(
+                {"detail": "This shop has not published a phone number."}
+            )
+        target = f"tel:{shop.phone}"
+        extra = {"phone": shop.phone}
+    elif channel == ContactChannel.TELEGRAM:
+        if not shop.telegram_username:
+            raise ValidationError(
+                {"detail": "This shop has not provided a Telegram username."}
+            )
+        target = f"https://t.me/{shop.telegram_username}"
+        extra = {"telegram_url": target}
+    elif channel == ContactChannel.IN_APP:
+        target = "in_app"
+        extra = {}
+    else:
+        raise ValidationError({"channel": "Invalid contact channel."})
+
+    ContactIntent.objects.create(
+        shop=shop,
+        product=product,
+        user=user if is_authenticated else None,
+        channel=channel,
+        ip_hash=_hash_ip(client_ip),
+        user_agent=user_agent[:255] if user_agent else "",
+    )
+
+    return {
+        "channel": channel,
+        "target": target,
+        **extra,
+    }
