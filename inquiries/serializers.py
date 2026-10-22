@@ -6,12 +6,13 @@ from catalog.serializers import ProductSerializer
 from shops.models import Shop
 from shops.serializers import ShopPublicSerializer
 
-from .models import MAX_BODY_LENGTH, Inquiry, InquiryMessage
+from .models import MAX_BODY_LENGTH, ContactChannel, Inquiry, InquiryMessage
 
 User = get_user_model()
 
 
 class InquirySerializer(serializers.ModelSerializer):
+    buyer_name = serializers.CharField(source="buyer.username", read_only=True)
     shop = serializers.SerializerMethodField()
     product = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
@@ -21,6 +22,7 @@ class InquirySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "buyer",
+            "buyer_name",
             "shop",
             "product",
             "status",
@@ -55,14 +57,56 @@ class InquiryMessageSerializer(serializers.ModelSerializer):
             "body",
             "sent_via",
             "sender_role",
+            "created_at",
         ]
+        read_only_fields = fields
+
+
+class ShopOrSlugField(serializers.Field):
+    def to_internal_value(self, data):
+        if isinstance(data, Shop):
+            return data
+        if isinstance(data, int) or (isinstance(data, str) and data.isdigit()):
+            try:
+                return Shop.objects.get(pk=int(data))
+            except Shop.DoesNotExist:
+                raise serializers.ValidationError("Shop does not exist.") from None
+        if isinstance(data, str) and data.strip():
+            try:
+                return Shop.objects.get(slug=data.strip())
+            except Shop.DoesNotExist:
+                raise serializers.ValidationError("Shop does not exist.") from None
+        raise serializers.ValidationError("Shop is required.")
+
+    def to_representation(self, value):
+        return value.pk
+
+
+class ProductOrSlugField(serializers.Field):
+    def to_internal_value(self, data):
+        if not data:
+            return None
+        if isinstance(data, Product):
+            return data
+        if isinstance(data, int) or (isinstance(data, str) and data.isdigit()):
+            try:
+                return Product.objects.get(pk=int(data))
+            except Product.DoesNotExist:
+                raise serializers.ValidationError("Product does not exist.") from None
+        if isinstance(data, str) and data.strip():
+            try:
+                return Product.objects.get(slug=data.strip())
+            except Product.DoesNotExist:
+                raise serializers.ValidationError("Product does not exist.") from None
+        raise serializers.ValidationError("Invalid product.")
+
+    def to_representation(self, value):
+        return value.pk if value else None
 
 
 class BuyerInquiryRequestSerializer(serializers.Serializer):
-    shop = serializers.PrimaryKeyRelatedField(queryset=Shop.objects.all())
-    product = serializers.PrimaryKeyRelatedField(
-        queryset=Product.objects.all(), required=False, allow_null=True
-    )
+    shop = ShopOrSlugField()
+    product = ProductOrSlugField(required=False, allow_null=True)
     body = serializers.CharField(max_length=MAX_BODY_LENGTH)
     sent_via = serializers.ChoiceField(
         choices=InquiryMessage.SentVia.choices,
@@ -78,3 +122,20 @@ class InquiryReplySerializer(serializers.Serializer):
         default=InquiryMessage.SentVia.WEB,
         required=False,
     )
+
+
+class ContactIntentSerializer(serializers.Serializer):
+    shop = ShopOrSlugField(required=False)
+    product = ProductOrSlugField(required=False, allow_null=True)
+    channel = serializers.ChoiceField(choices=ContactChannel.choices)
+    honeypot = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        shop = attrs.get("shop")
+        product = attrs.get("product")
+        if not shop and product:
+            attrs["shop"] = product.shop
+        elif not shop:
+            raise serializers.ValidationError({"shop": "Shop is required."})
+        return attrs

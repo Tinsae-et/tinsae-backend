@@ -30,6 +30,7 @@ class ShopSerializer(serializers.ModelSerializer):
             "latitude",
             "longitude",
             "telegram_chat_id",
+            "telegram_username",
             "is_verified",
             "owner",
             "created_at",
@@ -80,8 +81,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
 
     `telegram_chat_id` is the bot's routing address for the merchant and `owner`
     is an internal user id — neither is storefront data, and the detail endpoint
-    is readable anonymously. `phone` stays: it is the shop's published contact
-    number and the storefront is meant to show it.
+    is readable anonymously. `phone` is revealed only to authenticated users to
+    prevent mass scraping by unauthenticated bots.
     """
 
     categories = serializers.SlugRelatedField(
@@ -90,6 +91,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
         read_only=True,
     )
     photos = ShopPhotoSerializer(many=True, read_only=True)
+    phone = serializers.SerializerMethodField()
+    has_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Shop
@@ -100,6 +103,8 @@ class ShopPublicSerializer(serializers.ModelSerializer):
             "description",
             "logo",
             "phone",
+            "has_phone",
+            "telegram_username",
             "city",
             "categories",
             "photos",
@@ -110,9 +115,21 @@ class ShopPublicSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def get_phone(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and getattr(user, "is_authenticated", False):
+            return obj.phone
+        return ""
+
+    def get_has_phone(self, obj):
+        return bool(obj.phone and obj.phone.strip())
+
 
 class ShopListSerializer(serializers.ModelSerializer):
     active_listings_count = serializers.IntegerField(read_only=True, default=0)
+    phone = serializers.SerializerMethodField()
+    has_phone = serializers.SerializerMethodField()
 
     class Meta:
         model = Shop
@@ -123,6 +140,8 @@ class ShopListSerializer(serializers.ModelSerializer):
             "description",
             "logo",
             "phone",
+            "has_phone",
+            "telegram_username",
             "city",
             "latitude",
             "longitude",
@@ -130,6 +149,16 @@ class ShopListSerializer(serializers.ModelSerializer):
             "active_listings_count",
             "created_at",
         ]
+
+    def get_phone(self, obj):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        if user and getattr(user, "is_authenticated", False):
+            return obj.phone
+        return ""
+
+    def get_has_phone(self, obj):
+        return bool(obj.phone and obj.phone.strip())
 
 
 class ShopProductSerializer(serializers.ModelSerializer):

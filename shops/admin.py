@@ -68,6 +68,7 @@ class ShopAdmin(admin.ModelAdmin):
         "city",
         "language",
         "is_verified",
+        "telegram_username",
         "telegram_linked",
         "blocked_at",
         "owner",
@@ -82,7 +83,7 @@ class ShopAdmin(admin.ModelAdmin):
         ("telegram_chat_id", admin.EmptyFieldListFilter),
         ("blocked_at", admin.EmptyFieldListFilter),
     )
-    search_fields = ("name", "city")
+    search_fields = ("name", "city", "telegram_username")
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("is_verified", "created_at", "updated_at")
     inlines = [ProductInline]

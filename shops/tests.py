@@ -164,7 +164,42 @@ class ShopDetailExposureTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("telegram_chat_id", response.data)
         self.assertNotIn("owner", response.data)
+        # Phone is hidden from anonymous callers to prevent mass scraping
+        self.assertEqual(response.data["phone"], "")
+        self.assertTrue(response.data["has_phone"])
+
+    def test_authenticated_user_can_read_phone(self):
+        client = APIClient()
+        client.force_authenticate(self.other)
+
+        response = client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["phone"], "+251911100001")
+        self.assertTrue(response.data["has_phone"])
+
+    def test_shop_list_phone_gated_by_authentication(self):
+        list_url = "/api/v1/shops/"
+        # Anonymous list
+        anon_resp = APIClient().get(list_url)
+        self.assertEqual(anon_resp.status_code, 200)
+        results = (
+            anon_resp.data["results"] if "results" in anon_resp.data else anon_resp.data
+        )
+        for s in results:
+            self.assertEqual(s["phone"], "")
+            self.assertTrue(s["has_phone"])
+
+        # Authenticated list
+        auth_client = APIClient()
+        auth_client.force_authenticate(self.other)
+        auth_resp = auth_client.get(list_url)
+        self.assertEqual(auth_resp.status_code, 200)
+        auth_results = (
+            auth_resp.data["results"] if "results" in auth_resp.data else auth_resp.data
+        )
+        phones = [s["phone"] for s in auth_results if s["id"] == self.shop.id]
+        self.assertEqual(phones, ["+251911100001"])
 
     def test_another_merchant_cannot_read_the_chat_id(self):
         client = APIClient()
@@ -1169,6 +1204,7 @@ class ShopDirectoryApiTest(TestCase):
         )
 
     def test_list_shops_returns_active_listings_count_and_phone(self):
+        # Anonymous client: phone is concealed to prevent mass scraping
         res = self.client.get("/api/v1/shops/")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.data["count"], 2)
@@ -1177,8 +1213,18 @@ class ShopDirectoryApiTest(TestCase):
             s for s in res.data["results"] if s["slug"] == self.verified_shop.slug
         )
         self.assertEqual(alpha["active_listings_count"], 1)
-        self.assertEqual(alpha["phone"], "+251911111111")
+        self.assertEqual(alpha["phone"], "")
+        self.assertTrue(alpha["has_phone"])
         self.assertIn("created_at", alpha)
+
+        # Authenticated user can see the phone number
+        user = User.objects.create_user(username="test_buyer_list", password="pwd")
+        self.client.force_authenticate(user)
+        auth_res = self.client.get("/api/v1/shops/")
+        auth_alpha = next(
+            s for s in auth_res.data["results"] if s["slug"] == self.verified_shop.slug
+        )
+        self.assertEqual(auth_alpha["phone"], "+251911111111")
 
     def test_filter_by_verified_only(self):
         res = self.client.get("/api/v1/shops/?verified_only=1")

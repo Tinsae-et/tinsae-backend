@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Inquiry, InquiryMessage
+from .models import ContactIntent, Inquiry, InquiryMessage
 
 
 class InquiryMessageInline(admin.TabularInline):
@@ -38,4 +38,21 @@ class InquiryMessageAdmin(admin.ModelAdmin):
     list_filter = ["sender_role", "sent_via"]
     search_fields = ["body"]
     raw_id_fields = ["inquiry"]
+    readonly_fields = ["created_at", "updated_at"]
+
+
+@admin.register(ContactIntent)
+class ContactIntentAdmin(admin.ModelAdmin):
+    list_display = [
+        "id",
+        "shop",
+        "product",
+        "channel",
+        "user",
+        "ip_hash",
+        "created_at",
+    ]
+    list_filter = ["channel", "created_at"]
+    search_fields = ["shop__name", "product__name", "user__username"]
+    raw_id_fields = ["shop", "product", "user"]
     readonly_fields = ["created_at", "updated_at"]

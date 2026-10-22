@@ -116,3 +116,61 @@ class InquiryMessage(BaseModel):
 
     def __str__(self):
         return f"{self.sender_role}: {self.body[:50]}"
+
+
+class ContactChannel(models.TextChoices):
+    PHONE = "phone", "Phone"
+    TELEGRAM = "telegram", "Telegram"
+    IN_APP = "in_app", "In-App"
+
+
+class ContactIntent(BaseModel):
+    """A buyer's intent to contact a shop, tracked for conversion analytics.
+
+    Unlike in-app conversations (Inquiry), this captures external hand-offs
+    (phone calls and Telegram deep-links) as well as initial in-app message
+    intents. Feeds merchant dashboard lead metrics and search/ranking analytics
+    without exposing raw personal numbers to unauthenticated crawlers.
+    """
+
+    shop = models.ForeignKey(
+        "shops.Shop",
+        on_delete=models.CASCADE,
+        related_name="contact_intents",
+    )
+    product = models.ForeignKey(
+        "catalog.Product",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_intents",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_intents",
+    )
+    channel = models.CharField(max_length=20, choices=ContactChannel.choices)
+    # Hashed client IP to track distinct lead counts without storing personal IP data.
+    ip_hash = models.CharField(max_length=64, blank=True, db_index=True)
+    user_agent = models.CharField(max_length=255, blank=True)
+
+    class Meta(BaseModel.Meta):
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["shop", "-created_at"], name="contact_intent_shop_idx"
+            ),
+            models.Index(
+                fields=["product", "-created_at"], name="contact_intent_prod_idx"
+            ),
+            models.Index(
+                fields=["channel", "-created_at"], name="contact_intent_chan_idx"
+            ),
+        ]
+
+    def __str__(self):
+        prod = f" / {self.product_id}" if self.product_id else ""
+        return f"{self.channel} intent: shop {self.shop_id}{prod}"
