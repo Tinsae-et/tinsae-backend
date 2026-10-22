@@ -6,9 +6,12 @@ someone else is simply absent from the queryset: a foreign ID raises the same
 must fetch inquiries through here, never through `Inquiry.objects` directly.
 """
 
-from django.db.models import Q
+from datetime import timedelta
 
-from .models import Inquiry, InquiryMessage
+from django.db.models import Q
+from django.utils import timezone
+
+from .models import ContactIntent, Inquiry, InquiryMessage
 
 
 def inquiries_for_buyer(user):
@@ -63,3 +66,15 @@ def messages_for_participant(user, pk):
     """The thread of one inquiry, oldest first, if `user` is on it."""
     inquiry = get_inquiry_for_participant(user, pk)
     return inquiry.messages.all()
+
+
+def contact_intents_count_for_shop(shop, days: int = 30) -> int:
+    """Return count of buyer contact intents for a shop in the last `days` days."""
+    since = timezone.now() - timedelta(days=days)
+    return ContactIntent.objects.filter(shop=shop, created_at__gte=since).count()
+
+
+def contact_intents_count_for_product(product, days: int = 30) -> int:
+    """Return count of buyer contact intents for a product in the last `days` days."""
+    since = timezone.now() - timedelta(days=days)
+    return ContactIntent.objects.filter(product=product, created_at__gte=since).count()
