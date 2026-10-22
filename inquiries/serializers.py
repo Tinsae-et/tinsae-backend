@@ -5,6 +5,7 @@ from catalog.models import Product
 from catalog.serializers import ProductSerializer
 from shops.models import Shop
 from shops.serializers import ShopPublicSerializer
+from users.serializers import UserSerializer
 
 from .models import MAX_BODY_LENGTH, Inquiry, InquiryMessage
 
@@ -15,6 +16,7 @@ class InquirySerializer(serializers.ModelSerializer):
     shop = serializers.SerializerMethodField()
     product = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
+    buyer = serializers.SerializerMethodField()
 
     class Meta:
         model = Inquiry
@@ -44,6 +46,9 @@ class InquirySerializer(serializers.ModelSerializer):
         return InquiryMessageSerializer(
             obj.messages.all(), many=True, context=self.context
         ).data
+
+    def get_buyer(self, obj):
+        return UserSerializer(obj.buyer, context=self.context).data
 
 
 class InquiryMessageSerializer(serializers.ModelSerializer):

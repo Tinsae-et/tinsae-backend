@@ -771,7 +771,7 @@ class InquiryViewTests(InquiryTestCase):
         )
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data["buyer"], self.buyer.pk)
+        self.assertEqual(response.data["buyer"]["id"], self.buyer.pk)
         self.assertEqual(response.data["shop"]["id"], self.shop.pk)
         self.assertEqual(response.data["product"]["id"], self.product.pk)
         self.assertEqual(response.data["messages"][0]["body"], "Is this in stock?")
