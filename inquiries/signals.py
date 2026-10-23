@@ -1,5 +1,6 @@
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
+from django.utils import timezone
 
 from catalog.models import Product
 
@@ -14,10 +15,17 @@ def close_inquiries_that_would_collide(sender, instance, **kwargs):
     becomes a product-less one. If the same buyer already has an open
     product-less inquiry with the shop, that would break the one-open-
     conversation constraint and abort the delete -- so close it first.
+
+    Any *other* open conversation with the shop counts, not only product-less
+    ones: when several products go in one delete (admin bulk action, queryset
+    delete) every pre_delete runs before any SET_NULL, so two open inquiries
+    about two of them would both turn product-less at once.
     """
-    open_general = Inquiry.objects.filter(
-        shop=instance.shop_id, product__isnull=True, status=Inquiry.Status.OPEN
-    ).values("buyer")
+    other_open = (
+        Inquiry.objects.filter(shop=instance.shop_id, status=Inquiry.Status.OPEN)
+        .exclude(product=instance)
+        .values("buyer")
+    )
     Inquiry.objects.filter(
-        product=instance, status=Inquiry.Status.OPEN, buyer__in=open_general
-    ).update(status=Inquiry.Status.CLOSED)
+        product=instance, status=Inquiry.Status.OPEN, buyer__in=other_open
+    ).update(status=Inquiry.Status.CLOSED, updated_at=timezone.now())

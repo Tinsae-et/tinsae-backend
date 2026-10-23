@@ -152,6 +152,10 @@ REST_FRAMEWORK = {
         # is unthrottled.
         "notifications": "120/min",
         "inquiries": "60/min",
+        # Sending a message (create or reply). Each one notifies the other side,
+        # for a merchant as a Telegram ping, so writes get a tighter bucket
+        # than reads.
+        "inquiry_send": "20/min",
         "contact_intent": "30/min",
         "phone_reveal": "15/hour",
     },

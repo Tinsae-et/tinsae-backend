@@ -1,23 +1,21 @@
-from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from catalog.models import Product
 from catalog.serializers import ProductSerializer
 from shops.models import Shop
 from shops.serializers import ShopPublicSerializer
-from users.serializers import UserSerializer
 
 from .models import MAX_BODY_LENGTH, ContactChannel, Inquiry, InquiryMessage
 
-User = get_user_model()
-
 
 class InquirySerializer(serializers.ModelSerializer):
+    # `buyer` stays the plain FK id. A nested user here handed every merchant
+    # the buyer's email, phone and Telegram chat id; `buyer_name` is all the
+    # inbox shows.
     buyer_name = serializers.CharField(source="buyer.username", read_only=True)
     shop = serializers.SerializerMethodField()
     product = serializers.SerializerMethodField()
     messages = serializers.SerializerMethodField()
-    buyer = serializers.SerializerMethodField()
 
     class Meta:
         model = Inquiry
@@ -48,9 +46,6 @@ class InquirySerializer(serializers.ModelSerializer):
         return InquiryMessageSerializer(
             obj.messages.all(), many=True, context=self.context
         ).data
-
-    def get_buyer(self, obj):
-        return UserSerializer(obj.buyer, context=self.context).data
 
 
 class InquiryMessageSerializer(serializers.ModelSerializer):
@@ -110,23 +105,15 @@ class ProductOrSlugField(serializers.Field):
 
 
 class BuyerInquiryRequestSerializer(serializers.Serializer):
+    # No `sent_via`: which door a message came through is the server's to
+    # say. The API always records WEB; the bot records TELEGRAM.
     shop = ShopOrSlugField()
     product = ProductOrSlugField(required=False, allow_null=True)
     body = serializers.CharField(max_length=MAX_BODY_LENGTH)
-    sent_via = serializers.ChoiceField(
-        choices=InquiryMessage.SentVia.choices,
-        default=InquiryMessage.SentVia.WEB,
-        required=False,
-    )
 
 
 class InquiryReplySerializer(serializers.Serializer):
     body = serializers.CharField(max_length=MAX_BODY_LENGTH)
-    sent_via = serializers.ChoiceField(
-        choices=InquiryMessage.SentVia.choices,
-        default=InquiryMessage.SentVia.WEB,
-        required=False,
-    )
 
 
 class ContactIntentSerializer(serializers.Serializer):

@@ -7,12 +7,12 @@ selectors -- so a foreign ID fails exactly like a missing one, and the caller's
 role (buyer or shop) is derived from the row, never trusted from the caller.
 """
 
-import hashlib
 from datetime import timedelta
 
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 
 from catalog.models import ProductStatus
 from notifications.models import Notification
@@ -66,11 +66,13 @@ def _same_conversation(buyer, shop, product):
 
 
 def _open_or_reopen(buyer, shop, product):
-    """Return the one open conversation for this key, reopening or creating it.
+    """Return `(inquiry, started)`: the one open conversation for this key,
+    reopening or creating it. `started` is False only when the conversation
+    was already open -- the caller counts a start or a restart as a lead.
 
     Two concurrent first messages can both miss the open row; the partial
     unique constraint lets exactly one insert win, and the loser picks up the
-    winner's row instead of erroring.
+    winner's row instead of erroring (and leaves the lead to the winner).
     """
     conversation = _same_conversation(buyer, shop, product)
 
@@ -81,7 +83,7 @@ def _open_or_reopen(buyer, shop, product):
         .first()
     )
     if inquiry is not None:
-        return inquiry
+        return inquiry, False
 
     try:
         with transaction.atomic():
@@ -95,15 +97,16 @@ def _open_or_reopen(buyer, shop, product):
             if inquiry is not None:
                 inquiry.status = Inquiry.Status.OPEN
                 inquiry.save(update_fields=["status", "updated_at"])
-                return inquiry
-            return Inquiry.objects.create(buyer=buyer, shop=shop, product=product)
+                return inquiry, True
+            return Inquiry.objects.create(buyer=buyer, shop=shop, product=product), True
     except IntegrityError:
-        return (
+        inquiry = (
             conversation.filter(status=Inquiry.Status.OPEN)
             .select_related("shop__owner", "buyer", "product")
             .select_for_update(of=("self",))
             .get()
         )
+        return inquiry, False
 
 
 def _append_message(inquiry, sender_role, body, sent_via):
@@ -174,12 +177,20 @@ def _append_message(inquiry, sender_role, body, sent_via):
 
 
 @transaction.atomic
-def start_inquiry(buyer, shop, body, sent_via, product=None):
+def start_inquiry(
+    buyer, shop, body, sent_via, product=None, *, client_ip="", user_agent=""
+):
     """A buyer writes to a shop, optionally about one of its products.
 
     Continues the open conversation for (buyer, shop, product) if there is one,
     reopens the last closed one otherwise, and only creates a new conversation
     when neither exists.
+
+    Starting or restarting a conversation is a lead, recorded as an in-app
+    ContactIntent in this same transaction. A follow-up in a thread that is
+    already open is not a new lead. The honeypot and user-agent checks of
+    `record_contact_intent` do not apply: the buyer is signed in and the API
+    throttles sends.
     """
     body = _validate_message(body, sent_via)
     if shop.owner_id == buyer.pk:
@@ -190,8 +201,12 @@ def start_inquiry(buyer, shop, body, sent_via, product=None):
         if product.status == ProductStatus.DRAFT:
             raise ValidationError({"product": "This product is not available."})
 
-    inquiry = _open_or_reopen(buyer, shop, product)
+    inquiry, started = _open_or_reopen(buyer, shop, product)
     _append_message(inquiry, SenderRole.BUYER, body, sent_via)
+    if started:
+        _record_intent(
+            shop, ContactChannel.IN_APP, buyer, product, client_ip, user_agent
+        )
     return inquiry
 
 
@@ -205,12 +220,17 @@ def send_message(user, inquiry_id, body, sent_via):
 
 @transaction.atomic
 def mark_read(user, inquiry_id):
-    """Clear `user`'s side of the unread counter."""
+    """Clear `user`'s side of the unread counter.
+
+    Opening a thread calls this every time, so an already-read side writes
+    nothing.
+    """
     inquiry = _lock_for(user, inquiry_id)
     if role_of(user, inquiry) == SenderRole.BUYER:
-        inquiry.buyer_unread = 0
-        inquiry.save(update_fields=["buyer_unread", "updated_at"])
-    else:
+        if inquiry.buyer_unread:
+            inquiry.buyer_unread = 0
+            inquiry.save(update_fields=["buyer_unread", "updated_at"])
+    elif inquiry.shop_unread:
         inquiry.shop_unread = 0
         inquiry.save(update_fields=["shop_unread", "updated_at"])
     return inquiry
@@ -290,9 +310,28 @@ BLOCKED_USER_AGENTS = (
 
 
 def _hash_ip(ip: str) -> str:
+    """A keyed hash, so the stored value cannot be reversed.
+
+    A bare SHA-256 of an IPv4 address is not anonymous: there are only 2**32
+    of them, and hashing every one takes minutes. Keyed on SECRET_KEY, so
+    rotating the key starts a new series -- older rows stop matching newer ones.
+    """
     if not ip:
         return ""
-    return hashlib.sha256(ip.encode("utf-8")).hexdigest()
+    return salted_hmac(
+        "inquiries.contact_intent.ip", ip, algorithm="sha256"
+    ).hexdigest()
+
+
+def _record_intent(shop, channel, user, product, client_ip, user_agent):
+    return ContactIntent.objects.create(
+        shop=shop,
+        product=product,
+        user=user,
+        channel=channel,
+        ip_hash=_hash_ip(client_ip),
+        user_agent=(user_agent or "")[:255],
+    )
 
 
 def record_contact_intent(
@@ -347,13 +386,13 @@ def record_contact_intent(
     else:
         raise ValidationError({"channel": "Invalid contact channel."})
 
-    ContactIntent.objects.create(
-        shop=shop,
-        product=product,
-        user=user if is_authenticated else None,
-        channel=channel,
-        ip_hash=_hash_ip(client_ip),
-        user_agent=user_agent[:255] if user_agent else "",
+    _record_intent(
+        shop,
+        channel,
+        user if is_authenticated else None,
+        product,
+        client_ip,
+        user_agent,
     )
 
     return {

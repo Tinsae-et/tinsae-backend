@@ -8,8 +8,10 @@ must fetch inquiries through here, never through `Inquiry.objects` directly.
 
 from datetime import timedelta
 
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.utils import timezone
+
+from catalog.models import ProductImage
 
 from .models import ContactIntent, Inquiry, InquiryMessage
 
@@ -34,6 +36,26 @@ def inquiries_for_owner(user):
 def inquiries_for_participant(user):
     """Every conversation `user` takes part in, as buyer or as shop owner."""
     return Inquiry.objects.filter(Q(buyer=user) | Q(shop__owner=user))
+
+
+def with_inbox_relations(queryset):
+    """Everything `InquirySerializer` reads, so an inbox page costs a fixed
+    number of queries however many rows it holds.
+
+    Product images are ordered inside the Prefetch, like the catalogue views:
+    re-sorting on the prefetched manager would re-query per product.
+    """
+    return queryset.select_related(
+        "shop", "buyer", "product__shop", "product__category"
+    ).prefetch_related(
+        "shop__photos",
+        "shop__categories",
+        Prefetch(
+            "product__product_image",
+            queryset=ProductImage.objects.order_by("-is_primary", "display_order"),
+        ),
+        "messages",
+    )
 
 
 def get_inquiry_for_buyer(user, pk):

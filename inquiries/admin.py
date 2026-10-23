@@ -39,6 +39,8 @@ class InquiryMessageAdmin(admin.ModelAdmin):
     search_fields = ["body"]
     raw_id_fields = ["inquiry"]
     readonly_fields = ["created_at", "updated_at"]
+    # `Inquiry.__str__` reads the product.
+    list_select_related = ["inquiry__product"]
 
 
 @admin.register(ContactIntent)
@@ -56,3 +58,4 @@ class ContactIntentAdmin(admin.ModelAdmin):
     search_fields = ["shop__name", "product__name", "user__username"]
     raw_id_fields = ["shop", "product", "user"]
     readonly_fields = ["created_at", "updated_at"]
+    list_select_related = ["shop", "product", "user"]

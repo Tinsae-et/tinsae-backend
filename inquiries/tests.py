@@ -1,9 +1,13 @@
+import hashlib
 from datetime import timedelta
 from unittest import mock
 
+from django.conf import settings
+from django.core.cache import cache
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.db import IntegrityError, connection, transaction
+from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -12,6 +16,7 @@ from bot.models import OutboundMessage
 from catalog.models import Category, Product, ProductStatus
 from inquiries import selectors
 from inquiries.models import (
+    ContactChannel,
     ContactIntent,
     Inquiry,
     InquiryMessage,
@@ -24,6 +29,7 @@ from inquiries.serializers import (
     InquirySerializer,
 )
 from inquiries.services import (
+    _hash_ip,
     close_inquiry,
     mark_read,
     record_contact_intent,
@@ -361,6 +367,21 @@ class ProductDeletionTests(InquiryTestCase):
         general.refresh_from_db()
         self.assertEqual(about_product.status, Inquiry.Status.CLOSED)
         self.assertEqual(general.status, Inquiry.Status.OPEN)
+
+    def test_deleting_several_products_at_once_does_not_collide(self):
+        about_a = self._start(product=self.product)
+        about_b = self._start(product=self.second_product)
+
+        Product.objects.filter(
+            pk__in=[self.product.pk, self.second_product.pk]
+        ).delete()
+
+        statuses = sorted(
+            Inquiry.objects.filter(pk__in=[about_a.pk, about_b.pk]).values_list(
+                "status", flat=True
+            )
+        )
+        self.assertEqual(statuses, [Inquiry.Status.CLOSED, Inquiry.Status.OPEN])
 
 
 class IsolationTests(InquiryTestCase):
@@ -719,14 +740,14 @@ class InquirySerializerTests(InquiryTestCase):
         self.assertEqual(serializer.validated_data["shop"], self.shop)
         self.assertEqual(serializer.validated_data["product"], self.product)
 
-    def test_buyer_request_serializer_validates_required_and_choice_fields(self):
+    def test_buyer_request_serializer_requires_a_body_and_ignores_sent_via(self):
         serializer = BuyerInquiryRequestSerializer(
             data={"shop": self.shop.pk, "body": "", "sent_via": "sms"}
         )
 
         self.assertFalse(serializer.is_valid())
         self.assertIn("body", serializer.errors)
-        self.assertIn("sent_via", serializer.errors)
+        self.assertNotIn("sent_via", serializer.errors)
 
     def test_buyer_request_serializer_rejects_unknown_shop_and_product(self):
         serializer = BuyerInquiryRequestSerializer(
@@ -742,11 +763,11 @@ class InquirySerializerTests(InquiryTestCase):
         self.assertIn("shop", serializer.errors)
         self.assertIn("product", serializer.errors)
 
-    def test_reply_serializer_validates_body_and_defaults_sent_via(self):
+    def test_reply_serializer_validates_body_and_takes_no_sent_via(self):
         serializer = InquiryReplySerializer(data={"body": "Hello"})
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["body"], "Hello")
-        self.assertEqual(serializer.validated_data["sent_via"], WEB)
+        self.assertNotIn("sent_via", serializer.validated_data)
 
 
 class InquiryViewTests(InquiryTestCase):
@@ -778,7 +799,7 @@ class InquiryViewTests(InquiryTestCase):
         )
 
         self.assertEqual(response.status_code, 201, response.data)
-        self.assertEqual(response.data["buyer"]["id"], self.buyer.pk)
+        self.assertEqual(response.data["buyer"], self.buyer.pk)
         self.assertEqual(response.data["shop"]["id"], self.shop.pk)
         self.assertEqual(response.data["product"]["id"], self.product.pk)
         self.assertEqual(response.data["messages"][0]["body"], "Is this in stock?")
@@ -788,12 +809,12 @@ class InquiryViewTests(InquiryTestCase):
 
         response = self.client.post(
             reverse("buyer-list"),
-            {"shop": self.shop.pk, "body": "Question", "sent_via": "sms"},
+            {"shop": self.shop.pk, "body": ""},
             format="json",
         )
 
         self.assertEqual(response.status_code, 400)
-        self.assertIn("sent_via", response.data)
+        self.assertIn("body", response.data)
         self.assertFalse(Inquiry.objects.exists())
 
     def test_buyer_list_is_scoped_to_authenticated_buyer(self):
@@ -1145,3 +1166,139 @@ class ContactIntentTests(InquiryTestCase):
         )
         self.assertEqual(resp2.status_code, 200)
         self.assertEqual(resp2.data["target"], "https://t.me/test_shop_tg")
+
+
+class InquiryApiHardeningTests(InquiryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.client = APIClient()
+        # Throttle counters live in the cache and outlive a test's transaction.
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def test_shop_sees_the_buyer_as_an_id_and_none_of_their_private_fields(self):
+        User.objects.filter(pk=self.buyer.pk).update(
+            email="buyer@example.com", phone="+251900000001", telegram_chat_id="4242"
+        )
+        self._start(product=self.product)
+        self.client.force_authenticate(self.owner)
+
+        response = self.client.get(reverse("shop-list"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["results"][0]["buyer"], self.buyer.pk)
+        body = response.content.decode()
+        for private in ("buyer@example.com", "+251900000001", "4242"):
+            self.assertNotIn(private, body)
+
+    def test_inbox_query_count_does_not_grow_with_rows(self):
+        self.client.force_authenticate(self.buyer)
+        self._start(product=self.product)
+        with CaptureQueriesContext(connection) as one_row:
+            self.assertEqual(self.client.get(reverse("buyer-list")).status_code, 200)
+
+        # Different shops and products, so no row is served from another's cache.
+        for i in range(4):
+            shop = Shop.objects.create(name=f"Shop {i}", owner=self.other_owner)
+            self._start(shop=shop, product=self._product(shop, f"Item {i}"))
+        with CaptureQueriesContext(connection) as five_rows:
+            self.assertEqual(self.client.get(reverse("buyer-list")).status_code, 200)
+
+        self.assertEqual(len(one_row), len(five_rows))
+
+    def test_non_numeric_id_is_a_404(self):
+        self.client.force_authenticate(self.buyer)
+        for url in (reverse("buyer-list") + "abc/", reverse("shop-list") + "abc/"):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.get(url).status_code, 404)
+
+    def test_client_cannot_claim_a_telegram_message(self):
+        self.client.force_authenticate(self.buyer)
+
+        response = self.client.post(
+            reverse("buyer-list"),
+            {"shop": self.shop.pk, "body": "Hi", "sent_via": TELEGRAM},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(InquiryMessage.objects.get().sent_via, WEB)
+
+    def test_a_follow_up_is_not_a_new_lead_but_a_restart_is(self):
+        self.client.force_authenticate(self.buyer)
+        payload = {"shop": self.shop.pk, "product": self.product.pk, "body": "Hi"}
+
+        self.client.post(reverse("buyer-list"), payload, format="json")
+        self.client.post(reverse("buyer-list"), payload, format="json")
+        leads = ContactIntent.objects.filter(channel=ContactChannel.IN_APP)
+        self.assertEqual(leads.count(), 1)
+
+        close_inquiry(self.buyer, Inquiry.objects.get().pk)
+        self.client.post(reverse("buyer-list"), payload, format="json")
+        self.assertEqual(leads.count(), 2)
+
+    def test_sending_is_throttled_per_user(self):
+        inquiry = self._start()
+        self.client.force_authenticate(self.buyer)
+        url = reverse("buyer-reply", args=[inquiry.pk])
+
+        for _ in range(20):
+            self.assertEqual(
+                self.client.post(url, {"body": "Hi"}, format="json").status_code, 200
+            )
+        self.assertEqual(
+            self.client.post(url, {"body": "Hi"}, format="json").status_code, 429
+        )
+
+    def test_opening_an_already_read_thread_writes_nothing(self):
+        inquiry = Inquiry.objects.create(buyer=self.buyer, shop=self.shop)
+
+        with CaptureQueriesContext(connection) as ctx:
+            mark_read(self.buyer, inquiry.pk)
+
+        self.assertFalse(
+            any(q["sql"].lstrip().upper().startswith("UPDATE") for q in ctx)
+        )
+
+
+@override_settings(REST_FRAMEWORK={**settings.REST_FRAMEWORK, "NUM_PROXIES": 0})
+class ContactIntentHardeningTests(InquiryTestCase):
+    def setUp(self):
+        super().setUp()
+        self.shop.telegram_username = "test_shop_tg"
+        self.shop.save()
+        self.url = reverse("contact-intent")
+        cache.clear()
+        self.addCleanup(cache.clear)
+
+    def test_anonymous_callers_are_rate_limited(self):
+        client = APIClient()
+        payload = {"shop": self.shop.pk, "channel": "telegram"}
+
+        for _ in range(30):
+            self.assertEqual(
+                client.post(self.url, payload, format="json").status_code, 200
+            )
+        self.assertEqual(client.post(self.url, payload, format="json").status_code, 429)
+
+    def test_a_json_array_body_is_a_400_not_a_500(self):
+        client = APIClient()
+        client.force_authenticate(self.buyer)
+
+        self.assertEqual(client.post(self.url, [], format="json").status_code, 400)
+
+    def test_forwarded_for_header_cannot_choose_the_ip_hash(self):
+        APIClient().post(
+            self.url,
+            {"shop": self.shop.pk, "channel": "telegram"},
+            format="json",
+            HTTP_X_FORWARDED_FOR="203.0.113.9",
+            REMOTE_ADDR="198.51.100.7",
+        )
+
+        self.assertEqual(ContactIntent.objects.get().ip_hash, _hash_ip("198.51.100.7"))
+
+    def test_ip_hash_is_keyed_not_a_bare_sha256(self):
+        self.assertNotEqual(
+            _hash_ip("198.51.100.7"), hashlib.sha256(b"198.51.100.7").hexdigest()
+        )
